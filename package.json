@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v421-tefas-import-engine",
-  "version": "4.2.1",
+  "name": "finscope-v500-alpha-intelligence-engine",
+  "version": "5.0.0-alpha",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"
