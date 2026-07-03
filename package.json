@@ -1,9 +1,10 @@
 {
-  "name": "finscope-professional-v31",
-  "version": "3.1.0",
+  "name": "finscope-professional-v400-foundation",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
-    "build": "echo no-build-needed"
+    "build": "echo no-build-needed",
+    "start": "echo static-site"
   },
   "dependencies": {}
 }
