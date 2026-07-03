@@ -1,52 +1,10 @@
-async function fetchJson(url) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 9000);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 FinScope/4.0.0', 'Accept': 'application/json,*/*' }
-    });
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    return await response.json();
-  } finally { clearTimeout(timer); }
-}
-
-async function getFx() {
-  const data = await fetchJson('https://open.er-api.com/v6/latest/USD');
-  const r = data.rates || {};
-  const TRY = Number(r.TRY), EUR = Number(r.EUR), GBP = Number(r.GBP);
-  if (!TRY || !EUR || !GBP) throw new Error('FX verisi eksik');
-  return { USDTRY: TRY, EURTRY: TRY/EUR, GBPTRY: TRY/GBP, EURUSD: 1/EUR, GBPUSD: 1/GBP };
-}
-
-async function getYahoo(symbol) {
-  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?range=1d&interval=1m';
-  const data = await fetchJson(url);
-  const meta = data?.chart?.result?.[0]?.meta || {};
-  const value = Number(meta.regularMarketPrice || meta.previousClose || meta.chartPreviousClose);
-  if (!value) throw new Error('Yahoo veri yok: ' + symbol);
-  return value;
-}
-
-module.exports = async function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store, max-age=0');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  const assets = {};
-  const set = (key, payload) => { assets[key] = payload; };
-
-  try {
-    const fx = await getFx();
-    Object.entries(fx).forEach(([key, value]) => set(key, { value, status: 'canlı', source: 'open.er-api.com', change: 0 }));
-  } catch (error) {
-    ['USDTRY','EURTRY','GBPTRY','EURUSD','GBPUSD'].forEach(key => set(key, { value: null, status: 'veri alınamadı', source: 'open.er-api.com', error: String(error.message || error) }));
-  }
-
-  const yahooSymbols = { XAU:'GC=F', XAG:'SI=F', XU100:'XU100.IS', XU050:'XU050.IS', XU030:'XU030.IS', BTC:'BTC-USD', BRENT:'BZ=F' };
-  await Promise.all(Object.entries(yahooSymbols).map(async ([key, symbol]) => {
-    try { set(key, { value: await getYahoo(symbol), status: 'canlı/gecikmeli', source: 'Yahoo Finance • ' + symbol, change: 0 }); }
-    catch (error) { set(key, { value: null, status: 'veri alınamadı', source: 'Yahoo Finance • ' + symbol, error: String(error.message || error) }); }
-  }));
-
-  ['PBR','PHE','TLY','TZL','IIF','IRV','UZY'].forEach(code => set(code, { value: null, status: 'TEFAS bağlantısı v4.1', source: 'TEFAS motoru sıradaki sürüm', change: null }));
-  res.status(200).json({ version: 'FinScope Professional v4.0.0 Foundation', updatedAt: new Date().toISOString(), assets });
-};
+function dmy(d){return String(d.getDate()).padStart(2,"0")+"."+String(d.getMonth()+1).padStart(2,"0")+"."+d.getFullYear();}
+function num(x){if(x==null)return null; if(typeof x==="number")return isFinite(x)?x:null; const n=Number(String(x).replace(/\./g,"").replace(",",".").replace(/[^\d.-]/g,"")); return isFinite(n)?n:null;}
+async function jfetch(url,opt={}){const c=new AbortController();const t=setTimeout(()=>c.abort(),opt.timeout||10000);try{const r=await fetch(url,{...opt,signal:c.signal,headers:{"User-Agent":"Mozilla/5.0 FinScope/4.1","Accept":"application/json,text/plain,*/*",...(opt.headers||{})}});if(!r.ok)throw new Error("HTTP "+r.status);return await r.json();}finally{clearTimeout(t);}}
+async function fx(){const j=await jfetch("https://open.er-api.com/v6/latest/USD");const r=j.rates||{};const TRY=Number(r.TRY),EUR=Number(r.EUR),GBP=Number(r.GBP);if(!TRY||!EUR||!GBP)throw new Error("FX eksik");return {USDTRY:TRY,EURTRY:TRY/EUR,GBPTRY:TRY/GBP,EURUSD:1/EUR,GBPUSD:1/GBP};}
+async function yahoo(s){const j=await jfetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(s)}?range=5d&interval=1d`);const res=j?.chart?.result?.[0]||{};const m=res.meta||{};const q=res.indicators?.quote?.[0]||{};const closes=(q.close||[]).filter(v=>typeof v==="number");const last=Number(m.regularMarketPrice||closes[closes.length-1]||m.previousClose||m.chartPreviousClose);const prev=closes.length>1?closes[closes.length-2]:Number(m.previousClose||m.chartPreviousClose);if(!last)throw new Error("Yahoo veri yok");return {value:last,change:prev?((last-prev)/prev)*100:0};}
+async function tefas(code){const today=new Date(),start=new Date(Date.now()-14*86400000);const body=new URLSearchParams({fontip:"YAT",fonkod:code,bastarih:dmy(start),bittarih:dmy(today)});const j=await jfetch("https://www.tefas.gov.tr/api/DB/BindHistoryInfo",{method:"POST",timeout:12000,headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8","Origin":"https://www.tefas.gov.tr","Referer":`https://www.tefas.gov.tr/FonAnaliz.aspx?FonKod=${code}`,"X-Requested-With":"XMLHttpRequest"},body});const rows=Array.isArray(j?.data)?j.data:(Array.isArray(j)?j:[]);if(!rows.length)throw new Error("TEFAS satır yok");const sorted=rows.slice().sort((a,b)=>String(a.TARIH||a.Tarih||"").localeCompare(String(b.TARIH||b.Tarih||"")));const last=sorted[sorted.length-1],prev=sorted[sorted.length-2];const price=num(last.FIYAT??last.Fiyat??last.fiyat),pp=prev?num(prev.FIYAT??prev.Fiyat??prev.fiyat):null;if(!price)throw new Error("TEFAS fiyat okunamadı");return {value:price,change:pp?((price-pp)/pp)*100:0,date:String(last.TARIH??last.Tarih??""),history:sorted.slice(-10).map(r=>({date:String(r.TARIH??r.Tarih??""),value:num(r.FIYAT??r.Fiyat??r.fiyat)})).filter(x=>x.value)};}
+module.exports=async function(req,res){res.setHeader("Cache-Control","no-store, max-age=0");res.setHeader("Access-Control-Allow-Origin","*");const assets={};const set=(k,v)=>assets[k]=v;try{const f=await fx();Object.entries(f).forEach(([k,v])=>set(k,{value:v,change:0,status:"canlı",source:"open.er-api.com"}));}catch(e){["USDTRY","EURTRY","GBPTRY","EURUSD","GBPUSD"].forEach(k=>set(k,{value:null,change:null,status:"veri alınamadı",source:"open.er-api.com",error:String(e.message||e)}));}
+const ym={XAU:"GC=F",XAG:"SI=F",XU100:"XU100.IS",XU050:"XU050.IS",XU030:"XU030.IS",BTC:"BTC-USD",BRENT:"BZ=F"};await Promise.all(Object.entries(ym).map(async([k,s])=>{try{const q=await yahoo(s);set(k,{...q,status:"canlı/gecikmeli",source:"Yahoo Finance • "+s});}catch(e){set(k,{value:null,change:null,status:"veri alınamadı",source:"Yahoo Finance • "+s,error:String(e.message||e)});}}));
+await Promise.all(["PBR","PHE","TLY","TZL","IIF","IRV","UZY"].map(async code=>{try{const f=await tefas(code);set(code,{...f,status:"canlı/gecikmeli",source:"TEFAS"});}catch(e){set(code,{value:null,change:null,status:"TEFAS veri alınamadı",source:"TEFAS",error:String(e.message||e)});}}));
+res.status(200).json({version:"FinScope Professional v4.1.0 TEFAS Engine",updatedAt:new Date().toISOString(),assets});}

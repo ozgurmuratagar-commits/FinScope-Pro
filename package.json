@@ -1,6 +1,6 @@
 {
-  "name": "finscope-professional-v400-foundation",
-  "version": "4.0.0",
+  "name": "finscope-professional-v410-tefas-engine",
+  "version": "4.1.0",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed",
