@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v420-tefas-diagnostic",
-  "version": "4.2.0",
+  "name": "finscope-v421-tefas-import-engine",
+  "version": "4.2.1",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"

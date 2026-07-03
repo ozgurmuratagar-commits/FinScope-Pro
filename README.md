@@ -1,3 +1,3 @@
-# FinScope Professional v4.2.0 TEFAS Diagnostic
+# FinScope Professional v4.2.1 TEFAS Import Engine
 
-TEFAS kaynak teşhisi ve hata raporu sürümü.
+Format: Fon,Fiyat,Günlük %,Tarih
