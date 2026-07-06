@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v510-core-funds",
-  "version": "5.1.0",
+  "name": "finscope-v520-data-provider",
+  "version": "5.2.0",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"
