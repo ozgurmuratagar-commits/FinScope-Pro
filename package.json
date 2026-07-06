@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v521-real-fund-provider",
-  "version": "5.2.1",
+  "name": "finscope-v522-independent-provider",
+  "version": "5.2.2",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"
