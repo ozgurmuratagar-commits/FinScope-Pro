@@ -1,3 +1,3 @@
-# FinScope Professional v5.0 Alpha Intelligence Engine
+# FinScope Professional v5.1 Core Funds
 
-TEFAS import, hisse katkı ve tahmin motoru iskeleti.
+PBR, PHE ve TLY odaklı gerçek veri import modeli. Örnek/fake fon verisi gösterilmez.
