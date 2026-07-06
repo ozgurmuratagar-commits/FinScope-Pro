@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v520-data-provider",
-  "version": "5.2.0",
+  "name": "finscope-v521-real-fund-provider",
+  "version": "5.2.1",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"
