@@ -3,30 +3,30 @@
   "lastUpdated": "YYYY-MM-DD HH:mm",
   "funds": {
     "PBR": {
-      "price": 0,
-      "dailyChange": 0,
-      "date": "GG.AA.YYYY",
+      "price": 1.2345,
+      "dailyChange": 0.42,
+      "date": "07.07.2026",
       "source": "TEFAS",
       "holdings": [
         {
-          "symbol": "HISSE",
-          "name": "Hisse Adı",
-          "weight": 0,
-          "dailyChange": 0
+          "symbol": "ASELS",
+          "name": "ASELSAN",
+          "weight": 8.5,
+          "dailyChange": 1.2
         }
       ]
     },
     "PHE": {
-      "price": 0,
-      "dailyChange": 0,
-      "date": "GG.AA.YYYY",
+      "price": 2.3456,
+      "dailyChange": 0.31,
+      "date": "07.07.2026",
       "source": "TEFAS",
       "holdings": []
     },
     "TLY": {
-      "price": 0,
-      "dailyChange": 0,
-      "date": "GG.AA.YYYY",
+      "price": 3.4567,
+      "dailyChange": -0.12,
+      "date": "07.07.2026",
       "source": "TEFAS",
       "holdings": []
     }

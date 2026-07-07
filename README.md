@@ -1,3 +1,5 @@
-# FinScope Professional v6.0 Data Vault
+# FinScope Professional v6.1 Data Builder
 
-Scrape ve API anahtarı yok. Gerçek PBR/PHE/TLY verileri `data/funds.json` dosyasından okunur. `data/sample-funds.json` format örneğidir.
+v6.0’daki boş fon değerlerinin 0 görünmesi sorununu düzeltir ve Data Builder ekranı ekler.
+
+Gerçek veriyi Data Builder ekranına yapıştır, `funds.json` indir, GitHub’da `data/funds.json` dosyasının yerine yükle.
