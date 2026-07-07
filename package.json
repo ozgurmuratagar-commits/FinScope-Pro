@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v522-independent-provider",
-  "version": "5.2.2",
+  "name": "finscope-v523-scrape-provider",
+  "version": "5.2.3",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"

@@ -1,3 +1,3 @@
-# FinScope Professional v5.2.2 Independent Provider
+# FinScope Professional v5.2.3 Scrape Provider
 
-Fonoloji bağımlılığı kaldırıldı. API anahtarı gerekmez. Temsili/fake veri yoktur.
+PBR/PHE/TLY için Marbaş, Fonaly ve Fonbul web kaynaklarından fiyat okumayı dener. Temsili veri yoktur.
