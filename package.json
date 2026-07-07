@@ -1,9 +1,1 @@
-{
-  "name": "finscope-v610-data-builder",
-  "version": "6.1.0",
-  "private": true,
-  "scripts": {
-    "build": "echo no-build-needed"
-  },
-  "dependencies": {}
-}
+{"name":"finscope-v620-data-builder-pro","version":"6.2.0","private":true,"scripts":{"build":"echo no-build-needed"},"dependencies":{}}

@@ -2,26 +2,8 @@
   "version": "FinScope Data Vault v1",
   "lastUpdated": "",
   "funds": {
-    "PBR": {
-      "price": null,
-      "dailyChange": null,
-      "date": "",
-      "source": "TEFAS",
-      "holdings": []
-    },
-    "PHE": {
-      "price": null,
-      "dailyChange": null,
-      "date": "",
-      "source": "TEFAS",
-      "holdings": []
-    },
-    "TLY": {
-      "price": null,
-      "dailyChange": null,
-      "date": "",
-      "source": "TEFAS",
-      "holdings": []
-    }
+    "PBR": {"price": null, "dailyChange": null, "date": "", "source": "TEFAS", "holdings": []},
+    "PHE": {"price": null, "dailyChange": null, "date": "", "source": "TEFAS", "holdings": []},
+    "TLY": {"price": null, "dailyChange": null, "date": "", "source": "TEFAS", "holdings": []}
   }
 }

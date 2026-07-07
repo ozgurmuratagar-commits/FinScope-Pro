@@ -1,5 +1,5 @@
-# FinScope Professional v6.1 Data Builder
+# FinScope Professional v6.2 Data Builder Pro
 
-v6.0’daki boş fon değerlerinin 0 görünmesi sorununu düzeltir ve Data Builder ekranı ekler.
+Data Builder Pro ekranı ile kolay formatta fon ve hisse verisi girip funds.json indirebilirsin.
 
-Gerçek veriyi Data Builder ekranına yapıştır, `funds.json` indir, GitHub’da `data/funds.json` dosyasının yerine yükle.
+Yükleme: api, data, index.html, package.json, vercel.json, README.md ve .gitignore dosyalarını GitHub'a yükle.
