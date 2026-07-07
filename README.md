@@ -1,3 +1,3 @@
-# FinScope Professional v5.2.3 Scrape Provider
+# FinScope Professional v6.0 Data Vault
 
-PBR/PHE/TLY için Marbaş, Fonaly ve Fonbul web kaynaklarından fiyat okumayı dener. Temsili veri yoktur.
+Scrape ve API anahtarı yok. Gerçek PBR/PHE/TLY verileri `data/funds.json` dosyasından okunur. `data/sample-funds.json` format örneğidir.

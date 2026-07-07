@@ -1,0 +1,34 @@
+{
+  "version": "FinScope Data Vault v1",
+  "lastUpdated": "YYYY-MM-DD HH:mm",
+  "funds": {
+    "PBR": {
+      "price": 0,
+      "dailyChange": 0,
+      "date": "GG.AA.YYYY",
+      "source": "TEFAS",
+      "holdings": [
+        {
+          "symbol": "HISSE",
+          "name": "Hisse Adı",
+          "weight": 0,
+          "dailyChange": 0
+        }
+      ]
+    },
+    "PHE": {
+      "price": 0,
+      "dailyChange": 0,
+      "date": "GG.AA.YYYY",
+      "source": "TEFAS",
+      "holdings": []
+    },
+    "TLY": {
+      "price": 0,
+      "dailyChange": 0,
+      "date": "GG.AA.YYYY",
+      "source": "TEFAS",
+      "holdings": []
+    }
+  }
+}

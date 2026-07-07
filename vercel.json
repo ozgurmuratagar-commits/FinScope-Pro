@@ -8,12 +8,20 @@
     {
       "src": "index.html",
       "use": "@vercel/static"
+    },
+    {
+      "src": "data/funds.json",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     {
       "src": "/api/market",
       "dest": "/api/market.js"
+    },
+    {
+      "src": "/data/funds.json",
+      "dest": "/data/funds.json"
     },
     {
       "src": "/(.*)",

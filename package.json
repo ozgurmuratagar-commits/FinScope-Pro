@@ -1,6 +1,6 @@
 {
-  "name": "finscope-v523-scrape-provider",
-  "version": "5.2.3",
+  "name": "finscope-v600-data-vault",
+  "version": "6.0.0",
   "private": true,
   "scripts": {
     "build": "echo no-build-needed"
