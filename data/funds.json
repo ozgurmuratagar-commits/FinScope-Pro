@@ -1,27 +1,120 @@
 {
   "version": "FinScope Data Vault v1",
-  "lastUpdated": "07.07.2026 16:54:28",
+  "lastUpdated": "08.07.2026 09:21:16",
   "funds": {
     "PBR": {
-      "price": 1.9476,
-      "dailyChange": 0.42,
-      "date": "07.07.2026",
+      "price": 5.239561,
+      "dailyChange": 0.14,
+      "date": "08.07.2026",
       "source": "TEFAS",
-      "holdings": []
+      "holdings": [
+        {
+          "symbol": "GUNDG",
+          "name": "GUNDG",
+          "weight": 12.4,
+          "dailyChange": 8.65
+        },
+        {
+          "symbol": "KTLEV",
+          "name": "KTLEV",
+          "weight": 10.68,
+          "dailyChange": 1.23
+        },
+        {
+          "symbol": "ODINE",
+          "name": "ODINE",
+          "weight": 10.28,
+          "dailyChange": 1.6
+        },
+        {
+          "symbol": "HEDEF",
+          "name": "HEDEF",
+          "weight": 6.97,
+          "dailyChange": 0.36
+        },
+        {
+          "symbol": "PASEU",
+          "name": "PASEU",
+          "weight": 4.95,
+          "dailyChange": 0.44
+        }
+      ]
     },
     "PHE": {
-      "price": 3.1685,
-      "dailyChange": 0.18,
-      "date": "07.07.2026",
+      "price": 3.771043,
+      "dailyChange": 0.51,
+      "date": "08.07.2026",
       "source": "TEFAS",
-      "holdings": []
+      "holdings": [
+        {
+          "symbol": "GUNDG",
+          "name": "GUNDG",
+          "weight": 12.38,
+          "dailyChange": 7.72
+        },
+        {
+          "symbol": "KTLEV",
+          "name": "KTLEV",
+          "weight": 10.7,
+          "dailyChange": 1.07
+        },
+        {
+          "symbol": "ODINE",
+          "name": "ODINE",
+          "weight": 9.17,
+          "dailyChange": 1.36
+        },
+        {
+          "symbol": "PASEU",
+          "name": "PASEU",
+          "weight": 7.79,
+          "dailyChange": 4.48
+        },
+        {
+          "symbol": "HEDEF",
+          "name": "HEDEF",
+          "weight": 4.54,
+          "dailyChange": -0.91
+        }
+      ]
     },
     "TLY": {
-      "price": 2.1128,
-      "dailyChange": -0.09,
-      "date": "07.07.2026",
+      "price": 7235.179156,
+      "dailyChange": 1.07,
+      "date": "08.07.2026",
       "source": "TEFAS",
-      "holdings": []
+      "holdings": [
+        {
+          "symbol": "DSTKF",
+          "name": "DSTKF",
+          "weight": 22.85,
+          "dailyChange": 5.14
+        },
+        {
+          "symbol": "OZATD",
+          "name": "OZATD",
+          "weight": 14.3,
+          "dailyChange": -2.86
+        },
+        {
+          "symbol": "PEKGY",
+          "name": "PEKGY",
+          "weight": 7.73,
+          "dailyChange": -2.16
+        },
+        {
+          "symbol": "TEHOL",
+          "name": "TEHOL",
+          "weight": 7.14,
+          "dailyChange": 1.64
+        },
+        {
+          "symbol": "TERA",
+          "name": "TERA",
+          "weight": 6.63,
+          "dailyChange": -4.87
+        }
+      ]
     }
   }
 }
