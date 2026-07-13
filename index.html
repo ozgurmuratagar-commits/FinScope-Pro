@@ -549,4 +549,585 @@ function closeModal(){modal.classList.remove('show')}document.querySelectorAll('
   }, 100);
 })();
 </script>
+
+<script>
+(function () {
+  document.title = "FinScope Professional v6.4 Prediction Engine Pro + DXY";
+
+  const ver = document.querySelector(".ver");
+  if (ver) ver.textContent = "Professional v6.4 Prediction Engine Pro + DXY";
+
+  const repo = document.querySelector(".repo");
+  if (repo) {
+    repo.innerHTML =
+      "DXY eklendi<br>Tum menkul degerler<br>Pozitif / negatif katki";
+  }
+
+  if (Array.isArray(assets) && !assets.some(a => a.symbol === "DXY")) {
+    const insertIndex = assets.findIndex(a => a.symbol === "XAU");
+
+    const dxyAsset = {
+      symbol: "DXY",
+      name: "Dolar Endeksi",
+      cat: "Döviz",
+      unit: "",
+      value: null,
+      status: "veri bekleniyor",
+      source: "Yahoo Finance",
+      change: null,
+      date: "",
+      holdings: []
+    };
+
+    if (insertIndex >= 0) assets.splice(insertIndex, 0, dxyAsset);
+    else assets.push(dxyAsset);
+  }
+
+  const VALID_TYPES = [
+    "HISSE",
+    "REPO",
+    "NAKIT",
+    "TAHVIL",
+    "DOVIZ",
+    "ALTIN",
+    "FON",
+    "DIGER"
+  ];
+
+  function num(v) {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(String(v).trim().replace("%", "").replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function assetType(v) {
+    const t = String(v || "")
+      .toUpperCase()
+      .replace("İ", "I");
+
+    if (t === "STOCK") return "HISSE";
+    if (t === "CASH") return "NAKIT";
+    if (t === "BOND") return "TAHVIL";
+    if (t === "FX") return "DOVIZ";
+
+    return VALID_TYPES.includes(t) ? t : "HISSE";
+  }
+
+  function splitLine(line) {
+    if (line.includes(";")) {
+      return line.split(";").map(x => x.trim()).filter(Boolean);
+    }
+
+    return line.trim().split(/[\s\t]+/).filter(Boolean);
+  }
+
+  function analyzeFund(asset) {
+    const holdings = Array.isArray(asset.holdings) ? asset.holdings : [];
+
+    let positive = 0;
+    let negative = 0;
+    let net = 0;
+    let activeWeight = 0;
+    let missingWeight = 0;
+
+    const typeWeights = {};
+    const items = [];
+
+    for (const h of holdings) {
+      const weight = num(h.weight);
+      const dailyChange = num(h.dailyChange);
+
+      if (weight === null || dailyChange === null) continue;
+
+      const type = assetType(h.type || h.assetType || "HISSE");
+      const contribution = (weight * dailyChange) / 100;
+
+      if (h.auto || type === "KAPSANMAYAN") {
+        missingWeight += weight;
+        typeWeights["KAPSANMAYAN"] =
+          (typeWeights["KAPSANMAYAN"] || 0) + weight;
+        continue;
+      }
+
+      activeWeight += weight;
+      net += contribution;
+
+      if (contribution >= 0) positive += contribution;
+      else negative += contribution;
+
+      typeWeights[type] = (typeWeights[type] || 0) + weight;
+
+      items.push({
+        type,
+        symbol: String(h.symbol || h.name || "").toUpperCase(),
+        name: h.name || h.symbol || "",
+        weight,
+        dailyChange,
+        contribution
+      });
+    }
+
+    if (missingWeight <= 0.01) {
+      missingWeight = Math.max(0, 100 - activeWeight);
+      if (missingWeight > 0.01) {
+        typeWeights["KAPSANMAYAN"] = missingWeight;
+      }
+    }
+
+    const actual = num(asset.change);
+    const error = actual === null ? null : net - actual;
+    const absError = error === null ? null : Math.abs(error);
+
+    let quality = "—";
+
+    if (absError !== null) {
+      if (absError <= 0.10) quality = "Çok iyi";
+      else if (absError <= 0.25) quality = "İyi";
+      else if (absError <= 0.50) quality = "Orta";
+      else quality = "Zayıf";
+    }
+
+    const confidence = Math.max(
+      5,
+      Math.min(
+        95,
+        Math.round(20 + activeWeight * 0.72 - (absError === null ? 0 : absError * 12))
+      )
+    );
+
+    return {
+      positive,
+      negative,
+      net,
+      activeWeight,
+      missingWeight,
+      typeWeights,
+      items,
+      actual,
+      error,
+      absError,
+      quality,
+      confidence,
+      topPositive: items
+        .filter(x => x.contribution > 0)
+        .sort((a, b) => b.contribution - a.contribution)
+        .slice(0, 5),
+      topNegative: items
+        .filter(x => x.contribution < 0)
+        .sort((a, b) => a.contribution - b.contribution)
+        .slice(0, 5)
+    };
+  }
+
+  window.buildJson = function () {
+    const out = {
+      version: "FinScope Data Vault v1",
+      lastUpdated: new Date().toLocaleString("tr-TR"),
+      funds: {
+        PBR: {
+          price: null,
+          dailyChange: null,
+          date: "",
+          source: "TEFAS",
+          holdings: []
+        },
+        PHE: {
+          price: null,
+          dailyChange: null,
+          date: "",
+          source: "TEFAS",
+          holdings: []
+        },
+        TLY: {
+          price: null,
+          dailyChange: null,
+          date: "",
+          source: "TEFAS",
+          holdings: []
+        }
+      }
+    };
+
+    let fundRows = 0;
+    let holdingRows = 0;
+
+    String(fundInput.value || "")
+      .split(/\r?\n/)
+      .map(x => x.trim())
+      .filter(Boolean)
+      .forEach(line => {
+        const p = splitLine(line);
+        const code = String(p[0] || "").toUpperCase();
+
+        if (!out.funds[code]) return;
+
+        out.funds[code].price = num(p[1]);
+        out.funds[code].dailyChange = num(p[2]);
+        out.funds[code].date = p[3] || "";
+        out.funds[code].source = "TEFAS";
+
+        fundRows++;
+      });
+
+    String(holdInput.value || "")
+      .split(/\r?\n/)
+      .map(x => x.trim())
+      .filter(Boolean)
+      .forEach(line => {
+        const p = splitLine(line);
+        const fund = String(p[0] || "").toUpperCase();
+
+        if (!out.funds[fund]) return;
+
+        let type = "HISSE";
+        let symbol = "";
+        let weight = null;
+        let dailyChange = null;
+
+        if (VALID_TYPES.includes(assetType(p[1])) && p.length >= 5) {
+          type = assetType(p[1]);
+          symbol = String(p[2] || "").toUpperCase();
+          weight = num(p[3]);
+          dailyChange = num(p[4]);
+        } else {
+          type = "HISSE";
+          symbol = String(p[1] || "").toUpperCase();
+          weight = num(p[2]);
+          dailyChange = num(p[3]);
+        }
+
+        out.funds[fund].holdings.push({
+          type,
+          symbol,
+          name: symbol,
+          weight,
+          dailyChange
+        });
+
+        holdingRows++;
+      });
+
+    Object.values(out.funds).forEach(fund => {
+      const activeWeight = fund.holdings.reduce((sum, h) => {
+        const w = num(h.weight);
+        return sum + (w || 0);
+      }, 0);
+
+      const missing = Math.max(0, 100 - activeWeight);
+
+      if (missing > 0.01) {
+        fund.holdings.push({
+          type: "KAPSANMAYAN",
+          symbol: "KAPSANMAYAN",
+          name: "Kapsanmayan Portföy",
+          weight: missing,
+          dailyChange: 0,
+          auto: true
+        });
+      }
+    });
+
+    built = out;
+    builderOutput.value = JSON.stringify(out, null, 2);
+
+    if (typeof builderSummary !== "undefined") {
+      builderSummary.innerHTML =
+        fundRows +
+        " fon satırı, " +
+        holdingRows +
+        " menkul değer satırı işlendi. Eksik ağırlıklar KAPSANMAYAN olarak 0 değişimle tamamlandı.";
+    }
+  };
+
+  window.renderPred = function () {
+    const rows = assets
+      .filter(a => a.cat === "Fonlar")
+      .map(a => [a, analyzeFund(a)])
+      .filter(x => x[1].activeWeight > 0);
+
+    if (!rows.length) {
+      predTable.innerHTML = "Holdings verisi girilince tahmin oluşacak.";
+      summaryBox.innerHTML = "Data Vault holdings bekliyor.";
+      return;
+    }
+
+    predTable.innerHTML =
+      `<table class="table">
+        <tr>
+          <th>Fon</th>
+          <th>Gerçek</th>
+          <th>Tahmin</th>
+          <th>Sapma</th>
+          <th>Pozitif</th>
+          <th>Negatif</th>
+          <th>Aktif Kapsam</th>
+          <th>Eksik</th>
+          <th>Güven</th>
+          <th>Başarı</th>
+        </tr>` +
+      rows
+        .map(([asset, p]) => {
+          return `<tr>
+            <td>${asset.symbol}</td>
+            <td>${pct(asset)}</td>
+            <td class="${p.net >= 0 ? "ok" : "bad"}">
+              ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(Math.abs(p.net))}%
+            </td>
+            <td class="${
+              p.error === null ? "wait" : Math.abs(p.error) <= 0.25 ? "ok" : "bad"
+            }">
+              ${p.error === null ? "—" : fmt2.format(p.error) + "%"}
+            </td>
+            <td class="ok">+${fmt2.format(p.positive)}%</td>
+            <td class="bad">${fmt2.format(p.negative)}%</td>
+            <td>%${fmt2.format(p.activeWeight)}</td>
+            <td>%${fmt2.format(p.missingWeight)}</td>
+            <td>${p.confidence}/100</td>
+            <td>${p.quality}</td>
+          </tr>`;
+        })
+        .join("") +
+      `</table>`;
+
+    summaryBox.innerHTML = rows
+      .map(([asset, p]) => {
+        return `<div>
+          <b>${asset.symbol}</b>:
+          <span class="${p.net >= 0 ? "ok" : "bad"}">
+            ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(Math.abs(p.net))}%
+          </span>
+          <span class="small">
+            Kapsam %${fmt2.format(p.activeWeight)}
+            • Eksik %${fmt2.format(p.missingWeight)}
+            • Güven ${p.confidence}/100
+          </span>
+        </div>`;
+      })
+      .join("");
+  };
+
+  function distributionHtml(typeWeights) {
+    const rows = Object.entries(typeWeights).sort((a, b) => b[1] - a[1]);
+
+    if (!rows.length) return "";
+
+    return (
+      "<h3>Varlık Tipi Dağılımı</h3>" +
+      rows
+        .map(([type, weight]) => {
+          return `<div class="small">${type} %${fmt2.format(weight)}</div>
+          <div style="height:8px;border-radius:999px;background:rgba(255,255,255,.18);overflow:hidden;margin-top:6px;margin-bottom:8px">
+            <span style="display:block;height:100%;width:${Math.max(
+              2,
+              Math.min(100, weight)
+            )}%;background:rgba(255,255,255,.65)"></span>
+          </div>`;
+        })
+        .join("")
+    );
+  }
+
+  function contributionTable(title, rows) {
+    if (!rows.length) return "";
+
+    return (
+      `<h3>${title}</h3>
+      <table class="table">
+        <tr>
+          <th>Tip</th>
+          <th>Menkul</th>
+          <th>Ağırlık</th>
+          <th>Günlük %</th>
+          <th>Katkı</th>
+        </tr>` +
+      rows
+        .map(x => {
+          return `<tr>
+            <td>${x.type}</td>
+            <td>${x.symbol}</td>
+            <td>%${fmt2.format(x.weight)}</td>
+            <td>${fmt2.format(x.dailyChange)}%</td>
+            <td class="${x.contribution >= 0 ? "ok" : "bad"}">
+              ${fmt2.format(x.contribution)}%
+            </td>
+          </tr>`;
+        })
+        .join("") +
+      `</table>`
+    );
+  }
+
+  function allItemsTable(rows) {
+    if (!rows.length) return "";
+
+    const sorted = rows
+      .slice()
+      .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
+
+    return (
+      `<h3>Tüm Menkul Değerler</h3>
+      <table class="table">
+        <tr>
+          <th>Tip</th>
+          <th>Menkul</th>
+          <th>Ağırlık</th>
+          <th>Günlük %</th>
+          <th>Katkı</th>
+        </tr>` +
+      sorted
+        .map(x => {
+          return `<tr>
+            <td>${x.type}</td>
+            <td>${x.symbol}</td>
+            <td>%${fmt2.format(x.weight)}</td>
+            <td>${fmt2.format(x.dailyChange)}%</td>
+            <td class="${x.contribution >= 0 ? "ok" : "bad"}">
+              ${fmt2.format(x.contribution)}%
+            </td>
+          </tr>`;
+        })
+        .join("") +
+      `</table>`
+    );
+  }
+
+  window.openDetail = function (sym) {
+    const asset = assets.find(x => x.symbol === sym);
+    const p = analyzeFund(asset);
+
+    mTitle.textContent = asset.name + " Detay";
+
+    mGrid.innerHTML = [
+      ["Kategori", asset.cat],
+      ["Durum", asset.status],
+      ["Son değer", val(asset)],
+      ["Gerçek günlük", pct(asset)],
+      ["Tahmin", p.activeWeight ? fmt2.format(p.net) + "%" : "—"],
+      ["Sapma", p.error === null ? "—" : fmt2.format(p.error) + "%"],
+      ["Pozitif katkı", "+" + fmt2.format(p.positive) + "%"],
+      ["Negatif katkı", fmt2.format(p.negative) + "%"],
+      ["Aktif kapsam", "%" + fmt2.format(p.activeWeight)],
+      ["Eksik/Kapsanmayan", "%" + fmt2.format(p.missingWeight)],
+      ["Güven", p.activeWeight ? p.confidence + "/100" : "—"],
+      ["Başarı", p.quality]
+    ]
+      .map(([k, v]) => {
+        return `<div class="mini">
+          <div class="small">${k}</div>
+          <b>${v}</b>
+        </div>`;
+      })
+      .join("");
+
+    mExtra.innerHTML =
+      distributionHtml(p.typeWeights) +
+      contributionTable("En Pozitif Katkılar", p.topPositive) +
+      contributionTable("En Negatif Katkılar", p.topNegative) +
+      allItemsTable(p.items);
+
+    mNote.textContent =
+      "v6.4: Tahmin, girilen tüm menkul değerlerin ağırlık × günlük değişim toplamıdır. Yatırım tavsiyesi değildir.";
+
+    modal.classList.add("show");
+  };
+
+  window.render = function () {
+    renderTabs();
+
+    cards.innerHTML = assets
+      .filter(a => currentCat === "Tümü" || a.cat === currentCat)
+      .map(a => {
+        const p = a.cat === "Fonlar" ? analyzeFund(a) : null;
+        const predictionLine =
+          p && p.activeWeight > 0
+            ? `<div class="${p.net >= 0 ? "ok" : "bad"}">
+                Tahmin: ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(
+                Math.abs(p.net)
+              )}%
+              </div>
+              <div class="small">
+                Aktif kapsam %${fmt2.format(p.activeWeight)}
+              </div>`
+            : "";
+
+        return `<div class="card" onclick="openDetail('${a.symbol}')">
+          <div class="label">${a.name}</div>
+          <div class="value">${val(a)}</div>
+          <div class="${chgCls(a)}">${pct(a)}</div>
+          ${predictionLine}
+          <div class="${cls(a.status)}">${a.status}</div>
+          <div class="src">${a.source || "kaynak bekleniyor"} ${
+          a.date ? "• " + a.date : ""
+        }</div>
+        </div>`;
+      })
+      .join("");
+
+    fundList.innerHTML = assets
+      .filter(a => a.cat === "Fonlar")
+      .map(a => {
+        const p = analyzeFund(a);
+        return `<div class="row">
+          <b>${a.name}</b>
+          <span>
+            ${val(a)}
+            • ${pct(a)}
+            • Aktif kapsam %${fmt2.format(p.activeWeight)}
+            • Eksik %${fmt2.format(p.missingWeight)}
+            • Tahmin ${fmt2.format(p.net)}%
+          </span>
+          <span class="${cls(a.status)}">${a.status}</span>
+        </div>`;
+      })
+      .join("");
+
+    const live = assets.filter(
+      a => a.status.includes("canlı") || a.status.includes("vault gerçek")
+    ).length;
+
+    const fon = assets.filter(
+      a => a.cat === "Fonlar" && a.status.includes("vault gerçek")
+    ).length;
+
+    meta.innerHTML =
+      `Son güncelleme: ${new Date().toLocaleString("tr-TR")}` +
+      `<br>Canlı/vault: ${live}/${assets.length}` +
+      `<br>Fon: ${fon}/3`;
+
+    aiText.textContent = fon
+      ? "Prediction Engine Pro aktif. Pozitif/negatif katkı, sapma, kapsam ve güven skoru hesaplanıyor."
+      : "Data Builder Pro ile funds.json üretip GitHub’da data/funds.json yerine yükleyince fonlar dolacak.";
+
+    badges.innerHTML = [
+      `Fon: ${fon}/3`,
+      "Sürüm: v6.4",
+      "DXY + Prediction Pro"
+    ]
+      .map(x => `<span class="badge">${x}</span>`)
+      .join("");
+
+    vaultStatus.textContent = JSON.stringify(
+      {
+        loaded: Boolean(vault.version),
+        lastUpdated: vault.lastUpdated || "",
+        funds: Object.keys(vault.funds || {})
+      },
+      null,
+      2
+    );
+
+    renderPred();
+  };
+
+  setTimeout(() => {
+    try {
+      render();
+      loadAll();
+    } catch (e) {
+      console.error("FinScope v6.4 patch error:", e);
+    }
+  }, 100);
+})();
+</script>
+
 </body></html>
