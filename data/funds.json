@@ -1,177 +1,363 @@
 {
   "version": "FinScope Data Vault v1",
-  "lastUpdated": "08.07.2026 09:32:08",
+  "lastUpdated": "13.07.2026 15:43:52",
   "funds": {
     "PBR": {
-      "price": 5.239561,
+      "price": 5.2396,
       "dailyChange": 0.14,
       "date": "08.07.2026",
       "source": "TEFAS",
       "holdings": [
         {
-          "symbol": "ASELS",
-          "name": "ASELS",
-          "weight": 8.5,
-          "dailyChange": 1.2
+          "type": "HISSE",
+          "symbol": "ODINE",
+          "name": "ODINE",
+          "weight": 9.65,
+          "dailyChange": -0.63
         },
         {
-          "symbol": "THYAO",
-          "name": "THYAO",
-          "weight": 7.4,
-          "dailyChange": -0.3
+          "type": "HISSE",
+          "symbol": "KTLEV",
+          "name": "KTLEV",
+          "weight": 9.29,
+          "dailyChange": -1.39
         },
         {
-          "symbol": "GARAN",
-          "name": "GARAN",
-          "weight": 6.2,
-          "dailyChange": 0.85
+          "type": "HISSE",
+          "symbol": "GUNDG",
+          "name": "GUNDG",
+          "weight": 9.24,
+          "dailyChange": -3.16
         },
         {
-          "symbol": "AKBNK",
-          "name": "AKBNK",
-          "weight": 5.1,
-          "dailyChange": 0.4
+          "type": "HISSE",
+          "symbol": "BALSU",
+          "name": "BALSU",
+          "weight": 6.09,
+          "dailyChange": 6.09
         },
         {
-          "symbol": "KCHOL",
-          "name": "KCHOL",
-          "weight": 4.8,
-          "dailyChange": -0.15
+          "type": "HISSE",
+          "symbol": "HEDEF",
+          "name": "HEDEF",
+          "weight": 4.73,
+          "dailyChange": -2.24
         },
         {
-          "symbol": "BIMAS",
-          "name": "BIMAS",
-          "weight": 4.2,
-          "dailyChange": 0.55
-        },
-        {
-          "symbol": "EREGL",
-          "name": "EREGL",
-          "weight": 3.7,
-          "dailyChange": -0.22
-        },
-        {
-          "symbol": "TUPRS",
-          "name": "TUPRS",
-          "weight": 3.4,
-          "dailyChange": 0.18
-        },
-        {
-          "symbol": "REPO",
-          "name": "REPO",
-          "weight": 6,
+          "type": "HISSE",
+          "symbol": "PASEU",
+          "name": "PASEU",
+          "weight": 4.52,
           "dailyChange": 0
         },
         {
-          "symbol": "NAKIT",
-          "name": "NAKIT",
-          "weight": 3.5,
+          "type": "HISSE",
+          "symbol": "TRALT",
+          "name": "TRALT",
+          "weight": 3.4,
+          "dailyChange": 1.21
+        },
+        {
+          "type": "HISSE",
+          "symbol": "THYAO",
+          "name": "THYAO",
+          "weight": 2.73,
+          "dailyChange": 0
+        },
+        {
+          "type": "HISSE",
+          "symbol": "ANELE",
+          "name": "ANELE",
+          "weight": 2.3,
+          "dailyChange": 2.3
+        },
+        {
+          "type": "HISSE",
+          "symbol": "TCELL",
+          "name": "TCELL",
+          "weight": 1.67,
+          "dailyChange": 0.43
+        },
+        {
+          "type": "HISSE",
+          "symbol": "TATEN",
+          "name": "TATEN",
+          "weight": 1.58,
+          "dailyChange": -2.65
+        },
+        {
+          "type": "HISSE",
+          "symbol": "DSTKF",
+          "name": "DSTKF",
+          "weight": 1.57,
+          "dailyChange": 0
+        },
+        {
+          "type": "HISSE",
+          "symbol": "AKBNK",
+          "name": "AKBNK",
+          "weight": 1.13,
+          "dailyChange": -2.49
+        },
+        {
+          "type": "HISSE",
+          "symbol": "YKBNK",
+          "name": "YKBNK",
+          "weight": 1.03,
+          "dailyChange": -2.22
+        },
+        {
+          "type": "HISSE",
+          "symbol": "MGROS",
+          "name": "MGROS",
+          "weight": 0.98,
+          "dailyChange": 0
+        },
+        {
+          "type": "HISSE",
+          "symbol": "SKBNK",
+          "name": "SKBNK",
+          "weight": 0.87,
+          "dailyChange": 0
+        },
+        {
+          "type": "HISSE",
+          "symbol": "DAPGM",
+          "name": "DAPGM",
+          "weight": 0.59,
+          "dailyChange": 0
+        },
+        {
+          "type": "HISSE",
+          "symbol": "HISSE_KALAN",
+          "name": "HISSE_KALAN",
+          "weight": 5.96,
+          "dailyChange": 1.81
+        },
+        {
+          "type": "FON",
+          "symbol": "FON_KATILIM",
+          "name": "FON_KATILIM",
+          "weight": 20.13,
+          "dailyChange": 0
+        },
+        {
+          "type": "REPO",
+          "symbol": "BIST_PARA",
+          "name": "BIST_PARA",
+          "weight": 8.37,
+          "dailyChange": 0
+        },
+        {
+          "type": "NAKIT",
+          "symbol": "VIOP_NAKIT",
+          "name": "VIOP_NAKIT",
+          "weight": 2.85,
+          "dailyChange": 0
+        },
+        {
+          "type": "TAHVIL",
+          "symbol": "VDMK",
+          "name": "VDMK",
+          "weight": 0.94,
+          "dailyChange": 0
+        },
+        {
+          "type": "DIGER",
+          "symbol": "KALAN",
+          "name": "KALAN",
+          "weight": 0.38,
           "dailyChange": 0
         }
       ]
     },
     "PHE": {
-      "price": 3.771043,
+      "price": 3.771,
       "dailyChange": 0.51,
       "date": "08.07.2026",
       "source": "TEFAS",
       "holdings": [
         {
+          "type": "HISSE",
+          "symbol": "KTLEV",
+          "name": "KTLEV",
+          "weight": 9.6,
+          "dailyChange": -1.1
+        },
+        {
+          "type": "HISSE",
+          "symbol": "ODINE",
+          "name": "ODINE",
+          "weight": 9.48,
+          "dailyChange": 0.31
+        },
+        {
+          "type": "HISSE",
+          "symbol": "GUNDG",
+          "name": "GUNDG",
+          "weight": 8.91,
+          "dailyChange": -3.47
+        },
+        {
+          "type": "HISSE",
+          "symbol": "PASEU",
+          "name": "PASEU",
+          "weight": 6.64,
+          "dailyChange": -1.15
+        },
+        {
+          "type": "HISSE",
+          "symbol": "HEDEF",
+          "name": "HEDEF",
+          "weight": 5.11,
+          "dailyChange": 0.57
+        },
+        {
+          "type": "HISSE",
           "symbol": "AKBNK",
           "name": "AKBNK",
-          "weight": 8.1,
-          "dailyChange": 0.4
+          "weight": 4.05,
+          "dailyChange": 0.88
         },
         {
-          "symbol": "GARAN",
-          "name": "GARAN",
-          "weight": 7.9,
-          "dailyChange": 0.85
-        },
-        {
+          "type": "HISSE",
           "symbol": "YKBNK",
           "name": "YKBNK",
-          "weight": 6.8,
-          "dailyChange": 0.65
+          "weight": 3.62,
+          "dailyChange": 0.64
         },
         {
+          "type": "HISSE",
+          "symbol": "BALSU",
+          "name": "BALSU",
+          "weight": 2.88,
+          "dailyChange": 2.88
+        },
+        {
+          "type": "HISSE",
           "symbol": "ISCTR",
           "name": "ISCTR",
-          "weight": 6.2,
-          "dailyChange": 0.25
+          "weight": 2.64,
+          "dailyChange": 0.83
         },
         {
-          "symbol": "KCHOL",
-          "name": "KCHOL",
-          "weight": 5.4,
-          "dailyChange": -0.15
+          "type": "HISSE",
+          "symbol": "ANELE",
+          "name": "ANELE",
+          "weight": 2.2,
+          "dailyChange": 2.2
         },
         {
-          "symbol": "ASELS",
-          "name": "ASELS",
-          "weight": 4.9,
-          "dailyChange": 1.2
+          "type": "HISSE",
+          "symbol": "TATEN",
+          "name": "TATEN",
+          "weight": 1.86,
+          "dailyChange": -1.93
         },
         {
-          "symbol": "REPO",
-          "name": "REPO",
-          "weight": 5,
+          "type": "HISSE",
+          "symbol": "TCELL",
+          "name": "TCELL",
+          "weight": 1.51,
+          "dailyChange": -1.43
+        },
+        {
+          "type": "HISSE",
+          "symbol": "HISSE_KALAN",
+          "name": "HISSE_KALAN",
+          "weight": 21.93,
+          "dailyChange": 1.81
+        },
+        {
+          "type": "FON",
+          "symbol": "FON_KATILIM",
+          "name": "FON_KATILIM",
+          "weight": 18.55,
           "dailyChange": 0
         },
         {
-          "symbol": "NAKIT",
-          "name": "NAKIT",
-          "weight": 2.5,
+          "type": "NAKIT",
+          "symbol": "VIOP_NAKIT",
+          "name": "VIOP_NAKIT",
+          "weight": 1.02,
           "dailyChange": 0
         }
       ]
     },
     "TLY": {
-      "price": 7235.179156,
+      "price": 7235.1792,
       "dailyChange": 1.07,
       "date": "08.07.2026",
       "source": "TEFAS",
       "holdings": [
         {
-          "symbol": "THYAO",
-          "name": "THYAO",
-          "weight": 9.2,
-          "dailyChange": -0.3
+          "type": "HISSE",
+          "symbol": "DSTKF",
+          "name": "DSTKF",
+          "weight": 22.85,
+          "dailyChange": 5.14
         },
         {
-          "symbol": "TUPRS",
-          "name": "TUPRS",
-          "weight": 7.6,
-          "dailyChange": 0.18
+          "type": "HISSE",
+          "symbol": "OZATD",
+          "name": "OZATD",
+          "weight": 14.3,
+          "dailyChange": -2.86
         },
         {
-          "symbol": "SISE",
-          "name": "SISE",
-          "weight": 6.4,
-          "dailyChange": -0.1
+          "type": "HISSE",
+          "symbol": "PEKGY",
+          "name": "PEKGY",
+          "weight": 7.73,
+          "dailyChange": -2.16
         },
         {
-          "symbol": "EREGL",
-          "name": "EREGL",
-          "weight": 5.9,
-          "dailyChange": -0.22
+          "type": "HISSE",
+          "symbol": "TEHOL",
+          "name": "TEHOL",
+          "weight": 7.14,
+          "dailyChange": 1.64
         },
         {
-          "symbol": "BIMAS",
-          "name": "BIMAS",
-          "weight": 5.2,
-          "dailyChange": 0.55
+          "type": "HISSE",
+          "symbol": "TERA",
+          "name": "TERA",
+          "weight": 6.63,
+          "dailyChange": -4.87
         },
         {
-          "symbol": "REPO",
-          "name": "REPO",
-          "weight": 8,
+          "type": "HISSE",
+          "symbol": "HISSE_KALAN",
+          "name": "HISSE_KALAN",
+          "weight": 4.6,
+          "dailyChange": 1.81
+        },
+        {
+          "type": "REPO",
+          "symbol": "TERS_REPO",
+          "name": "TERS_REPO",
+          "weight": 16.43,
           "dailyChange": 0
         },
         {
-          "symbol": "NAKIT",
-          "name": "NAKIT",
-          "weight": 4,
+          "type": "FON",
+          "symbol": "GAYRIMENKUL_YF",
+          "name": "GAYRIMENKUL_YF",
+          "weight": 13.97,
+          "dailyChange": 0
+        },
+        {
+          "type": "NAKIT",
+          "symbol": "VIOP_NAKIT",
+          "name": "VIOP_NAKIT",
+          "weight": 3.81,
+          "dailyChange": 0
+        },
+        {
+          "type": "TAHVIL",
+          "symbol": "FINANSMAN_BONOSU",
+          "name": "FINANSMAN_BONOSU",
+          "weight": 2.54,
           "dailyChange": 0
         }
       ]
