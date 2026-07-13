@@ -138,15 +138,7 @@ module.exports = async (req, res) => {
     );
   }
 
-  const marketSymbols = {
-    XAU: "GC=F",
-    XAG: "SI=F",
-    XU100: "XU100.IS",
-    XU050: "XU050.IS",
-    XU030: "XU030.IS",
-    BTC: "BTC-USD",
-    BRENT: "BZ=F"
-  };
+  const ym={DXY:"DX-Y.NYB",XAU:"GC=F",XAG:"SI=F",XU100:"XU100.IS",XU050:"XU050.IS",XU030:"XU030.IS",BTC:"BTC-USD",BRENT:"BZ=F"};
 
   await Promise.all(
     Object.entries(marketSymbols).map(async ([key, symbol]) => {
