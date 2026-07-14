@@ -150,7 +150,7 @@ const authHeader = req.headers.authorization;
 //     error: "Yetkisiz istek.",
 //   });
 // }
-  }
+  
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const secretKey = process.env.SUPABASE_SECRET_KEY;
