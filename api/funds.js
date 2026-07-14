@@ -21,11 +21,10 @@ module.exports = async function handler(req, res) {
       `&order=price_date.desc`;
 
     const response = await fetch(endpoint, {
-      headers: {
-        apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
-        Accept: "application/json"
-      }
+     headers: {
+  apikey: supabaseKey,
+  Accept: "application/json"
+}
     });
 
     const text = await response.text();
