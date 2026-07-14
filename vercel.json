@@ -1,1 +1,39 @@
-{"version":2,"builds":[{"src":"api/market.js","use":"@vercel/node"},{"src":"index.html","use":"@vercel/static"},{"src":"data/funds.json","use":"@vercel/static"}],"routes":[{"src":"/api/market","dest":"/api/market.js"},{"src":"/data/funds.json","dest":"/data/funds.json"},{"src":"/(.*)","dest":"/index.html"}]}
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/market.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "api/funds.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "data/funds.json",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/market",
+      "dest": "/api/market.js"
+    },
+    {
+      "src": "/api/funds",
+      "dest": "/api/funds.js"
+    },
+    {
+      "src": "/data/funds.json",
+      "dest": "/data/funds.json"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}
