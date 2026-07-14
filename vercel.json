@@ -10,6 +10,10 @@
       "use": "@vercel/node"
     },
     {
+      "src": "api/sync-funds.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "index.html",
       "use": "@vercel/static"
     },
@@ -28,12 +32,22 @@
       "dest": "/api/funds.js"
     },
     {
+      "src": "/api/sync-funds",
+      "dest": "/api/sync-funds.js"
+    },
+    {
       "src": "/data/funds.json",
       "dest": "/data/funds.json"
     },
     {
       "src": "/(.*)",
       "dest": "/index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/sync-funds",
+      "schedule": "0 18 * * 1-5"
     }
   ]
 }
