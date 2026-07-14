@@ -1,36 +1,11 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
-const TEFAS_BASE = "https://www.tefas.gov.tr";
-const TEFAS_HISTORY_PAGE = `${TEFAS_BASE}/TarihselVeriler.aspx`;
-const TEFAS_HISTORY_ENDPOINT = `${TEFAS_BASE}/api/DB/BindHistoryInfo`;
-
-function toIsoDate(date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function parseTefasDate(value) {
-  if (value === null || value === undefined || value === "") return null;
-
-  const text = String(value);
-
-  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-
-  const dotted = text.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-  if (dotted) return `${dotted[3]}-${dotted[2]}-${dotted[1]}`;
-
-  const msDate = text.match(/\/Date\((\d+)\)\//);
-  if (msDate) return new Date(Number(msDate[1])).toISOString().slice(0, 10);
-
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
-}
+const TEFAS_ENDPOINT = "https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir";
 
 function toNumber(value) {
   if (value === null || value === undefined || value === "") return null;
 
   let text = String(value).trim();
 
-  // 1.234,56 -> 1234.56
   if (text.includes(",") && text.includes(".")) {
     text = text.replace(/\./g, "").replace(",", ".");
   } else {
@@ -41,82 +16,53 @@ function toNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function extractCookie(response) {
-  if (typeof response.headers.getSetCookie === "function") {
-    const cookies = response.headers.getSetCookie();
-    if (Array.isArray(cookies) && cookies.length) {
-      return cookies.map((item) => item.split(";")[0]).join("; ");
-    }
+function toIsoDate(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  const text = String(value).trim();
+
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  const dotted = text.match(/^(\d{2})[./-](\d{2})[./-](\d{4})$/);
+  if (dotted) return `${dotted[3]}-${dotted[2]}-${dotted[1]}`;
+
+  const msDate = text.match(/\/Date\((\d+)\)\//);
+  if (msDate) {
+    return new Date(Number(msDate[1])).toISOString().slice(0, 10);
   }
 
-  const header = response.headers.get("set-cookie");
-  if (!header) return "";
-
-  return header
-    .split(/,(?=[^;,]+=)/)
-    .map((item) => item.split(";")[0].trim())
-    .filter(Boolean)
-    .join("; ");
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
 }
 
-async function createTefasSession() {
-  const response = await fetch(TEFAS_HISTORY_PAGE, {
-    method: "GET",
-    redirect: "follow",
-    headers: {
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.7,en;q=0.6",
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`TEFAS oturum sayfası HTTP ${response.status}`);
+function readField(row, names) {
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(row, name)) {
+      return row[name];
+    }
   }
-
-  // Gövdeyi tüketmek bağlantı/cookie akışının tamamlanmasını sağlar.
-  await response.text();
-  return extractCookie(response);
+  return null;
 }
 
 async function fetchTefasHistory(fundCode) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 14);
-
-  const cookie = await createTefasSession();
-
-  // BindHistoryInfo tarihleri YYYY-MM-DD bekler.
-  const body = new URLSearchParams({
-    fontip: "YAT",
-    bastarih: toIsoDate(start),
-    bittarih: toIsoDate(end),
-    fonkod: fundCode,
-  });
-
-  const headers = {
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    Accept: "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.7,en;q=0.6",
-    Origin: TEFAS_BASE,
-    Referer: TEFAS_HISTORY_PAGE,
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "X-Requested-With": "XMLHttpRequest",
-  };
-
-  if (cookie) headers.Cookie = cookie;
-
-  const response = await fetch(TEFAS_HISTORY_ENDPOINT, {
+  const response = await fetch(TEFAS_ENDPOINT, {
     method: "POST",
-    headers,
-    body: body.toString(),
-    redirect: "follow",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Origin: "https://www.tefas.gov.tr",
+      Referer: `https://www.tefas.gov.tr/tr/fon-detayli-analiz/${fundCode}`,
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/126.0.0.0 Safari/537.36",
+    },
+    body: JSON.stringify({
+      fonKodu: fundCode,
+      dil: "TR",
+      periyod: 13,
+    }),
   });
 
   const text = await response.text();
@@ -136,59 +82,57 @@ async function fetchTefasHistory(fundCode) {
     );
   }
 
-  const rawRows = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload.data)
-      ? payload.data
-      : [];
-
-  if (!rawRows.length) {
-    throw new Error(`TEFAS ${fundCode} için veri dönmedi.`);
-  }
-
-  const rows = rawRows
-    .map((row) => ({
-      code: String(
-        row.FONKODU ?? row.fonkodu ?? row.FONKOD ?? row.fonkod ?? fundCode
-      ).toUpperCase(),
-      price: toNumber(row.FIYAT ?? row.fiyat ?? row.PRICE ?? row.price),
-      date: parseTefasDate(row.TARIH ?? row.tarih ?? row.DATE ?? row.date),
-      portfolioSize: toNumber(
-        row.PORTFOYBUYUKLUK ??
-        row.PORTFOY_BUYUKLUK ??
-        row.portfoybuyukluk ??
-        row.PORTFÖYBÜYÜKLÜĞÜ
-      ),
-      investorCount: toNumber(
-        row.KISISAYISI ??
-        row.KISI_SAYISI ??
-        row.kisisayisi ??
-        row.YATIRIMCISAYISI
-      ),
-    }))
-    .filter(
-      (row) =>
-        row.code === fundCode &&
-        row.price !== null &&
-        row.date !== null
-    )
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  if (!rows.length) {
+  if (
+    payload &&
+    payload.errorCode &&
+    String(payload.errorCode) !== "0"
+  ) {
     throw new Error(
-      `TEFAS ${fundCode} yanıtı geldi fakat geçerli fiyat/tarih bulunamadı.`
+      `TEFAS ${fundCode}: ${payload.errorMessage || payload.errorCode}`
     );
   }
 
-  return rows;
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload.resultList)
+      ? payload.resultList
+      : Array.isArray(payload.data)
+        ? payload.data
+        : [];
+
+  if (!rows.length) {
+    throw new Error(
+      `TEFAS ${fundCode} için fiyat verisi dönmedi. Yanıt: ${text.slice(0, 500)}`
+    );
+  }
+
+  const normalized = rows
+    .map((row) => ({
+      price: toNumber(
+        readField(row, ["fiyat", "Fiyat", "FIYAT", "price", "Price"])
+      ),
+      date: toIsoDate(
+        readField(row, ["tarih", "Tarih", "TARIH", "date", "Date"])
+      ),
+    }))
+    .filter((row) => row.price !== null && row.date !== null)
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  if (!normalized.length) {
+    throw new Error(
+      `TEFAS ${fundCode} yanıtında geçerli fiyat/tarih bulunamadı. ` +
+      `İlk kayıt: ${JSON.stringify(rows[0]).slice(0, 500)}`
+    );
+  }
+
+  return normalized;
 }
 
-async function replaceFundRow(supabaseUrl, secretKey, row) {
+async function saveFundRow(supabaseUrl, secretKey, row) {
   const tableUrl = `${supabaseUrl}/rest/v1/fund_prices`;
 
   const headers = {
     apikey: secretKey,
-    Authorization: `Bearer ${secretKey}`,
     "Content-Type": "application/json",
     Accept: "application/json",
   };
@@ -236,7 +180,6 @@ module.exports = async function handler(req, res) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = req.headers.authorization;
 
-  // Güvenlik yeniden etkin.
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return res.status(401).json({
       ok: false,
@@ -272,12 +215,12 @@ module.exports = async function handler(req, res) {
         price: latest.price,
         daily_change: dailyChange,
         price_date: latest.date,
-        portfolio_size: latest.portfolioSize,
-        investor_count: latest.investorCount,
-        source: "TEFAS",
+        portfolio_size: null,
+        investor_count: null,
+        source: "TEFAS v2",
       };
 
-      await replaceFundRow(supabaseUrl, secretKey, row);
+      await saveFundRow(supabaseUrl, secretKey, row);
 
       results.push({
         fund: fundCode,
