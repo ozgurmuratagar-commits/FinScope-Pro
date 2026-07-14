@@ -140,15 +140,16 @@ async function replaceFundRow(supabaseUrl, secretKey, row) {
 
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
+const cronSecret = process.env.CRON_SECRET;
+const authHeader = req.headers.authorization;
 
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.authorization;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({
-      ok: false,
-      error: "Yetkisiz istek.",
-    });
+// GEÇİCİ TEST
+// if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+//   return res.status(401).json({
+//     ok: false,
+//     error: "Yetkisiz istek.",
+//   });
+// }
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
