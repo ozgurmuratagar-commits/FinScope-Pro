@@ -1128,6 +1128,151 @@ function closeModal(){modal.classList.remove('show')}document.querySelectorAll('
     }
   }, 100);
 })();
+<script>
+(function () {
+  async function loadPredictionApi() {
+    try {
+      const res = await fetch("/api/predict?t=" + Date.now(), {
+        cache: "no-store"
+      });
+
+      const data = await res.json();
+
+      if (!data || !data.ok || !data.predictions) {
+        return;
+      }
+
+      const predictions = data.predictions;
+
+      const rows = Object.entries(predictions).map(([code, p]) => {
+        const predicted = Number(p.predictedChange || 0);
+        const confidence = Number(p.confidence || 0);
+        const rangeLow = Number(p.rangeLow || 0);
+        const rangeHigh = Number(p.rangeHigh || 0);
+
+        return {
+          code,
+          predicted,
+          confidence,
+          rangeLow,
+          rangeHigh,
+          status: p.status || "preliminary",
+          methodology: p.methodology || "",
+          observations: p.observations || 0
+        };
+      });
+
+      const html = rows.map(r => {
+        const cls = r.predicted >= 0 ? "ok" : "bad";
+        const sign = r.predicted >= 0 ? "▲" : "▼";
+
+        return `
+          <div style="margin-bottom:10px">
+            <b>${r.code}</b>:
+            <span class="${cls}">
+              ${sign} ${Math.abs(r.predicted).toFixed(2)}%
+            </span>
+            <span class="small">
+              • Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
+              • Güven: ${confidenceText(r.confidence)}
+              • Gözlem: ${r.observations}
+            </span>
+          </div>
+        `;
+      }).join("");
+
+      if (typeof summaryBox !== "undefined" && summaryBox) {
+        summaryBox.innerHTML =
+          html +
+          `<div class="small" style="margin-top:12px;color:#ffd76c">
+            Tahminler model bazlıdır. Yatırım tavsiyesi değildir.
+          </div>`;
+      }
+
+      if (typeof predTable !== "undefined" && predTable) {
+        predTable.innerHTML =
+          `<table class="table">
+            <tr>
+              <th>Fon</th>
+              <th>Tahmin</th>
+              <th>Alt Aralık</th>
+              <th>Üst Aralık</th>
+              <th>Güven</th>
+              <th>Yöntem</th>
+            </tr>
+            ${rows.map(r => {
+              const cls = r.predicted >= 0 ? "ok" : "bad";
+              const sign = r.predicted >= 0 ? "▲" : "▼";
+              return `
+                <tr>
+                  <td>${r.code}</td>
+                  <td class="${cls}">${sign} ${Math.abs(r.predicted).toFixed(2)}%</td>
+                  <td>${r.rangeLow.toFixed(2)}%</td>
+                  <td>${r.rangeHigh.toFixed(2)}%</td>
+                  <td>${confidenceText(r.confidence)}</td>
+                  <td>${r.methodology}</td>
+                </tr>
+              `;
+            }).join("")}
+          </table>
+          <p class="small">
+            Bu tahminler yalnızca bilgilendirme amaçlıdır. Yatırım tavsiyesi içermez.
+          </p>`;
+      }
+
+      if (typeof aiText !== "undefined" && aiText) {
+        aiText.textContent =
+          "V7 tahmin motoru aktif. TEFAS fiyatları Supabase üzerinden güncelleniyor. Mevcut tahminler ön momentum modeline göre hesaplanmaktadır.";
+      }
+
+      if (typeof badges !== "undefined" && badges) {
+        badges.innerHTML =
+          `<span class="badge">V7 Predict API</span>
+           <span class="badge">TEFAS otomatik</span>
+           <span class="badge">Yatırım tavsiyesi değildir</span>`;
+      }
+
+      addLegalNotice();
+
+    } catch (err) {
+      console.error("Prediction API error:", err);
+    }
+  }
+
+  function confidenceText(v) {
+    if (v >= 90) return "Çok yüksek";
+    if (v >= 75) return "Yüksek";
+    if (v >= 60) return "Orta";
+    if (v > 0) return "Düşük";
+    return "—";
+  }
+
+  function addLegalNotice() {
+    if (document.getElementById("legalNotice")) return;
+
+    const main = document.querySelector("main");
+    if (!main) return;
+
+    const div = document.createElement("div");
+    div.id = "legalNotice";
+    div.className = "panel";
+    div.style.marginTop = "22px";
+    div.innerHTML = `
+      <h3>Hukuki Bilgilendirme</h3>
+      <p class="small">
+        © 2026 FinScope Professional. Tüm hakları saklıdır.
+        Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
+        Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
+        Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
+        Veriler gecikmeli, eksik veya hatalı olabilir.
+      </p>
+    `;
+    main.appendChild(div);
+  }
+
+  setTimeout(loadPredictionApi, 500);
+  setInterval(loadPredictionApi, 60000);
+})();
 </script>
 
 </body></html>
