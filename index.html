@@ -1273,6 +1273,176 @@ function closeModal(){modal.classList.remove('show')}document.querySelectorAll('
   setTimeout(loadPredictionApi, 500);
   setInterval(loadPredictionApi, 60000);
 })();
+<script>
+(function () {
+  async function finscopeV7DashboardPatch() {
+    try {
+      const res = await fetch("/api/predict?t=" + Date.now(), {
+        cache: "no-store"
+      });
+
+      const data = await res.json();
+
+      if (!data || !data.ok || !data.predictions) {
+        console.warn("FinScope V7 predict data yok", data);
+        return;
+      }
+
+      const predictions = data.predictions;
+
+      const rows = Object.entries(predictions).map(function ([code, p]) {
+        return {
+          code: code,
+          predicted: Number(p.predictedChange || 0),
+          rangeLow: Number(p.rangeLow || 0),
+          rangeHigh: Number(p.rangeHigh || 0),
+          confidence: Number(p.confidence || 0),
+          status: p.status || "preliminary",
+          methodology: p.methodology || "momentum",
+          observations: p.observations || 0
+        };
+      });
+
+      const summary = document.getElementById("summaryBox");
+      const ai = document.getElementById("aiText");
+      const badgesBox = document.getElementById("badges");
+      const pred = document.getElementById("predTable");
+
+      const summaryHtml = rows.map(function (r) {
+        const positive = r.predicted >= 0;
+        const cls = positive ? "ok" : "bad";
+        const sign = positive ? "▲" : "▼";
+
+        return `
+          <div style="margin-bottom:12px">
+            <b>${r.code}</b>:
+            <span class="${cls}" style="font-weight:900">
+              ${sign} ${Math.abs(r.predicted).toFixed(2)}%
+            </span>
+            <div class="small">
+              Tahmin aralığı: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
+              • Güven: ${confidenceText(r.confidence)}
+              • Gözlem: ${r.observations}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      if (summary) {
+        summary.innerHTML =
+          summaryHtml +
+          `<div class="small" style="margin-top:10px;color:#ffd76c">
+            V7 tahmin motoru aktiftir. Tahminler model bazlıdır, yatırım tavsiyesi değildir.
+          </div>`;
+      }
+
+      if (pred) {
+        pred.innerHTML =
+          `<table class="table">
+            <tr>
+              <th>Fon</th>
+              <th>Tahmini Değişim</th>
+              <th>Alt Aralık</th>
+              <th>Üst Aralık</th>
+              <th>Güven</th>
+              <th>Yöntem</th>
+            </tr>
+            ${rows.map(function (r) {
+              const positive = r.predicted >= 0;
+              const cls = positive ? "ok" : "bad";
+              const sign = positive ? "▲" : "▼";
+
+              return `
+                <tr>
+                  <td><b>${r.code}</b></td>
+                  <td class="${cls}">
+                    ${sign} ${Math.abs(r.predicted).toFixed(2)}%
+                  </td>
+                  <td>${r.rangeLow.toFixed(2)}%</td>
+                  <td>${r.rangeHigh.toFixed(2)}%</td>
+                  <td>${confidenceText(r.confidence)}</td>
+                  <td>${r.methodology}</td>
+                </tr>
+              `;
+            }).join("")}
+          </table>
+          <p class="small">
+            Bu tahminler yalnızca bilgilendirme amacıyla sunulur. Yatırım tavsiyesi içermez.
+          </p>`;
+      }
+
+      if (ai) {
+        ai.textContent =
+          "FinScope V7 tahmin motoru aktif. TEFAS fiyatları otomatik güncelleniyor. Tahminler /api/predict üzerinden canlı okunuyor.";
+      }
+
+      if (badgesBox) {
+        badgesBox.innerHTML =
+          `<span class="badge">V7 Predict API</span>
+           <span class="badge">TEFAS otomatik</span>
+           <span class="badge">Yatırım tavsiyesi değildir</span>`;
+      }
+
+      addLegalNotice();
+
+    } catch (e) {
+      console.error("FinScope V7 Dashboard Patch Error:", e);
+    }
+  }
+
+  function confidenceText(v) {
+    if (v >= 90) return "Çok yüksek";
+    if (v >= 75) return "Yüksek";
+    if (v >= 60) return "Orta";
+    if (v > 0) return "Düşük";
+    return "—";
+  }
+
+  function addLegalNotice() {
+    if (document.getElementById("legalNotice")) return;
+
+    const dashboard = document.getElementById("dashboard");
+    if (!dashboard) return;
+
+    const box = document.createElement("div");
+    box.id = "legalNotice";
+    box.className = "panel";
+    box.style.marginTop = "22px";
+    box.innerHTML = `
+      <h2>Hukuki Bilgilendirme</h2>
+      <p class="small">
+        © 2026 FinScope Professional. Tüm hakları saklıdır.
+        Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
+        Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
+        Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
+        Veriler gecikmeli, eksik veya hatalı olabilir.
+        FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
+      </p>
+    `;
+
+    dashboard.appendChild(box);
+  }
+
+  const oldRender = window.render;
+  if (typeof oldRender === "function") {
+    window.render = function () {
+      oldRender.apply(this, arguments);
+      setTimeout(finscopeV7DashboardPatch, 300);
+    };
+  }
+
+  const oldRenderPred = window.renderPred;
+  if (typeof oldRenderPred === "function") {
+    window.renderPred = function () {
+      oldRenderPred.apply(this, arguments);
+      setTimeout(finscopeV7DashboardPatch, 300);
+    };
+  }
+
+  setTimeout(finscopeV7DashboardPatch, 700);
+  setTimeout(finscopeV7DashboardPatch, 2000);
+  setInterval(finscopeV7DashboardPatch, 60000);
+})();
 </script>
 
 </body></html>
