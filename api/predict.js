@@ -2,6 +2,7 @@ const FUNDS = ["PBR", "PHE", "TLY"];
 
 const DEFAULT_REPO_DAILY_CHANGE = Number(process.env.REPO_DAILY_CHANGE || 0.12);
 const DEFAULT_CASH_DAILY_CHANGE = Number(process.env.CASH_DAILY_CHANGE || 0);
+const DEFAULT_BOND_DAILY_CHANGE = Number(process.env.BOND_DAILY_CHANGE || 0.07);
 
 function num(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -80,27 +81,162 @@ function normalizeSymbol(symbol) {
   const s = String(symbol || "").trim().toUpperCase();
 
   if (!s) return "";
+
   if (s === "XU100" || s === "BIST100" || s === "BIST 100") return "XU100";
   if (s === "XU030" || s === "BIST30" || s === "BIST 30") return "XU030";
   if (s === "XU050" || s === "BIST50" || s === "BIST 50") return "XU050";
-  if (s === "TRY" || s === "CASH") return "TRY";
-  if (s === "REPO" || s === "MONEY_MARKET") return "REPO";
+
+  if (s === "TRY" || s === "CASH" || s === "TL") return "TRY";
+  if (s === "REPO" || s === "MONEY_MARKET" || s === "PARA_PIYASASI") return "REPO";
+
   if (s === "USD" || s === "USDTRY") return "USDTRY";
   if (s === "EUR" || s === "EURTRY") return "EURTRY";
-  if (s === "GOLD" || s === "XAU") return "XAU";
-  if (s === "SILVER" || s === "XAG") return "XAG";
+  if (s === "GBP" || s === "GBPTRY") return "GBPTRY";
 
-  return s;
+  if (s === "GOLD" || s === "ALTIN" || s === "XAU") return "XAU";
+  if (s === "SILVER" || s === "GUMUS" || s === "GÜMÜŞ" || s === "XAG") return "XAG";
+
+  return s.replace(".IS", "");
 }
 
-function assetChangeFromMarket(asset, marketAssets) {
+function yahooSymbolForBist(symbol) {
+  const s = normalizeSymbol(symbol);
+
+  if (!s) return null;
+
+  if (["XU100", "XU030", "XU050"].includes(s)) {
+    return null;
+  }
+
+  if (
+    ["TRY", "REPO", "USDTRY", "EURTRY", "GBPTRY", "XAU", "XAG"].includes(s)
+  ) {
+    return null;
+  }
+
+  return `${s}.IS`;
+}
+
+async function yahooQuote(symbol) {
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    `?range=5d&interval=1d`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "FinScope/7.0",
+        Accept: "application/json,*/*"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Yahoo HTTP ${response.status}`);
+    }
+
+    const json = await response.json();
+    const result = json?.chart?.result?.[0] || {};
+    const meta = result.meta || {};
+    const quote = result.indicators?.quote?.[0] || {};
+    const closes = (quote.close || []).filter(v => typeof v === "number");
+
+    const last = Number(
+      meta.regularMarketPrice ||
+      closes[closes.length - 1] ||
+      meta.previousClose ||
+      meta.chartPreviousClose
+    );
+
+    const prev =
+      closes.length > 1
+        ? Number(closes[closes.length - 2])
+        : Number(meta.previousClose || meta.chartPreviousClose);
+
+    if (!last || !prev) {
+      throw new Error(`Yahoo fiyat eksik: ${symbol}`);
+    }
+
+    return {
+      value: last,
+      change: ((last - prev) / prev) * 100,
+      source: `Yahoo Finance • ${symbol}`
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function buildStockMoveMap(holdingsRows, marketAssets) {
+  const symbols = new Set();
+
+  for (const row of holdingsRows || []) {
+    const type = String(row.asset_type || "").toUpperCase();
+    const symbol = normalizeSymbol(row.symbol);
+
+    if (type === "STOCK") {
+      const yahoo = yahooSymbolForBist(symbol);
+      if (yahoo) symbols.add(yahoo);
+    }
+  }
+
+  const out = {};
+
+  const list = Array.from(symbols).slice(0, 80);
+
+  await Promise.all(
+    list.map(async yahoo => {
+      const baseSymbol = yahoo.replace(".IS", "");
+      try {
+        const q = await yahooQuote(yahoo);
+        out[baseSymbol] = {
+          change: num(q.change),
+          value: num(q.value),
+          source: q.source,
+          direct: true
+        };
+      } catch (e) {
+        const proxy =
+          marketAssets.XU100 && marketAssets.XU100.change != null
+            ? num(marketAssets.XU100.change)
+            : 0;
+
+        out[baseSymbol] = {
+          change: proxy,
+          value: null,
+          source: "XU100 proxy - hisse fiyatı alınamadı",
+          direct: false,
+          error: String(e.message || e)
+        };
+      }
+    })
+  );
+
+  return out;
+}
+
+function marketChangeForIndex(symbol, marketAssets) {
+  const s = normalizeSymbol(symbol);
+
+  if (s === "XU100") return num(marketAssets.XU100 && marketAssets.XU100.change) || 0;
+  if (s === "XU030") return num(marketAssets.XU030 && marketAssets.XU030.change) || 0;
+  if (s === "XU050") return num(marketAssets.XU050 && marketAssets.XU050.change) || 0;
+
+  return num(marketAssets.XU100 && marketAssets.XU100.change) || 0;
+}
+
+function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
   const type = String(asset.asset_type || asset.assetType || "").toUpperCase();
   const symbol = normalizeSymbol(asset.symbol);
 
   if (type === "CASH" || symbol === "TRY") {
     return {
       change: DEFAULT_CASH_DAILY_CHANGE,
-      source: "cash/TRY varsayımı"
+      source: "cash/TRY varsayımı",
+      direct: true
     };
   }
 
@@ -112,74 +248,90 @@ function assetChangeFromMarket(asset, marketAssets) {
   ) {
     return {
       change: DEFAULT_REPO_DAILY_CHANGE,
-      source: "repo/para piyasası günlük varsayım"
+      source: "repo/para piyasası günlük varsayım",
+      direct: true
     };
   }
 
   if (type === "STOCK") {
-    if (marketAssets[symbol] && marketAssets[symbol].change != null) {
+    if (symbol === "XU100" || symbol === "XU030" || symbol === "XU050") {
       return {
-        change: num(marketAssets[symbol].change),
-        source: `market:${symbol}`
+        change: marketChangeForIndex(symbol, marketAssets),
+        source: symbol,
+        direct: true
       };
     }
 
-    if (marketAssets.XU100 && marketAssets.XU100.change != null) {
+    if (stockMoveMap[symbol]) {
       return {
-        change: num(marketAssets.XU100.change),
-        source: "XU100 proxy"
+        change: num(stockMoveMap[symbol].change) || 0,
+        source: stockMoveMap[symbol].source,
+        direct: !!stockMoveMap[symbol].direct
       };
     }
 
     return {
-      change: 0,
-      source: "stock değişim bulunamadı"
+      change: marketChangeForIndex("XU100", marketAssets),
+      source: "XU100 proxy - hisse eşleşmedi",
+      direct: false
     };
   }
 
-  if (type === "BIST" || symbol === "XU100") {
+  if (type === "BIST" || symbol === "XU100" || symbol === "XU030" || symbol === "XU050") {
     return {
-      change: num(marketAssets.XU100 && marketAssets.XU100.change) || 0,
-      source: "XU100"
+      change: marketChangeForIndex(symbol || "XU100", marketAssets),
+      source: symbol || "XU100",
+      direct: true
     };
   }
 
-  if (type === "FX" || symbol === "USDTRY" || symbol === "EURTRY") {
-    const key = symbol === "EUR" ? "EURTRY" : symbol;
+  if (type === "FX" || symbol === "USDTRY" || symbol === "EURTRY" || symbol === "GBPTRY") {
+    const key = symbol;
     return {
       change: num(marketAssets[key] && marketAssets[key].change) || 0,
-      source: key
+      source: key,
+      direct: true
     };
   }
 
   if (type === "GOLD" || type === "PRECIOUS_METAL" || symbol === "XAU") {
     return {
       change: num(marketAssets.XAU && marketAssets.XAU.change) || 0,
-      source: "XAU"
+      source: "XAU",
+      direct: true
     };
   }
 
   if (type === "SILVER" || symbol === "XAG") {
     return {
       change: num(marketAssets.XAG && marketAssets.XAG.change) || 0,
-      source: "XAG"
+      source: "XAG",
+      direct: true
     };
   }
 
-  if (type === "BOND" || type === "EUROBOND" || type === "DEBT") {
+  if (
+    type === "BOND" ||
+    type === "EUROBOND" ||
+    type === "DEBT" ||
+    type === "PRIVATE_BOND" ||
+    type === "GOV_BOND"
+  ) {
     return {
-      change: DEFAULT_REPO_DAILY_CHANGE * 0.6,
-      source: "tahvil/borçlanma proxy"
+      change: DEFAULT_BOND_DAILY_CHANGE,
+      source: "tahvil/borçlanma günlük proxy",
+      direct: false
     };
   }
 
   return {
     change: 0,
-    source: "bilinmeyen varlık tipi"
+    source: "bilinmeyen varlık tipi",
+    direct: false
   };
 }
 
-function buildPredictions(holdingsRows, marketJson) {
+function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
   const marketAssets = marketJson.assets || {};
   const grouped = {};
 
@@ -206,8 +358,9 @@ function buildPredictions(holdingsRows, marketJson) {
     const holdings = grouped[code] || [];
 
     let predicted = 0;
-    let coveredWeight = 0;
     let totalWeight = 0;
+    let directPricedWeight = 0;
+    let proxyWeight = 0;
     let positiveContribution = 0;
     let negativeContribution = 0;
 
@@ -217,12 +370,14 @@ function buildPredictions(holdingsRows, marketJson) {
       const weight = num(h.weight) || 0;
       totalWeight += weight;
 
-      const move = assetChangeFromMarket(h, marketAssets);
+      const move = assetChangeFromMarket(h, marketAssets, stockMoveMap);
       const change = num(move.change) || 0;
       const contribution = (weight * change) / 100;
 
       predicted += contribution;
-      coveredWeight += weight;
+
+      if (move.direct) directPricedWeight += weight;
+      else proxyWeight += weight;
 
       if (contribution >= 0) positiveContribution += contribution;
       else negativeContribution += contribution;
@@ -235,6 +390,7 @@ function buildPredictions(holdingsRows, marketJson) {
         marketChange: round(change, 4),
         contribution: round(contribution, 4),
         pricingSource: move.source,
+        directPricing: !!move.direct,
         reportDate: h.reportDate,
         source: h.source
       });
@@ -243,25 +399,33 @@ function buildPredictions(holdingsRows, marketJson) {
     const coverage = Math.min(100, totalWeight);
     const missingWeight = Math.max(0, 100 - coverage);
 
+    const directRatio = coverage > 0 ? directPricedWeight / coverage : 0;
+
     const volatilityBuffer =
-      coverage >= 95 ? 0.28 :
-      coverage >= 80 ? 0.45 :
-      coverage >= 60 ? 0.70 :
-      1.10;
+      coverage >= 98 && directRatio >= 0.8 ? 0.18 :
+      coverage >= 95 && directRatio >= 0.6 ? 0.25 :
+      coverage >= 90 ? 0.35 :
+      coverage >= 75 ? 0.55 :
+      0.90;
 
     const rangeLow = predicted - volatilityBuffer;
     const rangeHigh = predicted + volatilityBuffer;
 
     const confidence = Math.min(
-      92,
+      96,
       Math.max(
         35,
-        Math.round(40 + coverage * 0.45 + Math.min(details.length, 20) * 0.4)
+        Math.round(
+          35 +
+          coverage * 0.35 +
+          directRatio * 25 +
+          Math.min(details.length, 40) * 0.25
+        )
       )
     );
 
     predictions[code] = {
-      status: holdings.length ? "holdings_weighted" : "no_holdings",
+      status: holdings.length ? "holdings_weighted_v2" : "no_holdings",
       predictedChange: round(predicted, 4),
       rangeLow: round(rangeLow, 4),
       rangeHigh: round(rangeHigh, 4),
@@ -270,10 +434,12 @@ function buildPredictions(holdingsRows, marketJson) {
       coverage: round(coverage, 2),
       missingWeight: round(missingWeight, 2),
       observations: details.length,
+      directPricedWeight: round(directPricedWeight, 2),
+      proxyWeight: round(proxyWeight, 2),
       positiveContribution: round(positiveContribution, 4),
       negativeContribution: round(negativeContribution, 4),
       methodology:
-        "Holdings ağırlıklı model: varlık ağırlığı x gün içi piyasa değişimi",
+        "Holdings ağırlıklı v2: gerçek hisse sembolü varsa Yahoo/BIST gecikmeli fiyat, yoksa uygun proxy.",
       horizon: "next published daily fund return",
       details
     };
@@ -306,16 +472,20 @@ module.exports = async function handler(req, res) {
     );
 
     const marketJson = await fetchMarketFromSelf(req);
-
-    const predictions = buildPredictions(holdingsRows, marketJson);
+    const stockMoveMap = await buildStockMoveMap(holdingsRows, marketJson.assets || {});
+    const predictions = buildPredictions(holdingsRows, marketJson, stockMoveMap);
 
     res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      model: "FinScope Holdings Weighted Prediction v1",
+      model: "FinScope Holdings Weighted Prediction v2 - Stock Level Ready",
       horizon: "next published daily fund return",
       marketSource: marketJson.version || "api/market",
       holdingsSource: "supabase.fund_holdings",
+      stockPricing: {
+        provider: "Yahoo Finance delayed where symbol exists",
+        mappedSymbols: Object.keys(stockMoveMap).length
+      },
       funds: FUNDS,
       predictions,
       disclaimer:
