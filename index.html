@@ -1,2150 +1,710 @@
-<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FinScope v6.2</title><style>
-body{margin:0;background:#06131f;color:#f1fbff;font-family:Segoe UI,Arial}.app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}.side{padding:28px 18px;background:linear-gradient(180deg,#14947e,#052e42)}.brand{font-size:30px;font-weight:950}.ver{font-size:12px;color:#ffd76c;font-weight:900}.small,.src,.sub{color:#b6cbd2}.nav{display:grid;gap:10px;margin-top:30px}.nav button{background:transparent;color:white;text-align:left;padding:14px;border:0;border-radius:15px;font-weight:900;cursor:pointer}.nav button.active,.nav button:hover{background:rgba(255,255,255,.17)}main{padding:34px 40px}.section{display:none}.section.active{display:block}.top{display:flex;justify-content:space-between;gap:20px}.pill{display:inline-flex;border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:8px 12px;margin:10px 8px 0 0;font-size:12px;color:#b6cbd2;font-weight:900}.refresh{border:0;border-radius:16px;background:linear-gradient(135deg,#84e9ff,#79a7ff);color:white;font-weight:950;padding:13px 20px;margin:4px;cursor:pointer}.danger{background:linear-gradient(135deg,#ff9da8,#ff7f8c)}.meta{text-align:right;font-size:12px;color:#b6cbd2}.tabs{display:flex;flex-wrap:wrap;gap:10px;margin:22px 0}.tab{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.09);color:white;border-radius:999px;padding:10px 16px;font-weight:950}.tab.active{background:rgba(132,233,255,.22)}.grid{display:grid;grid-template-columns:repeat(3,minmax(230px,1fr));gap:18px}.card,.panel{border:1px solid rgba(255,255,255,.2);border-radius:24px;padding:20px;background:linear-gradient(145deg,rgba(255,255,255,.13),rgba(255,255,255,.045));box-shadow:0 24px 60px rgba(0,0,0,.28)}.card{min-height:170px;cursor:pointer}.label{font-size:14px;font-weight:950}.value{font-size:34px;font-weight:950;margin:16px 0 7px}.ok{color:#63f7b4}.bad{color:#ff7f8c}.wait{color:#ffd76c}.panels{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}.badge{border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900;background:rgba(255,255,255,.08);display:inline-block;margin:3px}.row{display:grid;grid-template-columns:120px 1fr auto;gap:12px;border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:13px;background:rgba(255,255,255,.06);margin-bottom:10px}.table{width:100%;border-collapse:collapse;margin-top:12px}.table th,.table td{border-bottom:1px solid rgba(255,255,255,.12);padding:10px;text-align:left}.diag,.textarea{font-family:ui-monospace,Menlo,Consolas,monospace;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.2);color:#dff6ff;padding:14px;border-radius:14px}.textarea{width:100%;min-height:150px}.buildergrid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;padding:18px}.modal.show{display:flex}.box{max-width:980px;width:100%;border:1px solid rgba(255,255,255,.28);border-radius:26px;background:linear-gradient(145deg,#22718a,#174462);padding:26px;max-height:90vh;overflow:auto}.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}.mini{border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:13px;background:rgba(255,255,255,.11)}.close{float:right;background:transparent;color:white;border:1px solid rgba(255,255,255,.45);border-radius:14px;padding:10px 14px;font-weight:900}@media(max-width:900px){.app{grid-template-columns:1fr}.grid,.panels,.buildergrid{grid-template-columns:1fr}.top{display:block}.meta{text-align:left}}
-</style></head><body><div class="app"><aside class="side"><div class="brand">FinScope</div><div class="ver">Professional v6.2 Data Builder Pro</div><p class="small">Kolay fon girişi<br>Holdings builder<br>funds.json indir</p><nav class="nav"><button class="active" data-section="dashboard">Dashboard</button><button data-section="funds">Fonlar</button><button data-section="builder">Data Builder Pro</button><button data-section="vault">Data Vault</button><button data-section="prediction">Tahmin Motoru</button></nav></aside><main><section id="dashboard" class="section active"><div class="top"><div><h1>Dashboard</h1><div class="sub">v6.2: Gerçek fon değerleri ve holdings bilgisi kolay formatla girilip <b>funds.json</b> üretilir.</div><span class="pill">v6.2 Data Builder Pro</span><span class="pill">PBR / PHE / TLY</span><span class="pill">Temsili veri yok</span></div><div><button class="refresh" onclick="loadAll()">Yenile</button><div class="meta" id="meta"></div></div></div><div class="tabs" id="tabs"></div><div class="grid" id="cards"></div><div class="panels"><div class="panel"><h2>AI Analist</h2><p id="aiText"></p><div id="badges"></div></div><div class="panel"><h2>Tahmin Özeti</h2><div id="summaryBox"></div></div></div></section><section id="funds" class="section"><h1>Fonlar</h1><div class="panel"><div id="fundList"></div></div></section><section id="builder" class="section"><h1>Data Builder Pro</h1><div class="buildergrid"><div class="panel"><h2>1) Fon değerleri</h2><p class="small">Basit format: <b>Fon Fiyat Günlük% Tarih</b><br>Örnek: <b>PBR 1,9476 0,42 07.07.2026</b></p><textarea id="fundInput" class="textarea" placeholder="PBR 1,9476 0,42 07.07.2026&#10;PHE 3,1685 0,18 07.07.2026&#10;TLY 2,1128 -0,09 07.07.2026"></textarea><h2>2) Holdings / İlk hisseler</h2><p class="small">Basit format: <b>Fon Hisse Ağırlık% HisseGünlük%</b><br>Örnek: <b>PBR ASELS 8,5 1,2</b></p><textarea id="holdInput" class="textarea" placeholder="PBR ASELS 8,5 1,2&#10;PBR THYAO 7,4 -0,3&#10;PHE AKBNK 6,2 1,1"></textarea><br><br><button class="refresh" onclick="buildJson()">JSON Oluştur</button><button class="refresh" onclick="downloadJson()">funds.json indir</button><button class="refresh danger" onclick="clearBuilder()">Temizle</button></div><div class="panel"><h2>Oluşan funds.json</h2><textarea id="builderOutput" class="textarea" readonly></textarea><div id="builderSummary" class="small"></div></div></div></section><section id="vault" class="section"><h1>Data Vault</h1><div class="panel"><p class="small">GitHub’da <b>data/funds.json</b> dosyasını bu üretilen dosyayla değiştir.</p><div id="vaultStatus" class="diag"></div></div></section><section id="prediction" class="section"><h1>Tahmin Motoru</h1><div class="panel"><div id="predTable"></div></div></section></main></div><div class="modal" id="modal" onclick="if(event.target.id==='modal')closeModal()"><div class="box"><button class="close" onclick="closeModal()">Kapat</button><h2 id="mTitle">Detay</h2><div class="mgrid" id="mGrid"></div><div id="mExtra"></div><p id="mNote"></p></div></div><script>
-const fmt2=new Intl.NumberFormat('tr-TR',{minimumFractionDigits:2,maximumFractionDigits:2}),fmt4=new Intl.NumberFormat('tr-TR',{maximumFractionDigits:4});
-const cats=['Tümü','Döviz','Parite','Kıymetli Maden','BIST','Kripto/Emtia','Fonlar'];let currentCat='Tümü',vault={},built=null;
-let assets=[['USDTRY','USD / TRY','Döviz','₺'],['EURTRY','EUR / TRY','Döviz','₺'],['GBPTRY','GBP / TRY','Döviz','₺'],['EURUSD','EUR / USD','Parite',''],['GBPUSD','GBP / USD','Parite',''],['XAU','Altın Ons','Kıymetli Maden','$'],['XAG','Gümüş Ons','Kıymetli Maden','$'],['XU100','BIST 100','BIST',''],['XU050','BIST 50','BIST',''],['XU030','BIST 30','BIST',''],['BTC','Bitcoin','Kripto/Emtia','$'],['BRENT','Brent Petrol','Kripto/Emtia','$'],['PBR','PBR','Fonlar',''],['PHE','PHE','Fonlar',''],['TLY','TLY','Fonlar','']].map(x=>({symbol:x[0],name:x[1],cat:x[2],unit:x[3],value:null,status:'data vault bekliyor',source:'',change:null,date:'',holdings:[]}));
-function n(s){if(s==null||s==='')return null;let v=Number(String(s).trim().replace('%','').replace(',','.'));return Number.isFinite(v)?v:null}
-function val(a){return a.value==null?'—':(a.cat==='Parite'?fmt4.format(a.value):fmt4.format(a.value))+' '+a.unit}
-function pct(a){return a.change==null?'—':(a.change>=0?'▲ ':'▼ ')+fmt2.format(Math.abs(a.change))+'%'}
-function cls(s){return s.includes('canlı')||s.includes('vault gerçek')?'ok':s.includes('bekliyor')?'wait':'bad'}
-function chgCls(a){return a.change==null?'wait':a.change>=0?'ok':'bad'}
-function renderTabs(){tabs.innerHTML=cats.map(c=>`<button class="tab ${c===currentCat?'active':''}" onclick="currentCat='${c}';render()">${c}</button>`).join('')}
-function applyVault(){const f=vault.funds||{};assets=assets.map(a=>{const x=f[a.symbol];if(!x)return a;const v=n(x.price),ch=n(x.dailyChange);return {...a,value:v,change:ch,date:x.date||'',status:v!=null?'vault gerçek veri':'data vault bekliyor',source:x.source||'data/funds.json',holdings:Array.isArray(x.holdings)?x.holdings:[]}})}
-function pred(a){if(!a.holdings||!a.holdings.length)return null;let sum=0,w=0;for(const h of a.holdings){let wt=n(h.weight),ch=n(h.dailyChange);if(wt!=null&&ch!=null){sum+=wt*ch/100;w+=wt}}return{sum,weight:w,items:a.holdings}}
-function render(){renderTabs();cards.innerHTML=assets.filter(a=>currentCat==='Tümü'||a.cat===currentCat).map(a=>`<div class="card" onclick="openDetail('${a.symbol}')"><div class="label">${a.name}</div><div class="value">${val(a)}</div><div class="${chgCls(a)}">${pct(a)}</div><div class="${cls(a.status)}">${a.status}</div><div class="src">${a.source||'kaynak bekleniyor'} ${a.date?('• '+a.date):''}</div></div>`).join('');fundList.innerHTML=assets.filter(a=>a.cat==='Fonlar').map(a=>`<div class="row"><b>${a.name}</b><span>${val(a)} • <span class="${chgCls(a)}">${pct(a)}</span> • ${(a.holdings||[]).length} hisse</span><span class="${cls(a.status)}">${a.status}</span></div>`).join('');const live=assets.filter(a=>a.status.includes('canlı')||a.status.includes('vault gerçek')).length,fon=assets.filter(a=>a.cat==='Fonlar'&&a.status.includes('vault gerçek')).length;meta.innerHTML=`Son güncelleme: ${new Date().toLocaleString('tr-TR')}<br>Canlı/vault: ${live}/${assets.length}<br>Fon: ${fon}/3`;aiText.textContent=fon?`Data Vault ${fon}/3 fon için gerçek veri sağladı.`:'Data Builder Pro ile funds.json üretip GitHub’da data/funds.json yerine yükleyince fonlar dolacak.';badges.innerHTML=[`Fon: ${fon}/3`,'Sürüm: v6.2','Builder Pro'].map(x=>`<span class="badge">${x}</span>`).join('');vaultStatus.textContent=JSON.stringify({loaded:Boolean(vault.version),lastUpdated:vault.lastUpdated||'',funds:Object.keys(vault.funds||{})},null,2);setTimeout(function(){if(window.loadV7PredictionPermanent){window.loadV7PredictionPermanent()}},300)}
-async function loadAll(){try{let r=await fetch('/api/market?t='+Date.now(),{cache:'no-store'}),j=await r.json(),d=j.assets||{};assets=assets.map(a=>d[a.symbol]?{...a,...d[a.symbol]}:a)}catch(e){}try{vault=await (await fetch('/api/funds?t='+Date.now(),{cache:'no-store'})).json()}catch(e){vault={error:String(e.message||e)}}applyVault();render()}
-function parseLine(line){return line.trim().split(/[\s;,\t]+/).filter(Boolean)}
-function emptyVault(){return {version:'FinScope Data Vault v1',lastUpdated:new Date().toLocaleString('tr-TR'),funds:{PBR:{price:null,dailyChange:null,date:'',source:'TEFAS',holdings:[]},PHE:{price:null,dailyChange:null,date:'',source:'TEFAS',holdings:[]},TLY:{price:null,dailyChange:null,date:'',source:'TEFAS',holdings:[]}}}}
-function buildJson(){let out=emptyVault(),fc=0,hc=0;fundInput.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{let p=parseLine(line),c=(p[0]||'').toUpperCase();if(out.funds[c]){out.funds[c].price=n(p[1]);out.funds[c].dailyChange=n(p[2]);out.funds[c].date=p[3]||'';out.funds[c].source='TEFAS';fc++}});holdInput.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{let p=parseLine(line),c=(p[0]||'').toUpperCase();if(out.funds[c]){out.funds[c].holdings.push({symbol:(p[1]||'').toUpperCase(),name:(p[1]||'').toUpperCase(),weight:n(p[2]),dailyChange:n(p[3])});hc++}});built=out;builderOutput.value=JSON.stringify(out,null,2);builderSummary.innerHTML=`${fc} fon satırı, ${hc} hisse satırı işlendi.`}
-function downloadJson(){if(!built)buildJson();let blob=new Blob([JSON.stringify(built,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='funds.json';a.click()}
-function clearBuilder(){fundInput.value='';holdInput.value='';builderOutput.value='';builderSummary.innerHTML='';built=null}
-function renderPred(){
-  if(typeof summaryBox!=="undefined"&&summaryBox){
-    summaryBox.innerHTML="V7 tahmin motoru yükleniyor...";
-  }
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FinScope Professional v7.0</title>
 
-  if(typeof predTable!=="undefined"&&predTable){
-    predTable.innerHTML="V7 tahmin motoru yükleniyor...";
-  }
+  <style>
+    :root{
+      --bg:#06131f;
+      --panel:#132231;
+      --panel2:#172839;
+      --line:rgba(255,255,255,.16);
+      --txt:#f2fbff;
+      --muted:#a9c0ca;
+      --ok:#5df0ad;
+      --bad:#ff6f86;
+      --warn:#ffd76c;
+      --brand:#0f9f8f;
+      --brand2:#06415a;
+    }
 
-  fetch("/api/predict?t="+Date.now(),{cache:"no-store"})
-    .then(r=>r.json())
-    .then(data=>{
-      if(!data||!data.ok||!data.predictions){
-        if(summaryBox)summaryBox.innerHTML="Tahmin verisi alınamadı.";
-        if(predTable)predTable.innerHTML="Tahmin verisi alınamadı.";
-        return;
-      }
+    *{box-sizing:border-box}
 
-      const confidenceText=v=>{
-        v=Number(v||0);
-        if(v>=90)return"Çok yüksek";
-        if(v>=75)return"Yüksek";
-        if(v>=60)return"Orta";
-        if(v>0)return"Düşük";
-        return"—";
-      };
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--txt);
+      font-family:Segoe UI,Arial,sans-serif;
+      font-size:14px;
+    }
 
-      const pct=v=>{
-        v=Number(v||0);
-        return(v>=0?"▲ ":"▼ ")+Math.abs(v).toFixed(2)+"%";
-      };
+    .app{
+      display:grid;
+      grid-template-columns:250px 1fr;
+      min-height:100vh;
+    }
 
-      const cls=v=>Number(v||0)>=0?"ok":"bad";
+    .side{
+      padding:24px 18px;
+      background:linear-gradient(180deg,var(--brand),var(--brand2));
+      position:sticky;
+      top:0;
+      height:100vh;
+    }
 
-      const rows=Object.entries(data.predictions).map(([code,p])=>({
-        code,
-        predicted:Number(p.predictedChange||0),
-        rangeLow:Number(p.rangeLow||0),
-        rangeHigh:Number(p.rangeHigh||0),
-        confidence:Number(p.confidence||0),
-        methodology:p.methodology||"momentum",
-        observations:p.observations||0
-      }));
+    .brand{
+      font-size:30px;
+      font-weight:950;
+      letter-spacing:-1px;
+    }
 
-      if(summaryBox){
-        summaryBox.innerHTML=rows.map(r=>`
-          <div style="margin-bottom:10px">
-            <b>${r.code}</b>:
-            <span class="${cls(r.predicted)}" style="font-weight:900">${pct(r.predicted)}</span>
-            <div class="small">
-              Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
-              • Güven: ${confidenceText(r.confidence)}
-              • Gözlem: ${r.observations}
-              • Yöntem: ${r.methodology}
-            </div>
-          </div>
-        `).join("")+`
-          <div class="small" style="margin-top:10px;color:#ffd76c">
-            18:00 sonrası gösterilen tahmin, gün sonu kapanış verilerine göre bir sonraki TEFAS fiyat beklentisidir.
-            Yatırım tavsiyesi değildir.
-          </div>
-        `;
-      }
+    .ver{
+      color:#ffd76c;
+      font-size:12px;
+      font-weight:900;
+      margin-top:2px;
+    }
 
-      if(predTable){
-        predTable.innerHTML=`
-          <table class="table">
-            <tr>
-              <th>Fon</th>
-              <th>Anlık Tahmin</th>
-              <th>Alt Aralık</th>
-              <th>Üst Aralık</th>
-              <th>Güven</th>
-              <th>Yöntem</th>
-            </tr>
-            ${rows.map(r=>`
-              <tr>
-                <td><b>${r.code}</b></td>
-                <td class="${cls(r.predicted)}">${pct(r.predicted)}</td>
-                <td>${r.rangeLow.toFixed(2)}%</td>
-                <td>${r.rangeHigh.toFixed(2)}%</td>
-                <td>${confidenceText(r.confidence)}</td>
-                <td>${r.methodology}</td>
-              </tr>
-            `).join("")}
-          </table>
-          <p class="small">
-            Bu tahminler yalnızca bilgilendirme amacıyla sunulur. Yatırım tavsiyesi içermez.
-          </p>
-        `;
-      }
+    .small{
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.45;
+    }
 
-      if(typeof aiText!=="undefined"&&aiText){
-        aiText.textContent="FinScope V7 aktif. TEFAS fiyatları otomatik güncelleniyor. Tahminler /api/predict üzerinden okunuyor. Mevcut model ön momentum modelidir; portföy holdings kapsamı eklendikçe güven skoru güçlenecektir.";
-      }
+    .nav{
+      display:grid;
+      gap:9px;
+      margin-top:28px;
+    }
 
-      if(typeof badges!=="undefined"&&badges){
-        badges.innerHTML=
-          '<span class="badge">V7 Predict API</span>'+
-          '<span class="badge">TEFAS otomatik</span>'+
-          '<span class="badge">18:00 Beklenti</span>'+
-          '<span class="badge">Yatırım tavsiyesi değildir</span>';
-      }
+    .nav button{
+      border:0;
+      border-radius:14px;
+      padding:13px 14px;
+      text-align:left;
+      color:white;
+      background:transparent;
+      font-weight:900;
+      cursor:pointer;
+    }
 
-      addLegalNoticeV7();
-    })
-    .catch(err=>{
-      console.error("renderPred /api/predict error:",err);
-      if(summaryBox)summaryBox.innerHTML="Tahmin API hatası oluştu.";
-      if(predTable)predTable.innerHTML="Tahmin API hatası oluştu.";
-    });
-}
+    .nav button.active,
+    .nav button:hover{
+      background:rgba(255,255,255,.18);
+    }
 
-function addLegalNoticeV7(){
-  const dashboard=document.getElementById("dashboard");
-  if(!dashboard)return;
-  if(document.getElementById("legalNoticeV7"))return;
+    main{
+      padding:30px 36px 36px;
+    }
 
-  const box=document.createElement("div");
-  box.id="legalNoticeV7";
-  box.className="panel";
-  box.style.marginTop="22px";
-  box.innerHTML=`
-    <h2>Hukuki Bilgilendirme</h2>
+    .section{display:none}
+    .section.active{display:block}
+
+    .top{
+      display:flex;
+      justify-content:space-between;
+      gap:20px;
+      align-items:flex-start;
+      margin-bottom:18px;
+    }
+
+    h1{
+      margin:0 0 8px;
+      font-size:28px;
+      letter-spacing:-.4px;
+    }
+
+    h2{
+      margin:0 0 14px;
+      font-size:18px;
+    }
+
+    .sub{
+      color:var(--muted);
+      line-height:1.45;
+    }
+
+    .pill{
+      display:inline-flex;
+      border:1px solid var(--line);
+      border-radius:999px;
+      padding:7px 11px;
+      margin:10px 7px 0 0;
+      font-size:12px;
+      color:#d7eef6;
+      font-weight:850;
+      background:rgba(255,255,255,.06);
+    }
+
+    .refresh{
+      border:0;
+      border-radius:16px;
+      background:linear-gradient(135deg,#84e9ff,#7aa8ff);
+      color:white;
+      font-weight:950;
+      padding:12px 18px;
+      cursor:pointer;
+      box-shadow:0 12px 30px rgba(0,0,0,.25);
+    }
+
+    .meta{
+      text-align:right;
+      font-size:12px;
+      color:var(--muted);
+      margin-top:8px;
+      line-height:1.45;
+    }
+
+    .tabs{
+      display:flex;
+      flex-wrap:wrap;
+      gap:9px;
+      margin:18px 0;
+    }
+
+    .tab{
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.08);
+      color:white;
+      border-radius:999px;
+      padding:9px 14px;
+      font-weight:900;
+      cursor:pointer;
+    }
+
+    .tab.active{
+      background:rgba(132,233,255,.22);
+      border-color:rgba(132,233,255,.45);
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(230px,1fr));
+      gap:16px;
+    }
+
+    .card,.panel{
+      border:1px solid var(--line);
+      border-radius:22px;
+      padding:18px;
+      background:linear-gradient(145deg,rgba(255,255,255,.10),rgba(255,255,255,.035));
+      box-shadow:0 18px 44px rgba(0,0,0,.25);
+    }
+
+    .card{
+      min-height:150px;
+    }
+
+    .label{
+      font-size:13px;
+      font-weight:950;
+      color:#fff;
+    }
+
+    .value{
+      font-size:30px;
+      font-weight:950;
+      margin:14px 0 6px;
+      letter-spacing:-.5px;
+    }
+
+    .ok{color:var(--ok)}
+    .bad{color:var(--bad)}
+    .warn{color:var(--warn)}
+
+    .src{
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.35;
+      margin-top:4px;
+    }
+
+    .panels{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:16px;
+      margin-top:18px;
+    }
+
+    .badge{
+      border:1px solid var(--line);
+      border-radius:999px;
+      padding:6px 10px;
+      font-size:12px;
+      font-weight:900;
+      background:rgba(255,255,255,.08);
+      display:inline-block;
+      margin:4px 5px 0 0;
+    }
+
+    .table{
+      width:100%;
+      border-collapse:collapse;
+      margin-top:10px;
+      font-size:13px;
+    }
+
+    .table th,.table td{
+      border-bottom:1px solid rgba(255,255,255,.12);
+      padding:10px;
+      text-align:left;
+      vertical-align:top;
+    }
+
+    .table th{
+      color:#d8f3fb;
+      font-size:12px;
+    }
+
+    .row{
+      display:grid;
+      grid-template-columns:100px 1fr auto;
+      gap:12px;
+      border:1px solid var(--line);
+      border-radius:15px;
+      padding:12px;
+      background:rgba(255,255,255,.055);
+      margin-bottom:9px;
+    }
+
+    .legal{
+      margin-top:18px;
+      border-color:rgba(255,215,108,.25);
+    }
+
+    .diag{
+      font-family:ui-monospace,Menlo,Consolas,monospace;
+      background:rgba(0,0,0,.25);
+      border:1px solid var(--line);
+      color:#dff6ff;
+      padding:14px;
+      border-radius:14px;
+      white-space:pre-wrap;
+      overflow:auto;
+      max-height:420px;
+    }
+
+    .footer-note{
+      color:#95aeb8;
+      font-size:11px;
+      line-height:1.45;
+    }
+
+    @media(max-width:900px){
+      .app{grid-template-columns:1fr}
+      .side{height:auto;position:relative}
+      .grid,.panels{grid-template-columns:1fr}
+      .top{display:block}
+      .meta{text-align:left}
+      main{padding:24px 18px}
+    }
+  </style>
+</head>
+
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand">FinScope</div>
+    <div class="ver">Professional v7.0 Prediction Engine</div>
     <p class="small">
-      © 2026 FinScope Professional. Tüm hakları saklıdır.
-      Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
-      Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
-      Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
-      Veriler gecikmeli, eksik veya hatalı olabilir.
-      FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
+      TEFAS fon fiyatları<br>
+      Supabase Data Vault<br>
+      Holdings weighted prediction
     </p>
-  `;
-  dashboard.appendChild(box);
-}
-function openDetail(sym){let a=assets.find(x=>x.symbol===sym),p=pred(a);mTitle.textContent=a.name+' Detay';mGrid.innerHTML=[['Kategori',a.cat],['Durum',a.status],['Son değer',val(a)],['Günlük değişim',pct(a)],['Kaynak',a.source||'—'],['Tarih',a.date||'—'],['Tahmini katkı',p?fmt2.format(p.sum)+'%':'—'],['Kapsanan ağırlık',p?'%'+fmt2.format(p.weight):'—']].map(([k,v])=>`<div class="mini"><div class="small">${k}</div><b>${v}</b></div>`).join('');mExtra.innerHTML=(a.holdings||[]).length?`<h3>Holdings</h3><table class="table"><tr><th>Hisse</th><th>Ağırlık</th><th>Günlük %</th><th>Katkı</th></tr>`+a.holdings.map(h=>`<tr><td>${h.symbol}</td><td>%${fmt2.format(n(h.weight)||0)}</td><td>${fmt2.format(n(h.dailyChange)||0)}%</td><td>${fmt2.format((n(h.weight)||0)*(n(h.dailyChange)||0)/100)}%</td></tr>`).join('')+`</table>`:'';mNote.textContent='v6.2: gerçek veri data/funds.json dosyasından gelir. Yatırım tavsiyesi değildir.';modal.classList.add('show')}
-function closeModal(){modal.classList.remove('show')}document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));document.getElementById(b.dataset.section).classList.add('active')});renderPred=function(){
-  var summary=document.getElementById("summaryBox");
-  var ai=document.getElementById("aiText");
-  var badgesBox=document.getElementById("badges");
 
-  if(summary){
-    summary.innerHTML="V7 holdings ağırlıklı tahmin yükleniyor...";
-  }
-
-  fetch("/api/predict?t="+Date.now(),{cache:"no-store"})
-    .then(function(r){return r.json();})
-    .then(function(data){
-      if(!data||!data.ok||!data.predictions){
-        if(summary)summary.innerHTML="Tahmin verisi alınamadı.";
-        return;
-      }
-
-      function pct(v){
-        v=Number(v||0);
-        return (v>=0?"▲ ":"▼ ")+Math.abs(v).toFixed(2)+"%";
-      }
-
-      function cls(v){
-        return Number(v||0)>=0?"ok":"bad";
-      }
-
-      function conf(v){
-        v=Number(v||0);
-        if(v>=90)return"Çok yüksek";
-        if(v>=75)return"Yüksek";
-        if(v>=60)return"Orta";
-        if(v>0)return"Düşük";
-        return"—";
-      }
-
-      var rows=Object.entries(data.predictions).map(function(entry){
-        var code=entry[0];
-        var p=entry[1]||{};
-        return {
-          code:code,
-          predicted:Number(p.predictedChange||0),
-          rangeLow:Number(p.rangeLow||0),
-          rangeHigh:Number(p.rangeHigh||0),
-          confidence:Number(p.confidence||0),
-          coverage:Number(p.coverage||0),
-          observations:Number(p.observations||0)
-        };
-      });
-
-      if(summary){
-        summary.innerHTML=rows.map(function(r){
-          return '<div style="margin-bottom:10px">'+
-            '<b>'+r.code+'</b>: '+
-            '<span class="'+cls(r.predicted)+'" style="font-weight:900">'+pct(r.predicted)+'</span>'+
-            '<div class="small">'+
-            'Aralık: '+r.rangeLow.toFixed(2)+'% / '+r.rangeHigh.toFixed(2)+'%'+
-            ' • Güven: '+conf(r.confidence)+
-            ' • Kapsam: %'+r.coverage.toFixed(2)+
-            ' • Gözlem: '+r.observations+
-            '</div>'+
-            '</div>';
-        }).join("")+
-        '<div class="small" style="margin-top:10px;color:#ffd76c">'+
-        '18:00 sonrası gösterilen tahmin, gün sonu piyasa hareketlerine göre bir sonraki TEFAS fiyat beklentisidir. '+
-        'Bu bilgiler yatırım tavsiyesi değildir.'+
-        '</div>';
-      }
-
-      if(ai){
-        ai.textContent="FinScope V7 Holdings Weighted Prediction aktif. Tahminler fon portföy ağırlıkları, XU100/REPO/TRY proxy hareketleri ve gün içi piyasa verileriyle hesaplanıyor. Portföy verisi gerçek kırılımla güncellendikçe tahmin kalitesi artacaktır.";
-      }
-
-      if(badgesBox){
-        badgesBox.innerHTML=
-          '<span class="badge">V7 Holdings Model</span>'+
-          '<span class="badge">Kapsam %100 test</span>'+
-          '<span class="badge">18:00 Beklenti</span>'+
-          '<span class="badge">Yatırım tavsiyesi değildir</span>';
-      }
-
-      document.querySelectorAll("body *").forEach(function(el){
-        if(el.childNodes.length===1&&el.textContent&&el.textContent.includes("v6.2")){
-          el.textContent=el.textContent.replaceAll("v6.2","v7.0");
-        }
-      });
-    })
-    .catch(function(e){
-      console.error("V7 renderPred error:",e);
-      if(summary)summary.innerHTML="Tahmin API bağlantı hatası.";
-    });
-};
-
-render();loadAll();
-</script>
-  <script>
-(function () {
-  document.title = "FinScope Professional v6.3 Prediction Engine Pro";
-
-  const ver = document.querySelector(".ver");
-  if (ver) ver.textContent = "Professional v6.3 Prediction Engine Pro";
-
-  const repo = document.querySelector(".repo");
-  if (repo) {
-    repo.innerHTML =
-      "Pozitif / negatif katkı<br>Kapsama ve güven<br>Gerçekleşen / tahmin sapması";
-  }
-
-  if (typeof holdInput !== "undefined") {
-    holdInput.placeholder =
-      "PBR HISSE ASELS 8,5 1,2\n" +
-      "PBR HISSE THYAO 7,4 -0,3\n" +
-      "PBR REPO REPO 6,0 0,0\n" +
-      "PBR NAKIT TRY 3,5 0,0\n" +
-      "PBR TAHVIL TAHVIL 4,2 0,03";
-  }
-
-  const VALID_TYPES = [
-    "HISSE",
-    "REPO",
-    "NAKIT",
-    "TAHVIL",
-    "DOVIZ",
-    "ALTIN",
-    "FON",
-    "DIGER"
-  ];
-
-  function num(v) {
-    if (v === null || v === undefined || v === "") return null;
-    const n = Number(String(v).trim().replace("%", "").replace(",", "."));
-    return Number.isFinite(n) ? n : null;
-  }
-
-  function assetType(v) {
-    const t = String(v || "")
-      .toUpperCase()
-      .replace("İ", "I");
-
-    if (t === "STOCK") return "HISSE";
-    if (t === "CASH") return "NAKIT";
-    if (t === "BOND") return "TAHVIL";
-    if (t === "FX") return "DOVIZ";
-
-    return VALID_TYPES.includes(t) ? t : "HISSE";
-  }
-
-  function analyzeFund(asset) {
-    const holdings = Array.isArray(asset.holdings) ? asset.holdings : [];
-
-    let positive = 0;
-    let negative = 0;
-    let net = 0;
-    let coveredWeight = 0;
-
-    const typeWeights = {};
-    const items = [];
-
-    for (const h of holdings) {
-      const weight = num(h.weight);
-      const dailyChange = num(h.dailyChange);
-
-      if (weight === null || dailyChange === null) continue;
-
-      const type = assetType(h.type || h.assetType || "HISSE");
-      const contribution = (weight * dailyChange) / 100;
-
-      net += contribution;
-      coveredWeight += weight;
-
-      if (contribution >= 0) positive += contribution;
-      else negative += contribution;
-
-      typeWeights[type] = (typeWeights[type] || 0) + weight;
-
-      items.push({
-        type,
-        symbol: String(h.symbol || h.name || "").toUpperCase(),
-        name: h.name || h.symbol || "",
-        weight,
-        dailyChange,
-        contribution
-      });
-    }
-
-    const uncoveredWeight = Math.max(0, 100 - coveredWeight);
-
-    if (uncoveredWeight > 0.01) {
-      typeWeights["KAPSANMAYAN"] = uncoveredWeight;
-    }
-
-    const actual = num(asset.change);
-    const error = actual === null ? null : net - actual;
-    const absError = error === null ? null : Math.abs(error);
-
-    let quality = "—";
-
-    if (absError !== null) {
-      if (absError <= 0.10) quality = "Çok iyi";
-      else if (absError <= 0.25) quality = "İyi";
-      else if (absError <= 0.50) quality = "Orta";
-      else quality = "Zayıf";
-    }
-
-    const confidence = Math.max(
-      5,
-      Math.min(
-        95,
-        Math.round(20 + coveredWeight * 0.7 - (absError === null ? 0 : absError * 12))
-      )
-    );
-
-    return {
-      positive,
-      negative,
-      net,
-      coveredWeight,
-      uncoveredWeight,
-      typeWeights,
-      items,
-      actual,
-      error,
-      absError,
-      quality,
-      confidence,
-      topPositive: items
-        .filter(x => x.contribution > 0)
-        .sort((a, b) => b.contribution - a.contribution)
-        .slice(0, 5),
-      topNegative: items
-        .filter(x => x.contribution < 0)
-        .sort((a, b) => a.contribution - b.contribution)
-        .slice(0, 5)
-    };
-  }
-
-  window.buildJson = function () {
-    const out = {
-      version: "FinScope Data Vault v1",
-      lastUpdated: new Date().toLocaleString("tr-TR"),
-      funds: {
-        PBR: {
-          price: null,
-          dailyChange: null,
-          date: "",
-          source: "TEFAS",
-          holdings: []
-        },
-        PHE: {
-          price: null,
-          dailyChange: null,
-          date: "",
-          source: "TEFAS",
-          holdings: []
-        },
-        TLY: {
-          price: null,
-          dailyChange: null,
-          date: "",
-          source: "TEFAS",
-          holdings: []
-        }
-      }
-    };
-
-    let fundRows = 0;
-    let holdingRows = 0;
-
-    const fundLines = String(fundInput.value || "")
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(Boolean);
-
-    for (const line of fundLines) {
-      const p = line.split(/[\s;\t]+/).filter(Boolean);
-      const code = String(p[0] || "").toUpperCase();
-
-      if (!out.funds[code]) continue;
-
-      out.funds[code].price = num(p[1]);
-      out.funds[code].dailyChange = num(p[2]);
-      out.funds[code].date = p[3] || "";
-      out.funds[code].source = "TEFAS";
-
-      fundRows++;
-    }
-
-    const holdingLines = String(holdInput.value || "")
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(Boolean);
-
-    for (const line of holdingLines) {
-      const p = line.split(/[\s;\t]+/).filter(Boolean);
-      const fund = String(p[0] || "").toUpperCase();
-
-      if (!out.funds[fund]) continue;
-
-      let type = "HISSE";
-      let symbol = "";
-      let weight = null;
-      let dailyChange = null;
-
-      if (VALID_TYPES.includes(assetType(p[1])) && p.length >= 5) {
-        type = assetType(p[1]);
-        symbol = String(p[2] || "").toUpperCase();
-        weight = num(p[3]);
-        dailyChange = num(p[4]);
-      } else {
-        type = "HISSE";
-        symbol = String(p[1] || "").toUpperCase();
-        weight = num(p[2]);
-        dailyChange = num(p[3]);
-      }
-
-      out.funds[fund].holdings.push({
-        type,
-        symbol,
-        name: symbol,
-        weight,
-        dailyChange
-      });
-
-      holdingRows++;
-    }
-
-    built = out;
-    builderOutput.value = JSON.stringify(out, null, 2);
-
-    if (typeof builderSummary !== "undefined") {
-      builderSummary.innerHTML =
-        fundRows +
-        " fon satırı, " +
-        holdingRows +
-        " menkul değer satırı işlendi.";
-    }
-  };
-
-  window.renderPred = function () {
-    const rows = assets
-      .filter(a => a.cat === "Fonlar")
-      .map(a => [a, analyzeFund(a)])
-      .filter(x => x[1].coveredWeight > 0);
-
-    if (!rows.length) {
-      predTable.innerHTML = "Holdings verisi girilince tahmin oluşacak.";
-      summaryBox.innerHTML = "Data Vault holdings bekliyor.";
-      return;
-    }
-
-    predTable.innerHTML =
-      `<table class="table">
-        <tr>
-          <th>Fon</th>
-          <th>Gerçek</th>
-          <th>Tahmin</th>
-          <th>Sapma</th>
-          <th>Pozitif</th>
-          <th>Negatif</th>
-          <th>Kapsam</th>
-          <th>Güven</th>
-          <th>Başarı</th>
-        </tr>` +
-      rows
-        .map(([asset, p]) => {
-          return `<tr>
-            <td>${asset.symbol}</td>
-            <td>${pct(asset)}</td>
-            <td class="${p.net >= 0 ? "ok" : "bad"}">
-              ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(Math.abs(p.net))}%
-            </td>
-            <td class="${
-              p.error === null ? "wait" : Math.abs(p.error) <= 0.25 ? "ok" : "bad"
-            }">
-              ${p.error === null ? "—" : fmt2.format(p.error) + "%"}
-            </td>
-            <td class="ok">+${fmt2.format(p.positive)}%</td>
-            <td class="bad">${fmt2.format(p.negative)}%</td>
-            <td>%${fmt2.format(p.coveredWeight)}</td>
-            <td>${p.confidence}/100</td>
-            <td>${p.quality}</td>
-          </tr>`;
-        })
-        .join("") +
-      `</table>`;
-
-    summaryBox.innerHTML = rows
-      .map(([asset, p]) => {
-        return `<div>
-          <b>${asset.symbol}</b>:
-          <span class="${p.net >= 0 ? "ok" : "bad"}">
-            ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(Math.abs(p.net))}%
-          </span>
-          <span class="small">
-            Kapsam %${fmt2.format(p.coveredWeight)}
-            • Güven ${p.confidence}/100
-            • Sapma ${p.error === null ? "—" : fmt2.format(p.error) + "%"}
-          </span>
-        </div>`;
-      })
-      .join("");
-  };
-
-  function distributionHtml(typeWeights) {
-    const rows = Object.entries(typeWeights).sort((a, b) => b[1] - a[1]);
-
-    if (!rows.length) return "";
-
-    return (
-      "<h3>Varlık Tipi Dağılımı</h3>" +
-      rows
-        .map(([type, weight]) => {
-          return `<div class="small">${type} %${fmt2.format(weight)}</div>
-          <div style="height:8px;border-radius:999px;background:rgba(255,255,255,.18);overflow:hidden;margin-top:6px;margin-bottom:8px">
-            <span style="display:block;height:100%;width:${Math.max(
-              2,
-              Math.min(100, weight)
-            )}%;background:rgba(255,255,255,.65)"></span>
-          </div>`;
-        })
-        .join("")
-    );
-  }
-
-  function contributionTable(title, rows) {
-    if (!rows.length) return "";
-
-    return (
-      `<h3>${title}</h3>
-      <table class="table">
-        <tr>
-          <th>Tip</th>
-          <th>Menkul</th>
-          <th>Ağırlık</th>
-          <th>Günlük %</th>
-          <th>Katkı</th>
-        </tr>` +
-      rows
-        .map(x => {
-          return `<tr>
-            <td>${x.type}</td>
-            <td>${x.symbol}</td>
-            <td>%${fmt2.format(x.weight)}</td>
-            <td>${fmt2.format(x.dailyChange)}%</td>
-            <td class="${x.contribution >= 0 ? "ok" : "bad"}">
-              ${fmt2.format(x.contribution)}%
-            </td>
-          </tr>`;
-        })
-        .join("") +
-      `</table>`
-    );
-  }
-
-  function allItemsTable(rows) {
-    if (!rows.length) return "";
-
-    const sorted = rows
-      .slice()
-      .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
-
-    return (
-      `<h3>Tüm Menkul Değerler</h3>
-      <table class="table">
-        <tr>
-          <th>Tip</th>
-          <th>Menkul</th>
-          <th>Ağırlık</th>
-          <th>Günlük %</th>
-          <th>Katkı</th>
-        </tr>` +
-      sorted
-        .map(x => {
-          return `<tr>
-            <td>${x.type}</td>
-            <td>${x.symbol}</td>
-            <td>%${fmt2.format(x.weight)}</td>
-            <td>${fmt2.format(x.dailyChange)}%</td>
-            <td class="${x.contribution >= 0 ? "ok" : "bad"}">
-              ${fmt2.format(x.contribution)}%
-            </td>
-          </tr>`;
-        })
-        .join("") +
-      `</table>`
-    );
-  }
-
-  window.openDetail = function (sym) {
-    const asset = assets.find(x => x.symbol === sym);
-    const p = analyzeFund(asset);
-
-    mTitle.textContent = asset.name + " Detay";
-
-    mGrid.innerHTML = [
-      ["Kategori", asset.cat],
-      ["Durum", asset.status],
-      ["Son değer", val(asset)],
-      ["Gerçek günlük", pct(asset)],
-      ["Tahmin", p.coveredWeight ? fmt2.format(p.net) + "%" : "—"],
-      ["Sapma", p.error === null ? "—" : fmt2.format(p.error) + "%"],
-      ["Pozitif katkı", "+" + fmt2.format(p.positive) + "%"],
-      ["Negatif katkı", fmt2.format(p.negative) + "%"],
-      ["Kapsanan ağırlık", "%" + fmt2.format(p.coveredWeight)],
-      ["Kapsanmayan", "%" + fmt2.format(p.uncoveredWeight)],
-      ["Güven", p.coveredWeight ? p.confidence + "/100" : "—"],
-      ["Başarı", p.quality]
-    ]
-      .map(([k, v]) => {
-        return `<div class="mini">
-          <div class="small">${k}</div>
-          <b>${v}</b>
-        </div>`;
-      })
-      .join("");
-
-    mExtra.innerHTML =
-      distributionHtml(p.typeWeights) +
-      contributionTable("En Pozitif Katkılar", p.topPositive) +
-      contributionTable("En Negatif Katkılar", p.topNegative) +
-      allItemsTable(p.items);
-
-    mNote.textContent =
-      "v6.3: Tahmin; girilen menkul değerlerin ağırlık × günlük değişim toplamıdır. Yatırım tavsiyesi değildir.";
-
-    modal.classList.add("show");
-  };
-
-  window.render = function () {
-    renderTabs();
-
-    cards.innerHTML = assets
-      .filter(a => currentCat === "Tümü" || a.cat === currentCat)
-      .map(a => {
-        const p = a.cat === "Fonlar" ? analyzeFund(a) : null;
-        const predictionLine =
-          p && p.coveredWeight > 0
-            ? `<div class="${p.net >= 0 ? "ok" : "bad"}">
-                Tahmin: ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(
-                Math.abs(p.net)
-              )}%
-              </div>`
-            : "";
-
-        return `<div class="card" onclick="openDetail('${a.symbol}')">
-          <div class="label">${a.name}</div>
-          <div class="value">${val(a)}</div>
-          <div class="${chgCls(a)}">${pct(a)}</div>
-          ${predictionLine}
-          <div class="${cls(a.status)}">${a.status}</div>
-          <div class="src">${a.source || "kaynak bekleniyor"} ${
-          a.date ? "• " + a.date : ""
-        }</div>
-        </div>`;
-      })
-      .join("");
-
-    fundList.innerHTML = assets
-      .filter(a => a.cat === "Fonlar")
-      .map(a => {
-        const p = analyzeFund(a);
-        return `<div class="row">
-          <b>${a.name}</b>
-          <span>
-            ${val(a)}
-            • ${pct(a)}
-            • Kapsam %${fmt2.format(p.coveredWeight)}
-            • Tahmin ${fmt2.format(p.net)}%
-          </span>
-          <span class="${cls(a.status)}">${a.status}</span>
-        </div>`;
-      })
-      .join("");
-
-    const live = assets.filter(
-      a => a.status.includes("canlı") || a.status.includes("vault gerçek")
-    ).length;
-
-    const fon = assets.filter(
-      a => a.cat === "Fonlar" && a.status.includes("vault gerçek")
-    ).length;
-
-    meta.innerHTML =
-      `Son güncelleme: ${new Date().toLocaleString("tr-TR")}` +
-      `<br>Canlı/vault: ${live}/${assets.length}` +
-      `<br>Fon: ${fon}/3`;
-
-    aiText.textContent = fon
-      ? "Prediction Engine Pro aktif. Fonlarda kapsama, pozitif/negatif katkı, sapma ve güven skoru hesaplanıyor."
-      : "Data Builder Pro ile funds.json üretip GitHub’da data/funds.json yerine yükleyince fonlar dolacak.";
-
-    badges.innerHTML = [
-      `Fon: ${fon}/3`,
-      "Sürüm: v6.3",
-      "Prediction Pro"
-    ]
-      .map(x => `<span class="badge">${x}</span>`)
-      .join("");
-
-    vaultStatus.textContent = JSON.stringify(
-      {
-        loaded: Boolean(vault.version),
-        lastUpdated: vault.lastUpdated || "",
-        funds: Object.keys(vault.funds || {})
-      },
-      null,
-      2
-    );
-
-    renderPred();
-  };
-
-  setTimeout(() => {
-    try {
-      render();
-    } catch (e) {
-      console.error("FinScope v6.3 patch error:", e);
-    }
-  }, 100);
-})();
-</script>
-
-<script>
-(function () {
-  document.title = "FinScope Professional v6.4 Prediction Engine Pro + DXY";
-
-  const ver = document.querySelector(".ver");
-  if (ver) ver.textContent = "Professional v6.4 Prediction Engine Pro + DXY";
-
-  const repo = document.querySelector(".repo");
-  if (repo) {
-    repo.innerHTML =
-      "DXY eklendi<br>Tum menkul degerler<br>Pozitif / negatif katki";
-  }
-
-  if (Array.isArray(assets) && !assets.some(a => a.symbol === "DXY")) {
-    const insertIndex = assets.findIndex(a => a.symbol === "XAU");
-
-    const dxyAsset = {
-      symbol: "DXY",
-      name: "Dolar Endeksi",
-      cat: "Döviz",
-      unit: "",
-      value: null,
-      status: "veri bekleniyor",
-      source: "Yahoo Finance",
-      change: null,
-      date: "",
-      holdings: []
-    };
-
-    if (insertIndex >= 0) assets.splice(insertIndex, 0, dxyAsset);
-    else assets.push(dxyAsset);
-  }
-
-  const VALID_TYPES = [
-    "HISSE",
-    "REPO",
-    "NAKIT",
-    "TAHVIL",
-    "DOVIZ",
-    "ALTIN",
-    "FON",
-    "DIGER"
-  ];
-
-  function num(v) {
-    if (v === null || v === undefined || v === "") return null;
-    const n = Number(String(v).trim().replace("%", "").replace(",", "."));
-    return Number.isFinite(n) ? n : null;
-  }
-
-  function assetType(v) {
-    const t = String(v || "")
-      .toUpperCase()
-      .replace("İ", "I");
-
-    if (t === "STOCK") return "HISSE";
-    if (t === "CASH") return "NAKIT";
-    if (t === "BOND") return "TAHVIL";
-    if (t === "FX") return "DOVIZ";
-
-    return VALID_TYPES.includes(t) ? t : "HISSE";
-  }
-
-  function splitLine(line) {
-    if (line.includes(";")) {
-      return line.split(";").map(x => x.trim()).filter(Boolean);
-    }
-
-    return line.trim().split(/[\s\t]+/).filter(Boolean);
-  }
-
-  function analyzeFund(asset) {
-    const holdings = Array.isArray(asset.holdings) ? asset.holdings : [];
-
-    let positive = 0;
-    let negative = 0;
-    let net = 0;
-    let activeWeight = 0;
-    let missingWeight = 0;
-
-    const typeWeights = {};
-    const items = [];
-
-    for (const h of holdings) {
-      const weight = num(h.weight);
-      const dailyChange = num(h.dailyChange);
-
-      if (weight === null || dailyChange === null) continue;
-
-      const type = assetType(h.type || h.assetType || "HISSE");
-      const contribution = (weight * dailyChange) / 100;
-
-      if (h.auto || type === "KAPSANMAYAN") {
-        missingWeight += weight;
-        typeWeights["KAPSANMAYAN"] =
-          (typeWeights["KAPSANMAYAN"] || 0) + weight;
-        continue;
-      }
-
-      activeWeight += weight;
-      net += contribution;
-
-      if (contribution >= 0) positive += contribution;
-      else negative += contribution;
-
-      typeWeights[type] = (typeWeights[type] || 0) + weight;
-
-      items.push({
-        type,
-        symbol: String(h.symbol || h.name || "").toUpperCase(),
-        name: h.name || h.symbol || "",
-        weight,
-        dailyChange,
-        contribution
-      });
-    }
-
-    if (missingWeight <= 0.01) {
-      missingWeight = Math.max(0, 100 - activeWeight);
-      if (missingWeight > 0.01) {
-        typeWeights["KAPSANMAYAN"] = missingWeight;
-      }
-    }
-
-    const actual = num(asset.change);
-    const error = actual === null ? null : net - actual;
-    const absError = error === null ? null : Math.abs(error);
-
-    let quality = "—";
-
-    if (absError !== null) {
-      if (absError <= 0.10) quality = "Çok iyi";
-      else if (absError <= 0.25) quality = "İyi";
-      else if (absError <= 0.50) quality = "Orta";
-      else quality = "Zayıf";
-    }
-
-    const confidence = Math.max(
-      5,
-      Math.min(
-        95,
-        Math.round(20 + activeWeight * 0.72 - (absError === null ? 0 : absError * 12))
-      )
-    );
-
-    return {
-      positive,
-      negative,
-      net,
-      activeWeight,
-      missingWeight,
-      typeWeights,
-      items,
-      actual,
-      error,
-      absError,
-      quality,
-      confidence,
-      topPositive: items
-        .filter(x => x.contribution > 0)
-        .sort((a, b) => b.contribution - a.contribution)
-        .slice(0, 5),
-      topNegative: items
-        .filter(x => x.contribution < 0)
-        .sort((a, b) => a.contribution - b.contribution)
-        .slice(0, 5)
-    };
-  }
-
-  window.buildJson = function () {
-    const out = {
-      version: "FinScope Data Vault v1",
-      lastUpdated: new Date().toLocaleString("tr-TR"),
-      funds: {
-        PBR: {
-          price: null,
-          dailyChange: null,
-          date: "",
-          source: "TEFAS",
-          holdings: []
-        },
-        PHE: {
-          price: null,
-          dailyChange: null,
-          date: "",
-          source: "TEFAS",
-          holdings: []
-        },
-        TLY: {
-          price: null,
-          dailyChange: null,
-          date: "",
-          source: "TEFAS",
-          holdings: []
-        }
-      }
-    };
-
-    let fundRows = 0;
-    let holdingRows = 0;
-
-    String(fundInput.value || "")
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(Boolean)
-      .forEach(line => {
-        const p = splitLine(line);
-        const code = String(p[0] || "").toUpperCase();
-
-        if (!out.funds[code]) return;
-
-        out.funds[code].price = num(p[1]);
-        out.funds[code].dailyChange = num(p[2]);
-        out.funds[code].date = p[3] || "";
-        out.funds[code].source = "TEFAS";
-
-        fundRows++;
-      });
-
-    String(holdInput.value || "")
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(Boolean)
-      .forEach(line => {
-        const p = splitLine(line);
-        const fund = String(p[0] || "").toUpperCase();
-
-        if (!out.funds[fund]) return;
-
-        let type = "HISSE";
-        let symbol = "";
-        let weight = null;
-        let dailyChange = null;
-
-        if (VALID_TYPES.includes(assetType(p[1])) && p.length >= 5) {
-          type = assetType(p[1]);
-          symbol = String(p[2] || "").toUpperCase();
-          weight = num(p[3]);
-          dailyChange = num(p[4]);
-        } else {
-          type = "HISSE";
-          symbol = String(p[1] || "").toUpperCase();
-          weight = num(p[2]);
-          dailyChange = num(p[3]);
-        }
-
-        out.funds[fund].holdings.push({
-          type,
-          symbol,
-          name: symbol,
-          weight,
-          dailyChange
-        });
-
-        holdingRows++;
-      });
-
-    Object.values(out.funds).forEach(fund => {
-      const activeWeight = fund.holdings.reduce((sum, h) => {
-        const w = num(h.weight);
-        return sum + (w || 0);
-      }, 0);
-
-      const missing = Math.max(0, 100 - activeWeight);
-
-      if (missing > 0.01) {
-        fund.holdings.push({
-          type: "KAPSANMAYAN",
-          symbol: "KAPSANMAYAN",
-          name: "Kapsanmayan Portföy",
-          weight: missing,
-          dailyChange: 0,
-          auto: true
-        });
-      }
-    });
-
-    built = out;
-    builderOutput.value = JSON.stringify(out, null, 2);
-
-    if (typeof builderSummary !== "undefined") {
-      builderSummary.innerHTML =
-        fundRows +
-        " fon satırı, " +
-        holdingRows +
-        " menkul değer satırı işlendi. Eksik ağırlıklar KAPSANMAYAN olarak 0 değişimle tamamlandı.";
-    }
-  };
-
-  window.renderPred = function () {
-    const rows = assets
-      .filter(a => a.cat === "Fonlar")
-      .map(a => [a, analyzeFund(a)])
-      .filter(x => x[1].activeWeight > 0);
-
-    if (!rows.length) {
-      predTable.innerHTML = "Holdings verisi girilince tahmin oluşacak.";
-      summaryBox.innerHTML = "Data Vault holdings bekliyor.";
-      return;
-    }
-
-    predTable.innerHTML =
-      `<table class="table">
-        <tr>
-          <th>Fon</th>
-          <th>Gerçek</th>
-          <th>Tahmin</th>
-          <th>Sapma</th>
-          <th>Pozitif</th>
-          <th>Negatif</th>
-          <th>Aktif Kapsam</th>
-          <th>Eksik</th>
-          <th>Güven</th>
-          <th>Başarı</th>
-        </tr>` +
-      rows
-        .map(([asset, p]) => {
-          return `<tr>
-            <td>${asset.symbol}</td>
-            <td>${pct(asset)}</td>
-            <td class="${p.net >= 0 ? "ok" : "bad"}">
-              ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(Math.abs(p.net))}%
-            </td>
-            <td class="${
-              p.error === null ? "wait" : Math.abs(p.error) <= 0.25 ? "ok" : "bad"
-            }">
-              ${p.error === null ? "—" : fmt2.format(p.error) + "%"}
-            </td>
-            <td class="ok">+${fmt2.format(p.positive)}%</td>
-            <td class="bad">${fmt2.format(p.negative)}%</td>
-            <td>%${fmt2.format(p.activeWeight)}</td>
-            <td>%${fmt2.format(p.missingWeight)}</td>
-            <td>${p.confidence}/100</td>
-            <td>${p.quality}</td>
-          </tr>`;
-        })
-        .join("") +
-      `</table>`;
-
-    summaryBox.innerHTML = rows
-      .map(([asset, p]) => {
-        return `<div>
-          <b>${asset.symbol}</b>:
-          <span class="${p.net >= 0 ? "ok" : "bad"}">
-            ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(Math.abs(p.net))}%
-          </span>
-          <span class="small">
-            Kapsam %${fmt2.format(p.activeWeight)}
-            • Eksik %${fmt2.format(p.missingWeight)}
-            • Güven ${p.confidence}/100
-          </span>
-        </div>`;
-      })
-      .join("");
-  };
-
-  function distributionHtml(typeWeights) {
-    const rows = Object.entries(typeWeights).sort((a, b) => b[1] - a[1]);
-
-    if (!rows.length) return "";
-
-    return (
-      "<h3>Varlık Tipi Dağılımı</h3>" +
-      rows
-        .map(([type, weight]) => {
-          return `<div class="small">${type} %${fmt2.format(weight)}</div>
-          <div style="height:8px;border-radius:999px;background:rgba(255,255,255,.18);overflow:hidden;margin-top:6px;margin-bottom:8px">
-            <span style="display:block;height:100%;width:${Math.max(
-              2,
-              Math.min(100, weight)
-            )}%;background:rgba(255,255,255,.65)"></span>
-          </div>`;
-        })
-        .join("")
-    );
-  }
-
-  function contributionTable(title, rows) {
-    if (!rows.length) return "";
-
-    return (
-      `<h3>${title}</h3>
-      <table class="table">
-        <tr>
-          <th>Tip</th>
-          <th>Menkul</th>
-          <th>Ağırlık</th>
-          <th>Günlük %</th>
-          <th>Katkı</th>
-        </tr>` +
-      rows
-        .map(x => {
-          return `<tr>
-            <td>${x.type}</td>
-            <td>${x.symbol}</td>
-            <td>%${fmt2.format(x.weight)}</td>
-            <td>${fmt2.format(x.dailyChange)}%</td>
-            <td class="${x.contribution >= 0 ? "ok" : "bad"}">
-              ${fmt2.format(x.contribution)}%
-            </td>
-          </tr>`;
-        })
-        .join("") +
-      `</table>`
-    );
-  }
-
-  function allItemsTable(rows) {
-    if (!rows.length) return "";
-
-    const sorted = rows
-      .slice()
-      .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
-
-    return (
-      `<h3>Tüm Menkul Değerler</h3>
-      <table class="table">
-        <tr>
-          <th>Tip</th>
-          <th>Menkul</th>
-          <th>Ağırlık</th>
-          <th>Günlük %</th>
-          <th>Katkı</th>
-        </tr>` +
-      sorted
-        .map(x => {
-          return `<tr>
-            <td>${x.type}</td>
-            <td>${x.symbol}</td>
-            <td>%${fmt2.format(x.weight)}</td>
-            <td>${fmt2.format(x.dailyChange)}%</td>
-            <td class="${x.contribution >= 0 ? "ok" : "bad"}">
-              ${fmt2.format(x.contribution)}%
-            </td>
-          </tr>`;
-        })
-        .join("") +
-      `</table>`
-    );
-  }
-
-  window.openDetail = function (sym) {
-    const asset = assets.find(x => x.symbol === sym);
-    const p = analyzeFund(asset);
-
-    mTitle.textContent = asset.name + " Detay";
-
-    mGrid.innerHTML = [
-      ["Kategori", asset.cat],
-      ["Durum", asset.status],
-      ["Son değer", val(asset)],
-      ["Gerçek günlük", pct(asset)],
-      ["Tahmin", p.activeWeight ? fmt2.format(p.net) + "%" : "—"],
-      ["Sapma", p.error === null ? "—" : fmt2.format(p.error) + "%"],
-      ["Pozitif katkı", "+" + fmt2.format(p.positive) + "%"],
-      ["Negatif katkı", fmt2.format(p.negative) + "%"],
-      ["Aktif kapsam", "%" + fmt2.format(p.activeWeight)],
-      ["Eksik/Kapsanmayan", "%" + fmt2.format(p.missingWeight)],
-      ["Güven", p.activeWeight ? p.confidence + "/100" : "—"],
-      ["Başarı", p.quality]
-    ]
-      .map(([k, v]) => {
-        return `<div class="mini">
-          <div class="small">${k}</div>
-          <b>${v}</b>
-        </div>`;
-      })
-      .join("");
-
-    mExtra.innerHTML =
-      distributionHtml(p.typeWeights) +
-      contributionTable("En Pozitif Katkılar", p.topPositive) +
-      contributionTable("En Negatif Katkılar", p.topNegative) +
-      allItemsTable(p.items);
-
-    mNote.textContent =
-      "v6.4: Tahmin, girilen tüm menkul değerlerin ağırlık × günlük değişim toplamıdır. Yatırım tavsiyesi değildir.";
-
-    modal.classList.add("show");
-  };
-
-  window.render = function () {
-    renderTabs();
-
-    cards.innerHTML = assets
-      .filter(a => currentCat === "Tümü" || a.cat === currentCat)
-      .map(a => {
-        const p = a.cat === "Fonlar" ? analyzeFund(a) : null;
-        const predictionLine =
-          p && p.activeWeight > 0
-            ? `<div class="${p.net >= 0 ? "ok" : "bad"}">
-                Tahmin: ${p.net >= 0 ? "▲" : "▼"} ${fmt2.format(
-                Math.abs(p.net)
-              )}%
-              </div>
-              <div class="small">
-                Aktif kapsam %${fmt2.format(p.activeWeight)}
-              </div>`
-            : "";
-
-        return `<div class="card" onclick="openDetail('${a.symbol}')">
-          <div class="label">${a.name}</div>
-          <div class="value">${val(a)}</div>
-          <div class="${chgCls(a)}">${pct(a)}</div>
-          ${predictionLine}
-          <div class="${cls(a.status)}">${a.status}</div>
-          <div class="src">${a.source || "kaynak bekleniyor"} ${
-          a.date ? "• " + a.date : ""
-        }</div>
-        </div>`;
-      })
-      .join("");
-
-    fundList.innerHTML = assets
-      .filter(a => a.cat === "Fonlar")
-      .map(a => {
-        const p = analyzeFund(a);
-        return `<div class="row">
-          <b>${a.name}</b>
-          <span>
-            ${val(a)}
-            • ${pct(a)}
-            • Aktif kapsam %${fmt2.format(p.activeWeight)}
-            • Eksik %${fmt2.format(p.missingWeight)}
-            • Tahmin ${fmt2.format(p.net)}%
-          </span>
-          <span class="${cls(a.status)}">${a.status}</span>
-        </div>`;
-      })
-      .join("");
-
-    const live = assets.filter(
-      a => a.status.includes("canlı") || a.status.includes("vault gerçek")
-    ).length;
-
-    const fon = assets.filter(
-      a => a.cat === "Fonlar" && a.status.includes("vault gerçek")
-    ).length;
-
-    meta.innerHTML =
-      `Son güncelleme: ${new Date().toLocaleString("tr-TR")}` +
-      `<br>Canlı/vault: ${live}/${assets.length}` +
-      `<br>Fon: ${fon}/3`;
-
-    aiText.textContent = fon
-      ? "Prediction Engine Pro aktif. Pozitif/negatif katkı, sapma, kapsam ve güven skoru hesaplanıyor."
-      : "Data Builder Pro ile funds.json üretip GitHub’da data/funds.json yerine yükleyince fonlar dolacak.";
-
-    badges.innerHTML = [
-      `Fon: ${fon}/3`,
-      "Sürüm: v6.4",
-      "DXY + Prediction Pro"
-    ]
-      .map(x => `<span class="badge">${x}</span>`)
-      .join("");
-
-    vaultStatus.textContent = JSON.stringify(
-      {
-        loaded: Boolean(vault.version),
-        lastUpdated: vault.lastUpdated || "",
-        funds: Object.keys(vault.funds || {})
-      },
-      null,
-      2
-    );
-
-    renderPred();
-  };
-
-  setTimeout(() => {
-    try {
-      render();
-      loadAll();
-    } catch (e) {
-      console.error("FinScope v6.4 patch error:", e);
-    }
-  }, 100);
-})();
-<script>
-(function () {
-  async function loadPredictionApi() {
-    try {
-      const res = await fetch("/api/predict?t=" + Date.now(), {
-        cache: "no-store"
-      });
-
-      const data = await res.json();
-
-      if (!data || !data.ok || !data.predictions) {
-        return;
-      }
-
-      const predictions = data.predictions;
-
-      const rows = Object.entries(predictions).map(([code, p]) => {
-        const predicted = Number(p.predictedChange || 0);
-        const confidence = Number(p.confidence || 0);
-        const rangeLow = Number(p.rangeLow || 0);
-        const rangeHigh = Number(p.rangeHigh || 0);
-
-        return {
-          code,
-          predicted,
-          confidence,
-          rangeLow,
-          rangeHigh,
-          status: p.status || "preliminary",
-          methodology: p.methodology || "",
-          observations: p.observations || 0
-        };
-      });
-
-      const html = rows.map(r => {
-        const cls = r.predicted >= 0 ? "ok" : "bad";
-        const sign = r.predicted >= 0 ? "▲" : "▼";
-
-        return `
-          <div style="margin-bottom:10px">
-            <b>${r.code}</b>:
-            <span class="${cls}">
-              ${sign} ${Math.abs(r.predicted).toFixed(2)}%
-            </span>
-            <span class="small">
-              • Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
-              • Güven: ${confidenceText(r.confidence)}
-              • Gözlem: ${r.observations}
-            </span>
+    <nav class="nav">
+      <button class="active" data-section="dashboard">Dashboard</button>
+      <button data-section="funds">Fonlar</button>
+      <button data-section="vault">Data Vault</button>
+      <button data-section="prediction">Tahmin Motoru</button>
+    </nav>
+  </aside>
+
+  <main>
+
+    <section id="dashboard" class="section active">
+      <div class="top">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="sub">
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi ve gün içi piyasa hareketleriyle fon tahmin ekranı.
           </div>
-        `;
-      }).join("");
-
-      if (typeof summaryBox !== "undefined" && summaryBox) {
-        summaryBox.innerHTML =
-          html +
-          `<div class="small" style="margin-top:12px;color:#ffd76c">
-            Tahminler model bazlıdır. Yatırım tavsiyesi değildir.
-          </div>`;
-      }
-
-      if (typeof predTable !== "undefined" && predTable) {
-        predTable.innerHTML =
-          `<table class="table">
-            <tr>
-              <th>Fon</th>
-              <th>Tahmin</th>
-              <th>Alt Aralık</th>
-              <th>Üst Aralık</th>
-              <th>Güven</th>
-              <th>Yöntem</th>
-            </tr>
-            ${rows.map(r => {
-              const cls = r.predicted >= 0 ? "ok" : "bad";
-              const sign = r.predicted >= 0 ? "▲" : "▼";
-              return `
-                <tr>
-                  <td>${r.code}</td>
-                  <td class="${cls}">${sign} ${Math.abs(r.predicted).toFixed(2)}%</td>
-                  <td>${r.rangeLow.toFixed(2)}%</td>
-                  <td>${r.rangeHigh.toFixed(2)}%</td>
-                  <td>${confidenceText(r.confidence)}</td>
-                  <td>${r.methodology}</td>
-                </tr>
-              `;
-            }).join("")}
-          </table>
-          <p class="small">
-            Bu tahminler yalnızca bilgilendirme amaçlıdır. Yatırım tavsiyesi içermez.
-          </p>`;
-      }
-
-      if (typeof aiText !== "undefined" && aiText) {
-        aiText.textContent =
-          "V7 tahmin motoru aktif. TEFAS fiyatları Supabase üzerinden güncelleniyor. Mevcut tahminler ön momentum modeline göre hesaplanmaktadır.";
-      }
-
-      if (typeof badges !== "undefined" && badges) {
-        badges.innerHTML =
-          `<span class="badge">V7 Predict API</span>
-           <span class="badge">TEFAS otomatik</span>
-           <span class="badge">Yatırım tavsiyesi değildir</span>`;
-      }
-
-      addLegalNotice();
-
-    } catch (err) {
-      console.error("Prediction API error:", err);
-    }
-  }
-
-  function confidenceText(v) {
-    if (v >= 90) return "Çok yüksek";
-    if (v >= 75) return "Yüksek";
-    if (v >= 60) return "Orta";
-    if (v > 0) return "Düşük";
-    return "—";
-  }
-
-  function addLegalNotice() {
-    if (document.getElementById("legalNotice")) return;
-
-    const main = document.querySelector("main");
-    if (!main) return;
-
-    const div = document.createElement("div");
-    div.id = "legalNotice";
-    div.className = "panel";
-    div.style.marginTop = "22px";
-    div.innerHTML = `
-      <h3>Hukuki Bilgilendirme</h3>
-      <p class="small">
-        © 2026 FinScope Professional. Tüm hakları saklıdır.
-        Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
-        Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
-        Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
-        Veriler gecikmeli, eksik veya hatalı olabilir.
-      </p>
-    `;
-    main.appendChild(div);
-  }
-
-  setTimeout(loadPredictionApi, 500);
-  setInterval(loadPredictionApi, 60000);
-})();
-<script>
-(function () {
-  async function finscopeV7DashboardPatch() {
-    try {
-      const res = await fetch("/api/predict?t=" + Date.now(), {
-        cache: "no-store"
-      });
-
-      const data = await res.json();
-
-      if (!data || !data.ok || !data.predictions) {
-        console.warn("FinScope V7 predict data yok", data);
-        return;
-      }
-
-      const predictions = data.predictions;
-
-      const rows = Object.entries(predictions).map(function ([code, p]) {
-        return {
-          code: code,
-          predicted: Number(p.predictedChange || 0),
-          rangeLow: Number(p.rangeLow || 0),
-          rangeHigh: Number(p.rangeHigh || 0),
-          confidence: Number(p.confidence || 0),
-          status: p.status || "preliminary",
-          methodology: p.methodology || "momentum",
-          observations: p.observations || 0
-        };
-      });
-
-      const summary = document.getElementById("summaryBox");
-      const ai = document.getElementById("aiText");
-      const badgesBox = document.getElementById("badges");
-      const pred = document.getElementById("predTable");
-
-      const summaryHtml = rows.map(function (r) {
-        const positive = r.predicted >= 0;
-        const cls = positive ? "ok" : "bad";
-        const sign = positive ? "▲" : "▼";
-
-        return `
-          <div style="margin-bottom:12px">
-            <b>${r.code}</b>:
-            <span class="${cls}" style="font-weight:900">
-              ${sign} ${Math.abs(r.predicted).toFixed(2)}%
-            </span>
-            <div class="small">
-              Tahmin aralığı: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
-              • Güven: ${confidenceText(r.confidence)}
-              • Gözlem: ${r.observations}
-            </div>
-          </div>
-        `;
-      }).join("");
-
-      if (summary) {
-        summary.innerHTML =
-          summaryHtml +
-          `<div class="small" style="margin-top:10px;color:#ffd76c">
-            V7 tahmin motoru aktiftir. Tahminler model bazlıdır, yatırım tavsiyesi değildir.
-          </div>`;
-      }
-
-      if (pred) {
-        pred.innerHTML =
-          `<table class="table">
-            <tr>
-              <th>Fon</th>
-              <th>Tahmini Değişim</th>
-              <th>Alt Aralık</th>
-              <th>Üst Aralık</th>
-              <th>Güven</th>
-              <th>Yöntem</th>
-            </tr>
-            ${rows.map(function (r) {
-              const positive = r.predicted >= 0;
-              const cls = positive ? "ok" : "bad";
-              const sign = positive ? "▲" : "▼";
-
-              return `
-                <tr>
-                  <td><b>${r.code}</b></td>
-                  <td class="${cls}">
-                    ${sign} ${Math.abs(r.predicted).toFixed(2)}%
-                  </td>
-                  <td>${r.rangeLow.toFixed(2)}%</td>
-                  <td>${r.rangeHigh.toFixed(2)}%</td>
-                  <td>${confidenceText(r.confidence)}</td>
-                  <td>${r.methodology}</td>
-                </tr>
-              `;
-            }).join("")}
-          </table>
-          <p class="small">
-            Bu tahminler yalnızca bilgilendirme amacıyla sunulur. Yatırım tavsiyesi içermez.
-          </p>`;
-      }
-
-      if (ai) {
-        ai.textContent =
-          "FinScope V7 tahmin motoru aktif. TEFAS fiyatları otomatik güncelleniyor. Tahminler /api/predict üzerinden canlı okunuyor.";
-      }
-
-      if (badgesBox) {
-        badgesBox.innerHTML =
-          `<span class="badge">V7 Predict API</span>
-           <span class="badge">TEFAS otomatik</span>
-           <span class="badge">Yatırım tavsiyesi değildir</span>`;
-      }
-
-      addLegalNotice();
-
-    } catch (e) {
-      console.error("FinScope V7 Dashboard Patch Error:", e);
-    }
-  }
-
-  function confidenceText(v) {
-    if (v >= 90) return "Çok yüksek";
-    if (v >= 75) return "Yüksek";
-    if (v >= 60) return "Orta";
-    if (v > 0) return "Düşük";
-    return "—";
-  }
-
-  function addLegalNotice() {
-    if (document.getElementById("legalNotice")) return;
-
-    const dashboard = document.getElementById("dashboard");
-    if (!dashboard) return;
-
-    const box = document.createElement("div");
-    box.id = "legalNotice";
-    box.className = "panel";
-    box.style.marginTop = "22px";
-    box.innerHTML = `
-      <h2>Hukuki Bilgilendirme</h2>
-      <p class="small">
-        © 2026 FinScope Professional. Tüm hakları saklıdır.
-        Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
-        Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
-        Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
-        Veriler gecikmeli, eksik veya hatalı olabilir.
-        FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
-      </p>
-    `;
-
-    dashboard.appendChild(box);
-  }
-
-  const oldRender = window.render;
-  if (typeof oldRender === "function") {
-    window.render = function () {
-      oldRender.apply(this, arguments);
-      setTimeout(finscopeV7DashboardPatch, 300);
-    };
-  }
-
-  const oldRenderPred = window.renderPred;
-  if (typeof oldRenderPred === "function") {
-    window.renderPred = function () {
-      oldRenderPred.apply(this, arguments);
-      setTimeout(finscopeV7DashboardPatch, 300);
-    };
-  }
-
-  setTimeout(finscopeV7DashboardPatch, 700);
-  setTimeout(finscopeV7DashboardPatch, 2000);
-  setInterval(finscopeV7DashboardPatch, 60000);
-})();
-<script>
-(function () {
-  var runCount = 0;
-
-  function pct(x) {
-    var n = Number(x || 0);
-    var sign = n >= 0 ? "▲ " : "▼ ";
-    return sign + Math.abs(n).toFixed(2) + "%";
-  }
-
-  function colorClass(x) {
-    return Number(x || 0) >= 0 ? "ok" : "bad";
-  }
-
-  function confidenceText(v) {
-    v = Number(v || 0);
-    if (v >= 90) return "Çok yüksek";
-    if (v >= 75) return "Yüksek";
-    if (v >= 60) return "Orta";
-    if (v > 0) return "Düşük";
-    return "—";
-  }
-
-  async function forceV7Predictions() {
-    try {
-      runCount++;
-
-      var response = await fetch("/api/predict?t=" + Date.now(), {
-        cache: "no-store"
-      });
-
-      var data = await response.json();
-
-      if (!data || !data.ok || !data.predictions) {
-        return;
-      }
-
-      var rows = Object.keys(data.predictions).map(function (code) {
-        var p = data.predictions[code] || {};
-        return {
-          code: code,
-          predicted: Number(p.predictedChange || 0),
-          rangeLow: Number(p.rangeLow || 0),
-          rangeHigh: Number(p.rangeHigh || 0),
-          confidence: Number(p.confidence || 0),
-          methodology: p.methodology || "momentum",
-          observations: p.observations || 0
-        };
-      });
-
-      var html = "";
-
-      rows.forEach(function (r) {
-        html +=
-          '<div style="margin-bottom:10px">' +
-            '<b>' + r.code + '</b>: ' +
-            '<span class="' + colorClass(r.predicted) + '" style="font-weight:900">' +
-              pct(r.predicted) +
-            '</span>' +
-            '<div class="small">' +
-              'Aralık: ' + r.rangeLow.toFixed(2) + '% / ' + r.rangeHigh.toFixed(2) + '%' +
-              ' • Güven: ' + confidenceText(r.confidence) +
-              ' • Gözlem: ' + r.observations +
-              ' • Yöntem: ' + r.methodology +
-            '</div>' +
-          '</div>';
-      });
-
-      html +=
-        '<div class="small" style="margin-top:10px;color:#ffd76c">' +
-          'V7 tahmin motoru aktiftir. Tahminler model bazlıdır, yatırım tavsiyesi değildir.' +
-        '</div>';
-
-      var summary = document.getElementById("summaryBox");
-      if (summary) {
-        summary.innerHTML = html;
-      }
-
-      var ai = document.getElementById("aiText");
-      if (ai) {
-        ai.textContent =
-          "FinScope V7 aktif. TEFAS fiyatları otomatik güncelleniyor. Tahminler /api/predict üzerinden okunuyor.";
-      }
-
-      var badges = document.getElementById("badges");
-      if (badges) {
-        badges.innerHTML =
-          '<span class="badge">V7 Predict API</span>' +
-          '<span class="badge">TEFAS otomatik</span>' +
-          '<span class="badge">Yatırım tavsiyesi değildir</span>';
-      }
-
-      var predTable = document.getElementById("predTable");
-      if (predTable) {
-        var table =
-          '<table class="table">' +
-            '<tr>' +
-              '<th>Fon</th>' +
-              '<th>Tahmin</th>' +
-              '<th>Alt Aralık</th>' +
-              '<th>Üst Aralık</th>' +
-              '<th>Güven</th>' +
-              '<th>Yöntem</th>' +
-            '</tr>';
-
-        rows.forEach(function (r) {
-          table +=
-            '<tr>' +
-              '<td><b>' + r.code + '</b></td>' +
-              '<td class="' + colorClass(r.predicted) + '">' + pct(r.predicted) + '</td>' +
-              '<td>' + r.rangeLow.toFixed(2) + '%</td>' +
-              '<td>' + r.rangeHigh.toFixed(2) + '%</td>' +
-              '<td>' + confidenceText(r.confidence) + '</td>' +
-              '<td>' + r.methodology + '</td>' +
-            '</tr>';
-        });
-
-        table += '</table>';
-
-        predTable.innerHTML = table;
-      }
-
-      addV7Panel(rows);
-      addLegalNotice();
-
-    } catch (e) {
-      console.error("V7 force prediction error:", e);
-    }
-  }
-
-  function addV7Panel(rows) {
-    var dashboard = document.getElementById("dashboard");
-    if (!dashboard) return;
-
-    var panel = document.getElementById("v7PredictionPanel");
-    if (!panel) {
-      panel = document.createElement("div");
-      panel.id = "v7PredictionPanel";
-      panel.className = "panel";
-      panel.style.marginTop = "22px";
-      dashboard.appendChild(panel);
-    }
-
-    var body = '<h2>V7 Canlı Tahmin Paneli</h2>';
-
-    rows.forEach(function (r) {
-      body +=
-        '<div style="margin-bottom:10px">' +
-          '<b>' + r.code + '</b>: ' +
-          '<span class="' + colorClass(r.predicted) + '" style="font-weight:900">' +
-            pct(r.predicted) +
-          '</span>' +
-          '<span class="small"> • Güven: ' + confidenceText(r.confidence) + '</span>' +
-        '</div>';
-    });
-
-    body +=
-      '<p class="small">Bu alan /api/predict verisinden otomatik oluşturulmaktadır.</p>';
-
-    panel.innerHTML = body;
-  }
-
-  function addLegalNotice() {
-    var dashboard = document.getElementById("dashboard");
-    if (!dashboard) return;
-
-    if (document.getElementById("legalNotice")) return;
-
-    var box = document.createElement("div");
-    box.id = "legalNotice";
-    box.className = "panel";
-    box.style.marginTop = "22px";
-    box.innerHTML =
-      '<h2>Hukuki Bilgilendirme</h2>' +
-      '<p class="small">' +
-        '© 2026 FinScope Professional. Tüm hakları saklıdır. ' +
-        'Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır. ' +
-        'Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir. ' +
-        'Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz. ' +
-        'Veriler gecikmeli, eksik veya hatalı olabilir. ' +
-        'FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.' +
-      '</p>';
-
-    dashboard.appendChild(box);
-  }
-
-  window.addEventListener("load", function () {
-    forceV7Predictions();
-
-    var fastTimer = setInterval(function () {
-      forceV7Predictions();
-
-      if (runCount >= 15) {
-        clearInterval(fastTimer);
-      }
-    }, 2000);
-
-    setInterval(forceV7Predictions, 60000);
-  });
-})();
-<script>
-(function(){
-  let lastPredictionHtml = "";
-  let lastAiText = "";
-
-  function pct(v){
-    v = Number(v || 0);
-    return (v >= 0 ? "▲ " : "▼ ") + Math.abs(v).toFixed(2) + "%";
-  }
-
-  function cls(v){
-    return Number(v || 0) >= 0 ? "ok" : "bad";
-  }
-
-  function conf(v){
-    v = Number(v || 0);
-    if(v >= 90) return "Çok yüksek";
-    if(v >= 75) return "Yüksek";
-    if(v >= 60) return "Orta";
-    if(v > 0) return "Düşük";
-    return "—";
-  }
-
-  async function loadV7PredictionPermanent(){
-    try{
-      const r = await fetch("/api/predict?t=" + Date.now(), { cache: "no-store" });
-      const data = await r.json();
-
-      if(!data || !data.ok || !data.predictions) return;
-
-      const rows = Object.entries(data.predictions).map(([code,p]) => ({
-        code,
-        predicted: Number(p.predictedChange || 0),
-        rangeLow: Number(p.rangeLow || 0),
-        rangeHigh: Number(p.rangeHigh || 0),
-        confidence: Number(p.confidence || 0),
-        coverage: Number(p.coverage || 0),
-        observations: Number(p.observations || 0),
-        status: p.status || "",
-        methodology: p.methodology || ""
-      }));
-
-      lastPredictionHtml = rows.map(r => `
-        <div style="margin-bottom:10px">
-          <b>${r.code}</b>:
-          <span class="${cls(r.predicted)}" style="font-weight:900">${pct(r.predicted)}</span>
-          <div class="small">
-            Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
-            • Güven: ${conf(r.confidence)}
-            • Kapsam: %${r.coverage.toFixed(2)}
-            • Gözlem: ${r.observations}
-          </div>
+          <span class="pill">v7.0 Holdings Weighted</span>
+          <span class="pill">PBR / PHE / TLY</span>
+          <span class="pill">Yatırım tavsiyesi değildir</span>
         </div>
-      `).join("") + `
-        <div class="small" style="margin-top:10px;color:#ffd76c">
-          18:00 sonrası gösterilen tahmin, gün sonu piyasa hareketlerine göre bir sonraki TEFAS fiyat beklentisidir.
-          Bu bilgiler yatırım tavsiyesi değildir.
+
+        <div>
+          <button class="refresh" onclick="loadAll()">Yenile</button>
+          <div class="meta" id="meta">Yükleniyor...</div>
         </div>
-      `;
-
-      lastAiText =
-        "FinScope V7 Holdings Weighted Prediction aktif. Tahminler fon portföy ağırlıkları, XU100/REPO/TRY proxy hareketleri ve gün içi piyasa verileriyle hesaplanıyor. Portföy verisi gerçek kırılımla güncellendikçe tahmin kalitesi artacaktır.";
-
-      paintV7Prediction();
-      fixVersionText();
-
-    }catch(e){
-      console.error("V7 prediction permanent loader error:", e);
-    }
-  }
-
-  function paintV7Prediction(){
-    const summary = document.getElementById("summaryBox");
-    if(summary && lastPredictionHtml){
-      summary.innerHTML = lastPredictionHtml;
-    }
-
-    const ai = document.getElementById("aiText");
-    if(ai && lastAiText){
-      ai.textContent = lastAiText;
-    }
-
-    const badges = document.getElementById("badges");
-    if(badges){
-      badges.innerHTML =
-        '<span class="badge">V7 Holdings Model</span>' +
-        '<span class="badge">Kapsam %100 test</span>' +
-        '<span class="badge">18:00 Beklenti</span>' +
-        '<span class="badge">Yatırım tavsiyesi değildir</span>';
-    }
-
-    addLegal();
-  }
-
-  function addLegal(){
-    const dashboard = document.getElementById("dashboard");
-    if(!dashboard) return;
-    if(document.getElementById("legalNoticeV7Final")) return;
-
-    const box = document.createElement("div");
-    box.id = "legalNoticeV7Final";
-    box.className = "panel";
-    box.style.marginTop = "22px";
-    box.innerHTML = `
-      <h2>Hukuki Bilgilendirme</h2>
-      <p class="small">
-        © 2026 FinScope Professional. Tüm hakları saklıdır.
-        Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
-        Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
-        Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
-        Veriler gecikmeli, eksik veya hatalı olabilir.
-        FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
-      </p>
-    `;
-    dashboard.appendChild(box);
-  }
-
-  function fixVersionText(){
-    document.querySelectorAll("body *").forEach(el => {
-      if(el.childNodes.length === 1 && el.textContent && el.textContent.includes("v6.2")){
-        el.textContent = el.textContent.replaceAll("v6.2", "v7.0");
-      }
-    });
-  }
-
-  function startV7Guard(){
-    loadV7PredictionPermanent();
-
-    let n = 0;
-    const fast = setInterval(() => {
-      n++;
-      loadV7PredictionPermanent();
-      paintV7Prediction();
-      fixVersionText();
-      if(n >= 30) clearInterval(fast);
-    }, 1000);
-
-    setInterval(() => {
-      loadV7PredictionPermanent();
-      paintV7Prediction();
-      fixVersionText();
-    }, 60000);
-
-    const target = document.body;
-    if(target){
-      const observer = new MutationObserver(() => {
-        const summary = document.getElementById("summaryBox");
-        if(summary && summary.textContent.includes("Data Vault holdings bekliyor")){
-          paintV7Prediction();
-        }
-        fixVersionText();
-      });
-
-      observer.observe(target, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      });
-    }
-  }
-
-  if(document.readyState === "loading"){
-    document.addEventListener("DOMContentLoaded", startV7Guard);
-  }else{
-    startV7Guard();
-  }
-})();
-<script>
-window.loadV7PredictionPermanent = async function(){
-  try{
-    const response = await fetch("/api/predict?t=" + Date.now(), {
-      cache: "no-store"
-    });
-
-    const data = await response.json();
-
-    if(!data || !data.ok || !data.predictions){
-      return;
-    }
-
-    function pct(v){
-      v = Number(v || 0);
-      return (v >= 0 ? "▲ " : "▼ ") + Math.abs(v).toFixed(2) + "%";
-    }
-
-    function cls(v){
-      return Number(v || 0) >= 0 ? "ok" : "bad";
-    }
-
-    function conf(v){
-      v = Number(v || 0);
-      if(v >= 90) return "Çok yüksek";
-      if(v >= 75) return "Yüksek";
-      if(v >= 60) return "Orta";
-      if(v > 0) return "Düşük";
-      return "—";
-    }
-
-    const rows = Object.entries(data.predictions).map(function(entry){
-      const code = entry[0];
-      const p = entry[1] || {};
-
-      return {
-        code: code,
-        predicted: Number(p.predictedChange || 0),
-        rangeLow: Number(p.rangeLow || 0),
-        rangeHigh: Number(p.rangeHigh || 0),
-        confidence: Number(p.confidence || 0),
-        coverage: Number(p.coverage || 0),
-        observations: Number(p.observations || 0),
-        status: p.status || "",
-        methodology: p.methodology || ""
-      };
-    });
-
-    const html = rows.map(function(r){
-      return `
-        <div style="margin-bottom:10px">
-          <b>${r.code}</b>:
-          <span class="${cls(r.predicted)}" style="font-weight:900">${pct(r.predicted)}</span>
-          <div class="small">
-            Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
-            • Güven: ${conf(r.confidence)}
-            • Kapsam: %${r.coverage.toFixed(2)}
-            • Gözlem: ${r.observations}
-          </div>
-        </div>
-      `;
-    }).join("") + `
-      <div class="small" style="margin-top:10px;color:#ffd76c">
-        18:00 sonrası gösterilen tahmin, gün sonu piyasa hareketlerine göre bir sonraki TEFAS fiyat beklentisidir.
-        Bu bilgiler yatırım tavsiyesi değildir.
       </div>
-    `;
 
-    const summary = document.getElementById("summaryBox");
-    if(summary){
-      summary.innerHTML = html;
-    }
+      <div class="tabs" id="tabs"></div>
+      <div class="grid" id="cards"></div>
 
-    const ai = document.getElementById("aiText");
-    if(ai){
-      ai.textContent =
-        "FinScope V7 Holdings Weighted Prediction aktif. Tahminler fon portföy ağırlıkları, XU100/REPO/TRY proxy hareketleri ve gün içi piyasa verileriyle hesaplanıyor. Portföy verisi gerçek kırılımla güncellendikçe tahmin kalitesi artacaktır.";
-    }
+      <div class="panels">
+        <div class="panel">
+          <h2>AI Analist</h2>
+          <p id="aiText" class="sub">Tahmin motoru yükleniyor...</p>
+          <div id="badges"></div>
+        </div>
 
-    const badges = document.getElementById("badges");
-    if(badges){
-      badges.innerHTML =
-        '<span class="badge">V7 Holdings Model</span>' +
-        '<span class="badge">Kapsam %100 test</span>' +
-        '<span class="badge">18:00 Beklenti</span>' +
-        '<span class="badge">Yatırım tavsiyesi değildir</span>';
-    }
+        <div class="panel">
+          <h2>Tahmin Özeti</h2>
+          <div id="summaryBox" class="sub">Tahmin verisi yükleniyor...</div>
+        </div>
+      </div>
 
-    document.querySelectorAll("body *").forEach(function(el){
-      if(el.childNodes.length === 1 && el.textContent && el.textContent.includes("v6.2")){
-        el.textContent = el.textContent.replaceAll("v6.2", "v7.0");
+      <div class="panel legal">
+        <h2>Hukuki Bilgilendirme</h2>
+        <p class="footer-note">
+          © 2026 FinScope Professional. Tüm hakları saklıdır.
+          Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
+          Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
+          Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
+          Veriler gecikmeli, eksik veya hatalı olabilir.
+          FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
+        </p>
+      </div>
+    </section>
+
+    <section id="funds" class="section">
+      <h1>Fonlar</h1>
+      <div class="panel">
+        <div id="fundList">Fon verisi yükleniyor...</div>
+      </div>
+    </section>
+
+    <section id="vault" class="section">
+      <h1>Data Vault</h1>
+      <div class="panel">
+        <h2>Supabase Durumu</h2>
+        <div id="vaultStatus" class="diag">Yükleniyor...</div>
+      </div>
+    </section>
+
+    <section id="prediction" class="section">
+      <h1>Tahmin Motoru</h1>
+      <div class="panel">
+        <h2>V7 Holdings Weighted Prediction</h2>
+        <div id="predTable">Tahmin verisi yükleniyor...</div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+const fmt2 = new Intl.NumberFormat("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt4 = new Intl.NumberFormat("tr-TR",{maximumFractionDigits:4});
+const fmtPrice = new Intl.NumberFormat("tr-TR",{maximumFractionDigits:4});
+
+const categories = ["Tümü","Döviz","Parite","Kıymetli Maden","BIST","Kripto/Emtia","Fonlar"];
+let currentCat = "Tümü";
+
+let marketData = {};
+let fundsData = {};
+let predictionData = null;
+
+const assets = [
+  {symbol:"USDTRY",name:"USD / TRY",cat:"Döviz",unit:"₺"},
+  {symbol:"EURTRY",name:"EUR / TRY",cat:"Döviz",unit:"₺"},
+  {symbol:"GBPTRY",name:"GBP / TRY",cat:"Döviz",unit:"₺"},
+  {symbol:"EURUSD",name:"EUR / USD",cat:"Parite",unit:""},
+  {symbol:"GBPUSD",name:"GBP / USD",cat:"Parite",unit:""},
+  {symbol:"DXY",name:"Dolar Endeksi",cat:"Parite",unit:""},
+  {symbol:"XAU",name:"Altın Ons",cat:"Kıymetli Maden",unit:"$"},
+  {symbol:"XAG",name:"Gümüş Ons",cat:"Kıymetli Maden",unit:"$"},
+  {symbol:"XU100",name:"BIST 100",cat:"BIST",unit:""},
+  {symbol:"XU050",name:"BIST 50",cat:"BIST",unit:""},
+  {symbol:"XU030",name:"BIST 30",cat:"BIST",unit:""},
+  {symbol:"BTC",name:"Bitcoin",cat:"Kripto/Emtia",unit:"$"},
+  {symbol:"BRENT",name:"Brent Petrol",cat:"Kripto/Emtia",unit:"$"},
+  {symbol:"PBR",name:"PBR",cat:"Fonlar",unit:""},
+  {symbol:"PHE",name:"PHE",cat:"Fonlar",unit:""},
+  {symbol:"TLY",name:"TLY",cat:"Fonlar",unit:""}
+];
+
+function n(v){
+  if(v===null || v===undefined || v==="") return null;
+  const x = Number(String(v).replace(",","."));
+  return Number.isFinite(x) ? x : null;
+}
+
+function safe(obj,path,def){
+  try{
+    return path.split(".").reduce((a,k)=>a && a[k],obj) ?? def;
+  }catch(e){
+    return def;
+  }
+}
+
+function pct(v){
+  const x = n(v);
+  if(x===null) return "—";
+  return (x>=0 ? "▲ " : "▼ ") + fmt2.format(Math.abs(x)) + "%";
+}
+
+function pctClass(v){
+  const x = n(v);
+  if(x===null) return "warn";
+  return x>=0 ? "ok" : "bad";
+}
+
+function confText(v){
+  v = Number(v || 0);
+  if(v >= 90) return "Çok yüksek";
+  if(v >= 75) return "Yüksek";
+  if(v >= 60) return "Orta";
+  if(v > 0) return "Düşük";
+  return "—";
+}
+
+function valueText(a){
+  let val = null;
+  let unit = a.unit || "";
+
+  if(a.cat === "Fonlar"){
+    val = safe(fundsData,"funds."+a.symbol+".price",null);
+  }else{
+    val = safe(marketData,"assets."+a.symbol+".value",null);
+  }
+
+  if(val===null || val===undefined) return "—";
+
+  if(a.cat==="Fonlar") return fmtPrice.format(val);
+  if(a.cat==="Parite") return fmt4.format(val) + (unit ? " " + unit : "");
+  return fmtPrice.format(val) + (unit ? " " + unit : "");
+}
+
+function changeOf(a){
+  if(a.cat === "Fonlar"){
+    return safe(fundsData,"funds."+a.symbol+".dailyChange",null);
+  }
+  return safe(marketData,"assets."+a.symbol+".change",null);
+}
+
+function sourceOf(a){
+  if(a.cat === "Fonlar"){
+    const f = safe(fundsData,"funds."+a.symbol,{});
+    return (f.source || "TEFAS / Supabase") + (f.date ? " • " + f.date : "");
+  }
+  const m = safe(marketData,"assets."+a.symbol,{});
+  return m.source || "kaynak bekleniyor";
+}
+
+function statusOf(a){
+  if(a.cat === "Fonlar"){
+    const f = safe(fundsData,"funds."+a.symbol,{});
+    return f.price!=null ? "vault gerçek veri" : "fon verisi bekleniyor";
+  }
+  const m = safe(marketData,"assets."+a.symbol,{});
+  return m.status || "veri bekleniyor";
+}
+
+function statusClass(s){
+  s = String(s || "");
+  if(s.includes("canlı") || s.includes("gecikmeli") || s.includes("gerçek")) return "ok";
+  if(s.includes("bekliyor")) return "warn";
+  return "bad";
+}
+
+function renderTabs(){
+  const el = document.getElementById("tabs");
+  el.innerHTML = categories.map(c =>
+    '<button class="tab '+(c===currentCat?'active':'')+'" onclick="currentCat=\''+c+'\';renderDashboard()">'+c+'</button>'
+  ).join("");
+}
+
+function renderDashboard(){
+  renderTabs();
+
+  const cards = document.getElementById("cards");
+  const list = assets.filter(a => currentCat==="Tümü" || a.cat===currentCat);
+
+  cards.innerHTML = list.map(a => {
+    const ch = changeOf(a);
+    const st = statusOf(a);
+
+    let extra = "";
+    if(a.cat==="Fonlar"){
+      const p = safe(predictionData,"predictions."+a.symbol,null);
+      if(p){
+        extra =
+          '<div class="'+pctClass(p.predictedChange)+'">Tahmin: '+pct(p.predictedChange)+'</div>'+
+          '<div class="src">Kapsam: %'+fmt2.format(Number(p.coverage||0))+' • Güven: '+confText(p.confidence)+'</div>';
       }
-    });
+    }
+
+    return '<div class="card">'+
+      '<div class="label">'+a.name+'</div>'+
+      '<div class="value">'+valueText(a)+'</div>'+
+      '<div class="'+pctClass(ch)+'">'+pct(ch)+'</div>'+
+      extra+
+      '<div class="'+statusClass(st)+'">'+st+'</div>'+
+      '<div class="src">'+sourceOf(a)+'</div>'+
+    '</div>';
+  }).join("");
+
+  renderFunds();
+  renderPrediction();
+  renderVault();
+
+  const meta = document.getElementById("meta");
+  const marketCount = Object.keys(marketData.assets || {}).length;
+  const fundCount = Object.keys(fundsData.funds || {}).length;
+  const predCount = predictionData && predictionData.predictions ? Object.keys(predictionData.predictions).length : 0;
+
+  meta.innerHTML =
+    "Son güncelleme: " + new Date().toLocaleString("tr-TR") + "<br>" +
+    "Piyasa veri: " + marketCount + "<br>" +
+    "Fon: " + fundCount + " • Tahmin: " + predCount;
+}
+
+function renderFunds(){
+  const el = document.getElementById("fundList");
+  const funds = fundsData.funds || {};
+
+  if(!Object.keys(funds).length){
+    el.innerHTML = "Fon verisi yüklenemedi.";
+    return;
+  }
+
+  el.innerHTML = ["PBR","PHE","TLY"].map(code => {
+    const f = funds[code] || {};
+    const p = safe(predictionData,"predictions."+code,null);
+    const h = Array.isArray(f.holdings) ? f.holdings.length : 0;
+
+    return '<div class="row">'+
+      '<b>'+code+'</b>'+
+      '<span>'+
+        'Fiyat: '+(f.price!=null ? fmtPrice.format(f.price) : "—")+
+        ' • Günlük: <span class="'+pctClass(f.dailyChange)+'">'+pct(f.dailyChange)+'</span>'+
+        ' • Holdings: '+h+
+        (p ? ' • Tahmin: <span class="'+pctClass(p.predictedChange)+'">'+pct(p.predictedChange)+'</span>' : '')+
+      '</span>'+
+      '<span class="ok">'+(f.date || "—")+'</span>'+
+    '</div>';
+  }).join("");
+}
+
+function renderPrediction(){
+  const summary = document.getElementById("summaryBox");
+  const ai = document.getElementById("aiText");
+  const badges = document.getElementById("badges");
+  const predTable = document.getElementById("predTable");
+
+  if(!predictionData || !predictionData.ok || !predictionData.predictions){
+    summary.innerHTML = '<span class="warn">Tahmin API verisi bekleniyor.</span>';
+    ai.textContent = "Tahmin API henüz yüklenemedi. /api/predict kontrol edilmeli.";
+    badges.innerHTML = '<span class="badge">Tahmin bekleniyor</span>';
+    predTable.innerHTML = "Tahmin verisi yok.";
+    return;
+  }
+
+  const rows = Object.entries(predictionData.predictions).map(([code,p]) => ({
+    code,
+    predicted:Number(p.predictedChange || 0),
+    rangeLow:Number(p.rangeLow || 0),
+    rangeHigh:Number(p.rangeHigh || 0),
+    confidence:Number(p.confidence || 0),
+    coverage:Number(p.coverage || 0),
+    observations:Number(p.observations || 0),
+    positive:Number(p.positiveContribution || 0),
+    negative:Number(p.negativeContribution || 0),
+    methodology:p.methodology || "",
+    status:p.status || ""
+  }));
+
+  summary.innerHTML = rows.map(r =>
+    '<div style="margin-bottom:10px">'+
+      '<b>'+r.code+'</b>: '+
+      '<span class="'+pctClass(r.predicted)+'" style="font-weight:950">'+pct(r.predicted)+'</span>'+
+      '<div class="small">'+
+        'Aralık: '+r.rangeLow.toFixed(2)+'% / '+r.rangeHigh.toFixed(2)+'%'+
+        ' • Güven: '+confText(r.confidence)+
+        ' • Kapsam: %'+r.coverage.toFixed(2)+
+        ' • Gözlem: '+r.observations+
+      '</div>'+
+    '</div>'
+  ).join("") +
+  '<div class="small" style="margin-top:10px;color:#ffd76c">'+
+    '18:00 sonrası gösterilen tahmin, gün sonu piyasa hareketlerine göre bir sonraki TEFAS fiyat beklentisidir. '+
+    'Bu bilgiler yatırım tavsiyesi değildir.'+
+  '</div>';
+
+  ai.textContent =
+    "FinScope V7 Holdings Weighted Prediction aktif. Tahminler fon portföy ağırlıkları, XU100/REPO/TRY proxy hareketleri ve gün içi piyasa verileriyle hesaplanıyor. Portföy kırılımı gerçek hisse ve menkul kıymet detaylarıyla güncellendikçe tahmin kalitesi artacaktır.";
+
+  badges.innerHTML =
+    '<span class="badge">V7 Holdings Model</span>'+
+    '<span class="badge">Kapsam: '+rows.map(r=>r.code+' %'+r.coverage.toFixed(0)).join(" / ")+'</span>'+
+    '<span class="badge">18:00 Beklenti</span>'+
+    '<span class="badge">Yatırım tavsiyesi değildir</span>';
+
+  predTable.innerHTML =
+    '<table class="table">'+
+      '<tr><th>Fon</th><th>Tahmin</th><th>Aralık</th><th>Kapsam</th><th>Güven</th><th>Model</th></tr>'+
+      rows.map(r =>
+        '<tr>'+
+          '<td><b>'+r.code+'</b></td>'+
+          '<td class="'+pctClass(r.predicted)+'"><b>'+pct(r.predicted)+'</b></td>'+
+          '<td>'+r.rangeLow.toFixed(2)+'% / '+r.rangeHigh.toFixed(2)+'%</td>'+
+          '<td>%'+r.coverage.toFixed(2)+'</td>'+
+          '<td>'+confText(r.confidence)+' ('+r.confidence+')</td>'+
+          '<td>'+r.status+'</td>'+
+        '</tr>'
+      ).join("")+
+    '</table>';
+}
+
+function renderVault(){
+  const el = document.getElementById("vaultStatus");
+
+  const status = {
+    marketVersion: marketData.version || "",
+    fundsVersion: fundsData.version || "",
+    predictionModel: predictionData ? predictionData.model : "",
+    fundsLastUpdated: fundsData.lastUpdated || "",
+    holdingsStatus: fundsData.holdingsStatus || {},
+    predictionOk: !!(predictionData && predictionData.ok)
+  };
+
+  el.textContent = JSON.stringify(status,null,2);
+}
+
+async function loadAll(){
+  document.getElementById("summaryBox").innerHTML = "Tahmin verisi yükleniyor...";
+  document.getElementById("aiText").textContent = "Veriler yükleniyor...";
+
+  try{
+    const [marketRes,fundsRes,predRes] = await Promise.all([
+      fetch("/api/market?t="+Date.now(),{cache:"no-store"}),
+      fetch("/api/funds?t="+Date.now(),{cache:"no-store"}),
+      fetch("/api/predict?t="+Date.now(),{cache:"no-store"})
+    ]);
+
+    marketData = await marketRes.json();
+    fundsData = await fundsRes.json();
+    predictionData = await predRes.json();
 
   }catch(e){
-    console.error("V7 prediction load error:", e);
+    console.error("loadAll error",e);
+    predictionData = null;
   }
-};
 
-window.addEventListener("load", function(){
-  window.loadV7PredictionPermanent();
+  renderDashboard();
+}
 
-  setTimeout(window.loadV7PredictionPermanent, 500);
-  setTimeout(window.loadV7PredictionPermanent, 1500);
-  setTimeout(window.loadV7PredictionPermanent, 3000);
-  setTimeout(window.loadV7PredictionPermanent, 5000);
+document.querySelectorAll(".nav button").forEach(btn => {
+  btn.onclick = function(){
+    document.querySelectorAll(".nav button").forEach(x => x.classList.remove("active"));
+    btn.classList.add("active");
 
-  setInterval(window.loadV7PredictionPermanent, 60000);
+    document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
+    document.getElementById(btn.dataset.section).classList.add("active");
+  };
 });
+
+renderTabs();
+loadAll();
+
+setInterval(loadAll,60000);
 </script>
 
-</body></html>
+</body>
+</html>
