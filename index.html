@@ -19,7 +19,141 @@ function emptyVault(){return {version:'FinScope Data Vault v1',lastUpdated:new D
 function buildJson(){let out=emptyVault(),fc=0,hc=0;fundInput.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{let p=parseLine(line),c=(p[0]||'').toUpperCase();if(out.funds[c]){out.funds[c].price=n(p[1]);out.funds[c].dailyChange=n(p[2]);out.funds[c].date=p[3]||'';out.funds[c].source='TEFAS';fc++}});holdInput.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{let p=parseLine(line),c=(p[0]||'').toUpperCase();if(out.funds[c]){out.funds[c].holdings.push({symbol:(p[1]||'').toUpperCase(),name:(p[1]||'').toUpperCase(),weight:n(p[2]),dailyChange:n(p[3])});hc++}});built=out;builderOutput.value=JSON.stringify(out,null,2);builderSummary.innerHTML=`${fc} fon satırı, ${hc} hisse satırı işlendi.`}
 function downloadJson(){if(!built)buildJson();let blob=new Blob([JSON.stringify(built,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='funds.json';a.click()}
 function clearBuilder(){fundInput.value='';holdInput.value='';builderOutput.value='';builderSummary.innerHTML='';built=null}
-function renderPred(){const rows=assets.filter(a=>a.cat==='Fonlar').map(a=>[a,pred(a)]).filter(x=>x[1]&&x[1].weight>0);predTable.innerHTML=rows.length?`<table class="table"><tr><th>Fon</th><th>Tahmini Katkı</th><th>Kapsanan Ağırlık</th><th>Güven</th></tr>`+rows.map(([a,p])=>`<tr><td>${a.symbol}</td><td class="${p.sum>=0?'ok':'bad'}">${p.sum>=0?'▲':'▼'} ${fmt2.format(Math.abs(p.sum))}%</td><td>%${fmt2.format(p.weight)}</td><td>${Math.min(95,Math.round(35+p.weight/1.8))}/100</td></tr>`).join('')+`</table>`:'Holdings verisi girilince tahmin oluşacak.';summaryBox.innerHTML=rows.length?rows.map(([a,p])=>`<div><b>${a.symbol}</b>: <span class="${p.sum>=0?'ok':'bad'}">${p.sum>=0?'▲':'▼'} ${fmt2.format(Math.abs(p.sum))}%</span></div>`).join(''):'Data Vault holdings bekliyor.'}
+function renderPred(){
+  if(typeof summaryBox!=="undefined"&&summaryBox){
+    summaryBox.innerHTML="V7 tahmin motoru yükleniyor...";
+  }
+
+  if(typeof predTable!=="undefined"&&predTable){
+    predTable.innerHTML="V7 tahmin motoru yükleniyor...";
+  }
+
+  fetch("/api/predict?t="+Date.now(),{cache:"no-store"})
+    .then(r=>r.json())
+    .then(data=>{
+      if(!data||!data.ok||!data.predictions){
+        if(summaryBox)summaryBox.innerHTML="Tahmin verisi alınamadı.";
+        if(predTable)predTable.innerHTML="Tahmin verisi alınamadı.";
+        return;
+      }
+
+      const confidenceText=v=>{
+        v=Number(v||0);
+        if(v>=90)return"Çok yüksek";
+        if(v>=75)return"Yüksek";
+        if(v>=60)return"Orta";
+        if(v>0)return"Düşük";
+        return"—";
+      };
+
+      const pct=v=>{
+        v=Number(v||0);
+        return(v>=0?"▲ ":"▼ ")+Math.abs(v).toFixed(2)+"%";
+      };
+
+      const cls=v=>Number(v||0)>=0?"ok":"bad";
+
+      const rows=Object.entries(data.predictions).map(([code,p])=>({
+        code,
+        predicted:Number(p.predictedChange||0),
+        rangeLow:Number(p.rangeLow||0),
+        rangeHigh:Number(p.rangeHigh||0),
+        confidence:Number(p.confidence||0),
+        methodology:p.methodology||"momentum",
+        observations:p.observations||0
+      }));
+
+      if(summaryBox){
+        summaryBox.innerHTML=rows.map(r=>`
+          <div style="margin-bottom:10px">
+            <b>${r.code}</b>:
+            <span class="${cls(r.predicted)}" style="font-weight:900">${pct(r.predicted)}</span>
+            <div class="small">
+              Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
+              • Güven: ${confidenceText(r.confidence)}
+              • Gözlem: ${r.observations}
+              • Yöntem: ${r.methodology}
+            </div>
+          </div>
+        `).join("")+`
+          <div class="small" style="margin-top:10px;color:#ffd76c">
+            18:00 sonrası gösterilen tahmin, gün sonu kapanış verilerine göre bir sonraki TEFAS fiyat beklentisidir.
+            Yatırım tavsiyesi değildir.
+          </div>
+        `;
+      }
+
+      if(predTable){
+        predTable.innerHTML=`
+          <table class="table">
+            <tr>
+              <th>Fon</th>
+              <th>Anlık Tahmin</th>
+              <th>Alt Aralık</th>
+              <th>Üst Aralık</th>
+              <th>Güven</th>
+              <th>Yöntem</th>
+            </tr>
+            ${rows.map(r=>`
+              <tr>
+                <td><b>${r.code}</b></td>
+                <td class="${cls(r.predicted)}">${pct(r.predicted)}</td>
+                <td>${r.rangeLow.toFixed(2)}%</td>
+                <td>${r.rangeHigh.toFixed(2)}%</td>
+                <td>${confidenceText(r.confidence)}</td>
+                <td>${r.methodology}</td>
+              </tr>
+            `).join("")}
+          </table>
+          <p class="small">
+            Bu tahminler yalnızca bilgilendirme amacıyla sunulur. Yatırım tavsiyesi içermez.
+          </p>
+        `;
+      }
+
+      if(typeof aiText!=="undefined"&&aiText){
+        aiText.textContent="FinScope V7 aktif. TEFAS fiyatları otomatik güncelleniyor. Tahminler /api/predict üzerinden okunuyor. Mevcut model ön momentum modelidir; portföy holdings kapsamı eklendikçe güven skoru güçlenecektir.";
+      }
+
+      if(typeof badges!=="undefined"&&badges){
+        badges.innerHTML=
+          '<span class="badge">V7 Predict API</span>'+
+          '<span class="badge">TEFAS otomatik</span>'+
+          '<span class="badge">18:00 Beklenti</span>'+
+          '<span class="badge">Yatırım tavsiyesi değildir</span>';
+      }
+
+      addLegalNoticeV7();
+    })
+    .catch(err=>{
+      console.error("renderPred /api/predict error:",err);
+      if(summaryBox)summaryBox.innerHTML="Tahmin API hatası oluştu.";
+      if(predTable)predTable.innerHTML="Tahmin API hatası oluştu.";
+    });
+}
+
+function addLegalNoticeV7(){
+  const dashboard=document.getElementById("dashboard");
+  if(!dashboard)return;
+  if(document.getElementById("legalNoticeV7"))return;
+
+  const box=document.createElement("div");
+  box.id="legalNoticeV7";
+  box.className="panel";
+  box.style.marginTop="22px";
+  box.innerHTML=`
+    <h2>Hukuki Bilgilendirme</h2>
+    <p class="small">
+      © 2026 FinScope Professional. Tüm hakları saklıdır.
+      Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
+      Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
+      Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
+      Veriler gecikmeli, eksik veya hatalı olabilir.
+      FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
+    </p>
+  `;
+  dashboard.appendChild(box);
+}
 function openDetail(sym){let a=assets.find(x=>x.symbol===sym),p=pred(a);mTitle.textContent=a.name+' Detay';mGrid.innerHTML=[['Kategori',a.cat],['Durum',a.status],['Son değer',val(a)],['Günlük değişim',pct(a)],['Kaynak',a.source||'—'],['Tarih',a.date||'—'],['Tahmini katkı',p?fmt2.format(p.sum)+'%':'—'],['Kapsanan ağırlık',p?'%'+fmt2.format(p.weight):'—']].map(([k,v])=>`<div class="mini"><div class="small">${k}</div><b>${v}</b></div>`).join('');mExtra.innerHTML=(a.holdings||[]).length?`<h3>Holdings</h3><table class="table"><tr><th>Hisse</th><th>Ağırlık</th><th>Günlük %</th><th>Katkı</th></tr>`+a.holdings.map(h=>`<tr><td>${h.symbol}</td><td>%${fmt2.format(n(h.weight)||0)}</td><td>${fmt2.format(n(h.dailyChange)||0)}%</td><td>${fmt2.format((n(h.weight)||0)*(n(h.dailyChange)||0)/100)}%</td></tr>`).join('')+`</table>`:'';mNote.textContent='v6.2: gerçek veri data/funds.json dosyasından gelir. Yatırım tavsiyesi değildir.';modal.classList.add('show')}
 function closeModal(){modal.classList.remove('show')}document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));document.getElementById(b.dataset.section).classList.add('active')});render();loadAll();
 </script>
