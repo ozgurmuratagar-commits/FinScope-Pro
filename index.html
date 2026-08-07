@@ -1944,6 +1944,115 @@ function closeModal(){modal.classList.remove('show')}document.querySelectorAll('
     startV7Guard();
   }
 })();
+<script>
+window.loadV7PredictionPermanent = async function(){
+  try{
+    const response = await fetch("/api/predict?t=" + Date.now(), {
+      cache: "no-store"
+    });
+
+    const data = await response.json();
+
+    if(!data || !data.ok || !data.predictions){
+      return;
+    }
+
+    function pct(v){
+      v = Number(v || 0);
+      return (v >= 0 ? "▲ " : "▼ ") + Math.abs(v).toFixed(2) + "%";
+    }
+
+    function cls(v){
+      return Number(v || 0) >= 0 ? "ok" : "bad";
+    }
+
+    function conf(v){
+      v = Number(v || 0);
+      if(v >= 90) return "Çok yüksek";
+      if(v >= 75) return "Yüksek";
+      if(v >= 60) return "Orta";
+      if(v > 0) return "Düşük";
+      return "—";
+    }
+
+    const rows = Object.entries(data.predictions).map(function(entry){
+      const code = entry[0];
+      const p = entry[1] || {};
+
+      return {
+        code: code,
+        predicted: Number(p.predictedChange || 0),
+        rangeLow: Number(p.rangeLow || 0),
+        rangeHigh: Number(p.rangeHigh || 0),
+        confidence: Number(p.confidence || 0),
+        coverage: Number(p.coverage || 0),
+        observations: Number(p.observations || 0),
+        status: p.status || "",
+        methodology: p.methodology || ""
+      };
+    });
+
+    const html = rows.map(function(r){
+      return `
+        <div style="margin-bottom:10px">
+          <b>${r.code}</b>:
+          <span class="${cls(r.predicted)}" style="font-weight:900">${pct(r.predicted)}</span>
+          <div class="small">
+            Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
+            • Güven: ${conf(r.confidence)}
+            • Kapsam: %${r.coverage.toFixed(2)}
+            • Gözlem: ${r.observations}
+          </div>
+        </div>
+      `;
+    }).join("") + `
+      <div class="small" style="margin-top:10px;color:#ffd76c">
+        18:00 sonrası gösterilen tahmin, gün sonu piyasa hareketlerine göre bir sonraki TEFAS fiyat beklentisidir.
+        Bu bilgiler yatırım tavsiyesi değildir.
+      </div>
+    `;
+
+    const summary = document.getElementById("summaryBox");
+    if(summary){
+      summary.innerHTML = html;
+    }
+
+    const ai = document.getElementById("aiText");
+    if(ai){
+      ai.textContent =
+        "FinScope V7 Holdings Weighted Prediction aktif. Tahminler fon portföy ağırlıkları, XU100/REPO/TRY proxy hareketleri ve gün içi piyasa verileriyle hesaplanıyor. Portföy verisi gerçek kırılımla güncellendikçe tahmin kalitesi artacaktır.";
+    }
+
+    const badges = document.getElementById("badges");
+    if(badges){
+      badges.innerHTML =
+        '<span class="badge">V7 Holdings Model</span>' +
+        '<span class="badge">Kapsam %100 test</span>' +
+        '<span class="badge">18:00 Beklenti</span>' +
+        '<span class="badge">Yatırım tavsiyesi değildir</span>';
+    }
+
+    document.querySelectorAll("body *").forEach(function(el){
+      if(el.childNodes.length === 1 && el.textContent && el.textContent.includes("v6.2")){
+        el.textContent = el.textContent.replaceAll("v6.2", "v7.0");
+      }
+    });
+
+  }catch(e){
+    console.error("V7 prediction load error:", e);
+  }
+};
+
+window.addEventListener("load", function(){
+  window.loadV7PredictionPermanent();
+
+  setTimeout(window.loadV7PredictionPermanent, 500);
+  setTimeout(window.loadV7PredictionPermanent, 1500);
+  setTimeout(window.loadV7PredictionPermanent, 3000);
+  setTimeout(window.loadV7PredictionPermanent, 5000);
+
+  setInterval(window.loadV7PredictionPermanent, 60000);
+});
 </script>
 
 </body></html>
