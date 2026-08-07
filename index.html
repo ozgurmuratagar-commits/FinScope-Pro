@@ -1777,6 +1777,173 @@ function closeModal(){modal.classList.remove('show')}document.querySelectorAll('
     setInterval(forceV7Predictions, 60000);
   });
 })();
+<script>
+(function(){
+  let lastPredictionHtml = "";
+  let lastAiText = "";
+
+  function pct(v){
+    v = Number(v || 0);
+    return (v >= 0 ? "▲ " : "▼ ") + Math.abs(v).toFixed(2) + "%";
+  }
+
+  function cls(v){
+    return Number(v || 0) >= 0 ? "ok" : "bad";
+  }
+
+  function conf(v){
+    v = Number(v || 0);
+    if(v >= 90) return "Çok yüksek";
+    if(v >= 75) return "Yüksek";
+    if(v >= 60) return "Orta";
+    if(v > 0) return "Düşük";
+    return "—";
+  }
+
+  async function loadV7PredictionPermanent(){
+    try{
+      const r = await fetch("/api/predict?t=" + Date.now(), { cache: "no-store" });
+      const data = await r.json();
+
+      if(!data || !data.ok || !data.predictions) return;
+
+      const rows = Object.entries(data.predictions).map(([code,p]) => ({
+        code,
+        predicted: Number(p.predictedChange || 0),
+        rangeLow: Number(p.rangeLow || 0),
+        rangeHigh: Number(p.rangeHigh || 0),
+        confidence: Number(p.confidence || 0),
+        coverage: Number(p.coverage || 0),
+        observations: Number(p.observations || 0),
+        status: p.status || "",
+        methodology: p.methodology || ""
+      }));
+
+      lastPredictionHtml = rows.map(r => `
+        <div style="margin-bottom:10px">
+          <b>${r.code}</b>:
+          <span class="${cls(r.predicted)}" style="font-weight:900">${pct(r.predicted)}</span>
+          <div class="small">
+            Aralık: ${r.rangeLow.toFixed(2)}% / ${r.rangeHigh.toFixed(2)}%
+            • Güven: ${conf(r.confidence)}
+            • Kapsam: %${r.coverage.toFixed(2)}
+            • Gözlem: ${r.observations}
+          </div>
+        </div>
+      `).join("") + `
+        <div class="small" style="margin-top:10px;color:#ffd76c">
+          18:00 sonrası gösterilen tahmin, gün sonu piyasa hareketlerine göre bir sonraki TEFAS fiyat beklentisidir.
+          Bu bilgiler yatırım tavsiyesi değildir.
+        </div>
+      `;
+
+      lastAiText =
+        "FinScope V7 Holdings Weighted Prediction aktif. Tahminler fon portföy ağırlıkları, XU100/REPO/TRY proxy hareketleri ve gün içi piyasa verileriyle hesaplanıyor. Portföy verisi gerçek kırılımla güncellendikçe tahmin kalitesi artacaktır.";
+
+      paintV7Prediction();
+      fixVersionText();
+
+    }catch(e){
+      console.error("V7 prediction permanent loader error:", e);
+    }
+  }
+
+  function paintV7Prediction(){
+    const summary = document.getElementById("summaryBox");
+    if(summary && lastPredictionHtml){
+      summary.innerHTML = lastPredictionHtml;
+    }
+
+    const ai = document.getElementById("aiText");
+    if(ai && lastAiText){
+      ai.textContent = lastAiText;
+    }
+
+    const badges = document.getElementById("badges");
+    if(badges){
+      badges.innerHTML =
+        '<span class="badge">V7 Holdings Model</span>' +
+        '<span class="badge">Kapsam %100 test</span>' +
+        '<span class="badge">18:00 Beklenti</span>' +
+        '<span class="badge">Yatırım tavsiyesi değildir</span>';
+    }
+
+    addLegal();
+  }
+
+  function addLegal(){
+    const dashboard = document.getElementById("dashboard");
+    if(!dashboard) return;
+    if(document.getElementById("legalNoticeV7Final")) return;
+
+    const box = document.createElement("div");
+    box.id = "legalNoticeV7Final";
+    box.className = "panel";
+    box.style.marginTop = "22px";
+    box.innerHTML = `
+      <h2>Hukuki Bilgilendirme</h2>
+      <p class="small">
+        © 2026 FinScope Professional. Tüm hakları saklıdır.
+        Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
+        Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir.
+        Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz.
+        Veriler gecikmeli, eksik veya hatalı olabilir.
+        FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
+      </p>
+    `;
+    dashboard.appendChild(box);
+  }
+
+  function fixVersionText(){
+    document.querySelectorAll("body *").forEach(el => {
+      if(el.childNodes.length === 1 && el.textContent && el.textContent.includes("v6.2")){
+        el.textContent = el.textContent.replaceAll("v6.2", "v7.0");
+      }
+    });
+  }
+
+  function startV7Guard(){
+    loadV7PredictionPermanent();
+
+    let n = 0;
+    const fast = setInterval(() => {
+      n++;
+      loadV7PredictionPermanent();
+      paintV7Prediction();
+      fixVersionText();
+      if(n >= 30) clearInterval(fast);
+    }, 1000);
+
+    setInterval(() => {
+      loadV7PredictionPermanent();
+      paintV7Prediction();
+      fixVersionText();
+    }, 60000);
+
+    const target = document.body;
+    if(target){
+      const observer = new MutationObserver(() => {
+        const summary = document.getElementById("summaryBox");
+        if(summary && summary.textContent.includes("Data Vault holdings bekliyor")){
+          paintV7Prediction();
+        }
+        fixVersionText();
+      });
+
+      observer.observe(target, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+    }
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", startV7Guard);
+  }else{
+    startV7Guard();
+  }
+})();
 </script>
 
 </body></html>
