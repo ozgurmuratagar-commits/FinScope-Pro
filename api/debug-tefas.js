@@ -1,38 +1,89 @@
-const CANDIDATES = [
+const TESTS = [
   {
-    name: "funds_dagilimSiraliGetirT",
+    name: "dagilim_fonkod_only",
     url: "https://www.tefas.gov.tr/api/funds/dagilimSiraliGetirT",
+    method: "POST",
     body: fund => ({ fonkod: fund })
   },
   {
-    name: "funds_fonDetayBilgiGetirT",
-    url: "https://www.tefas.gov.tr/api/funds/fonDetayBilgiGetirT",
-    body: fund => ({ fonkod: fund })
+    name: "dagilim_fontip_fonkod",
+    url: "https://www.tefas.gov.tr/api/funds/dagilimSiraliGetirT",
+    method: "POST",
+    body: fund => ({ fontip: "YAT", fonkod: fund })
   },
   {
-    name: "funds_fonAnalizGetirT",
-    url: "https://www.tefas.gov.tr/api/funds/fonAnalizGetirT",
-    body: fund => ({ fonkod: fund })
+    name: "dagilim_fonKod_upperK",
+    url: "https://www.tefas.gov.tr/api/funds/dagilimSiraliGetirT",
+    method: "POST",
+    body: fund => ({ fonKod: fund })
   },
   {
-    name: "db_BindHistoryInfo",
-    url: "https://www.tefas.gov.tr/api/DB/BindHistoryInfo",
+    name: "dagilim_FonKod_pascal",
+    url: "https://www.tefas.gov.tr/api/funds/dagilimSiraliGetirT",
+    method: "POST",
+    body: fund => ({ FonKod: fund })
+  },
+  {
+    name: "dagilim_kod",
+    url: "https://www.tefas.gov.tr/api/funds/dagilimSiraliGetirT",
+    method: "POST",
+    body: fund => ({ kod: fund })
+  },
+  {
+    name: "dagilim_all_common",
+    url: "https://www.tefas.gov.tr/api/funds/dagilimSiraliGetirT",
+    method: "POST",
     body: fund => ({
       fontip: "YAT",
       fonkod: fund,
-      bastarih: "01.08.2026",
-      bittarih: "07.08.2026"
+      fonKod: fund,
+      FonKod: fund,
+      kod: fund
     })
+  },
+  {
+    name: "fund_detail_fonkod",
+    url: "https://www.tefas.gov.tr/api/funds/fonDetayBilgiGetir",
+    method: "POST",
+    body: fund => ({ fonkod: fund })
+  },
+  {
+    name: "fund_detail_T",
+    url: "https://www.tefas.gov.tr/api/funds/fonDetayBilgiGetirT",
+    method: "POST",
+    body: fund => ({ fonkod: fund })
+  },
+  {
+    name: "fund_profile_fonkod",
+    url: "https://www.tefas.gov.tr/api/funds/fonProfilBilgiGetir",
+    method: "POST",
+    body: fund => ({ fonkod: fund })
+  },
+  {
+    name: "fund_profile_T",
+    url: "https://www.tefas.gov.tr/api/funds/fonProfilBilgiGetirT",
+    method: "POST",
+    body: fund => ({ fonkod: fund })
   }
 ];
 
 function pickRows(json) {
   if (Array.isArray(json)) return json;
   if (Array.isArray(json?.data)) return json.data;
+  if (Array.isArray(json?.Data)) return json.Data;
   if (Array.isArray(json?.result)) return json.result;
+  if (Array.isArray(json?.Result)) return json.Result;
   if (Array.isArray(json?.resultList)) return json.resultList;
+  if (Array.isArray(json?.ResultList)) return json.ResultList;
   if (Array.isArray(json?.items)) return json.items;
   if (Array.isArray(json?.value)) return json.value;
+
+  if (json && typeof json === "object") {
+    for (const key of Object.keys(json)) {
+      if (Array.isArray(json[key])) return json[key];
+    }
+  }
+
   return [];
 }
 
@@ -44,19 +95,22 @@ module.exports = async function handler(req, res) {
 
   const results = [];
 
-  for (const c of CANDIDATES) {
+  for (const test of TESTS) {
     try {
-      const response = await fetch(c.url, {
-        method: "POST",
+      const body = test.body(fund);
+
+      const response = await fetch(test.url, {
+        method: test.method,
         headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json,*/*",
+          "Content-Type": "application/json; charset=UTF-8",
+          Accept: "application/json, text/javascript, */*; q=0.01",
           Origin: "https://www.tefas.gov.tr",
           Referer: "https://www.tefas.gov.tr/",
+          "X-Requested-With": "XMLHttpRequest",
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
         },
-        body: JSON.stringify(c.body(fund))
+        body: JSON.stringify(body)
       });
 
       const text = await response.text();
@@ -74,17 +128,19 @@ module.exports = async function handler(req, res) {
       const first = rows[0] || {};
 
       results.push({
-        name: c.name,
+        name: test.name,
         http: response.status,
+        bodySent: body,
         parseOk,
+        jsonKeys: json && typeof json === "object" ? Object.keys(json) : [],
         rowCount: rows.length,
-        keys: Object.keys(first),
+        rowKeys: Object.keys(first),
         sample: first,
-        textSample: parseOk ? null : text.slice(0, 500)
+        rawSample: text.slice(0, 700)
       });
     } catch (err) {
       results.push({
-        name: c.name,
+        name: test.name,
         ok: false,
         error: String(err.message || err)
       });
