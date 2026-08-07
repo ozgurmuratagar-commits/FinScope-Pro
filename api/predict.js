@@ -2,7 +2,7 @@ const FUNDS = ["PBR", "PHE", "TLY"];
 
 const DEFAULT_REPO_DAILY_CHANGE = Number(process.env.REPO_DAILY_CHANGE || 0.12);
 const DEFAULT_CASH_DAILY_CHANGE = Number(process.env.CASH_DAILY_CHANGE || 0);
-const DEFAULT_BOND_DAILY_CHANGE = Number(process.env.BOND_DAILY_CHANGE || 0.07);
+const DEFAULT_BOND_DAILY_CHANGE = Number(process.env.BOND_DAILY_CHANGE || 0.06);
 
 function num(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -88,6 +88,7 @@ function normalizeSymbol(symbol) {
 
   if (s === "TRY" || s === "CASH" || s === "TL") return "TRY";
   if (s === "REPO" || s === "MONEY_MARKET" || s === "PARA_PIYASASI") return "REPO";
+  if (s === "RESIDUAL" || s === "KALAN") return "RESIDUAL";
 
   if (s === "USD" || s === "USDTRY") return "USDTRY";
   if (s === "EUR" || s === "EURTRY") return "EURTRY";
@@ -104,12 +105,10 @@ function yahooSymbolForBist(symbol) {
 
   if (!s) return null;
 
-  if (["XU100", "XU030", "XU050"].includes(s)) {
-    return null;
-  }
+  if (["XU100", "XU030", "XU050"].includes(s)) return null;
 
   if (
-    ["TRY", "REPO", "USDTRY", "EURTRY", "GBPTRY", "XAU", "XAG"].includes(s)
+    ["TRY", "REPO", "RESIDUAL", "USDTRY", "EURTRY", "GBPTRY", "XAU", "XAG"].includes(s)
   ) {
     return null;
   }
@@ -184,14 +183,15 @@ async function buildStockMoveMap(holdingsRows, marketAssets) {
   }
 
   const out = {};
-
-  const list = Array.from(symbols).slice(0, 80);
+  const list = Array.from(symbols).slice(0, 120);
 
   await Promise.all(
     list.map(async yahoo => {
       const baseSymbol = yahoo.replace(".IS", "");
+
       try {
         const q = await yahooQuote(yahoo);
+
         out[baseSymbol] = {
           change: num(q.change),
           value: num(q.value),
@@ -228,9 +228,55 @@ function marketChangeForIndex(symbol, marketAssets) {
   return num(marketAssets.XU100 && marketAssets.XU100.change) || 0;
 }
 
+function residualChangeForFund(fundCode, marketAssets) {
+  const xu100 = marketChangeForIndex("XU100", marketAssets);
+  const xu030 = marketChangeForIndex("XU030", marketAssets);
+  const xu050 = marketChangeForIndex("XU050", marketAssets);
+
+  const bistBlend = (xu100 * 0.55) + (xu030 * 0.25) + (xu050 * 0.20);
+  const repo = DEFAULT_REPO_DAILY_CHANGE;
+  const bond = DEFAULT_BOND_DAILY_CHANGE;
+  const cash = DEFAULT_CASH_DAILY_CHANGE;
+
+  if (fundCode === "PBR") {
+    return {
+      change: (repo * 0.45) + (bistBlend * 0.25) + (bond * 0.20) + (cash * 0.10),
+      source: "PBR residual v3: repo + fon proxy + borçlanma + nakit",
+      direct: false
+    };
+  }
+
+  if (fundCode === "PHE") {
+    return {
+      change: (bistBlend * 0.55) + (repo * 0.25) + (cash * 0.20),
+      source: "PHE residual v3: fon/hisse proxy + repo + nakit",
+      direct: false
+    };
+  }
+
+  if (fundCode === "TLY") {
+    return {
+      change: (repo * 0.45) + (bistBlend * 0.25) + (bond * 0.20) + (cash * 0.10),
+      source: "TLY residual v3: repo + fon/gyo proxy + borçlanma + nakit",
+      direct: false
+    };
+  }
+
+  return {
+    change: (repo * 0.50) + (bistBlend * 0.30) + (cash * 0.20),
+    source: "residual v3 genel varsayım",
+    direct: false
+  };
+}
+
 function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
+  const fundCode = String(asset.fundCode || asset.fund_code || "").toUpperCase();
   const type = String(asset.asset_type || asset.assetType || "").toUpperCase();
   const symbol = normalizeSymbol(asset.symbol);
+
+  if (symbol === "RESIDUAL") {
+    return residualChangeForFund(fundCode, marketAssets);
+  }
 
   if (type === "CASH" || symbol === "TRY") {
     return {
@@ -363,6 +409,7 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
     let proxyWeight = 0;
     let positiveContribution = 0;
     let negativeContribution = 0;
+    let residualWeight = 0;
 
     const details = [];
 
@@ -375,6 +422,8 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       const contribution = (weight * change) / 100;
 
       predicted += contribution;
+
+      if (normalizeSymbol(h.symbol) === "RESIDUAL") residualWeight += weight;
 
       if (move.direct) directPricedWeight += weight;
       else proxyWeight += weight;
@@ -398,34 +447,61 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
 
     const coverage = Math.min(100, totalWeight);
     const missingWeight = Math.max(0, 100 - coverage);
-
     const directRatio = coverage > 0 ? directPricedWeight / coverage : 0;
 
-    const volatilityBuffer =
-      coverage >= 98 && directRatio >= 0.8 ? 0.18 :
-      coverage >= 95 && directRatio >= 0.6 ? 0.25 :
-      coverage >= 90 ? 0.35 :
-      coverage >= 75 ? 0.55 :
-      0.90;
+    const residualPenalty =
+      residualWeight >= 30 ? 10 :
+      residualWeight >= 20 ? 7 :
+      residualWeight >= 10 ? 4 :
+      0;
 
-    const rangeLow = predicted - volatilityBuffer;
-    const rangeHigh = predicted + volatilityBuffer;
+    const coveragePenalty =
+      coverage >= 99 ? 0 :
+      coverage >= 95 ? 4 :
+      coverage >= 90 ? 8 :
+      15;
+
+    const directPenalty =
+      directRatio >= 0.75 ? 0 :
+      directRatio >= 0.55 ? 5 :
+      directRatio >= 0.35 ? 10 :
+      18;
 
     const confidence = Math.min(
       96,
       Math.max(
         35,
         Math.round(
-          35 +
-          coverage * 0.35 +
-          directRatio * 25 +
-          Math.min(details.length, 40) * 0.25
+          96 -
+          residualPenalty -
+          coveragePenalty -
+          directPenalty +
+          Math.min(details.length, 50) * 0.05
         )
       )
     );
 
+    const volatilityBuffer =
+      confidence >= 90 ? 0.22 :
+      confidence >= 80 ? 0.32 :
+      confidence >= 70 ? 0.45 :
+      0.65;
+
+    const rangeLow = predicted - volatilityBuffer;
+    const rangeHigh = predicted + volatilityBuffer;
+
+    const topPositive = details
+      .filter(x => x.contribution > 0)
+      .sort((a, b) => b.contribution - a.contribution)
+      .slice(0, 5);
+
+    const topNegative = details
+      .filter(x => x.contribution < 0)
+      .sort((a, b) => a.contribution - b.contribution)
+      .slice(0, 5);
+
     predictions[code] = {
-      status: holdings.length ? "holdings_weighted_v2" : "no_holdings",
+      status: holdings.length ? "holdings_weighted_v3" : "no_holdings",
       predictedChange: round(predicted, 4),
       rangeLow: round(rangeLow, 4),
       rangeHigh: round(rangeHigh, 4),
@@ -433,13 +509,16 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       confidenceText: confidenceText(confidence),
       coverage: round(coverage, 2),
       missingWeight: round(missingWeight, 2),
+      residualWeight: round(residualWeight, 2),
       observations: details.length,
       directPricedWeight: round(directPricedWeight, 2),
       proxyWeight: round(proxyWeight, 2),
       positiveContribution: round(positiveContribution, 4),
       negativeContribution: round(negativeContribution, 4),
+      topPositive,
+      topNegative,
       methodology:
-        "Holdings ağırlıklı v2: gerçek hisse sembolü varsa Yahoo/BIST gecikmeli fiyat, yoksa uygun proxy.",
+        "Holdings ağırlıklı v3: gerçek hisse fiyatı + BIST proxy + fon bazlı residual dağılımı + güven skoru.",
       horizon: "next published daily fund return",
       details
     };
@@ -478,7 +557,7 @@ module.exports = async function handler(req, res) {
     res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      model: "FinScope Holdings Weighted Prediction v2 - Stock Level Ready",
+      model: "FinScope Holdings Weighted Prediction v3 - Residual Smart Model",
       horizon: "next published daily fund return",
       marketSource: marketJson.version || "api/market",
       holdingsSource: "supabase.fund_holdings",
