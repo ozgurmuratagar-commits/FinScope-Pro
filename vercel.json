@@ -2,6 +2,10 @@
   "version": 2,
   "builds": [
     {
+      "src": "api/health.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "api/market.js",
       "use": "@vercel/node"
     },
@@ -23,6 +27,10 @@
     }
   ],
   "routes": [
+    {
+      "src": "/api/health",
+      "dest": "/api/health.js"
+    },
     {
       "src": "/api/market",
       "dest": "/api/market.js"
