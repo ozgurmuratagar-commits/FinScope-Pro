@@ -178,14 +178,21 @@ module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
   const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.authorization;
+const authHeader = req.headers.authorization;
+const querySecret = req.query && req.query.secret;
 
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({
-      ok: false,
-      error: "Yetkisiz istek.",
-    });
-  }
+const authorizedByHeader =
+  cronSecret && authHeader === `Bearer ${cronSecret}`;
+
+const authorizedByQuery =
+  cronSecret && querySecret === cronSecret;
+
+if (cronSecret && !authorizedByHeader && !authorizedByQuery) {
+  return res.status(401).json({
+    ok: false,
+    error: "Yetkisiz istek.",
+  });
+}
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const secretKey = process.env.SUPABASE_SECRET_KEY;
