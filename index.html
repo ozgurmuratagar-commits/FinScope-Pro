@@ -1443,6 +1443,206 @@ function closeModal(){modal.classList.remove('show')}document.querySelectorAll('
   setTimeout(finscopeV7DashboardPatch, 2000);
   setInterval(finscopeV7DashboardPatch, 60000);
 })();
+<script>
+(function () {
+  var runCount = 0;
+
+  function pct(x) {
+    var n = Number(x || 0);
+    var sign = n >= 0 ? "▲ " : "▼ ";
+    return sign + Math.abs(n).toFixed(2) + "%";
+  }
+
+  function colorClass(x) {
+    return Number(x || 0) >= 0 ? "ok" : "bad";
+  }
+
+  function confidenceText(v) {
+    v = Number(v || 0);
+    if (v >= 90) return "Çok yüksek";
+    if (v >= 75) return "Yüksek";
+    if (v >= 60) return "Orta";
+    if (v > 0) return "Düşük";
+    return "—";
+  }
+
+  async function forceV7Predictions() {
+    try {
+      runCount++;
+
+      var response = await fetch("/api/predict?t=" + Date.now(), {
+        cache: "no-store"
+      });
+
+      var data = await response.json();
+
+      if (!data || !data.ok || !data.predictions) {
+        return;
+      }
+
+      var rows = Object.keys(data.predictions).map(function (code) {
+        var p = data.predictions[code] || {};
+        return {
+          code: code,
+          predicted: Number(p.predictedChange || 0),
+          rangeLow: Number(p.rangeLow || 0),
+          rangeHigh: Number(p.rangeHigh || 0),
+          confidence: Number(p.confidence || 0),
+          methodology: p.methodology || "momentum",
+          observations: p.observations || 0
+        };
+      });
+
+      var html = "";
+
+      rows.forEach(function (r) {
+        html +=
+          '<div style="margin-bottom:10px">' +
+            '<b>' + r.code + '</b>: ' +
+            '<span class="' + colorClass(r.predicted) + '" style="font-weight:900">' +
+              pct(r.predicted) +
+            '</span>' +
+            '<div class="small">' +
+              'Aralık: ' + r.rangeLow.toFixed(2) + '% / ' + r.rangeHigh.toFixed(2) + '%' +
+              ' • Güven: ' + confidenceText(r.confidence) +
+              ' • Gözlem: ' + r.observations +
+              ' • Yöntem: ' + r.methodology +
+            '</div>' +
+          '</div>';
+      });
+
+      html +=
+        '<div class="small" style="margin-top:10px;color:#ffd76c">' +
+          'V7 tahmin motoru aktiftir. Tahminler model bazlıdır, yatırım tavsiyesi değildir.' +
+        '</div>';
+
+      var summary = document.getElementById("summaryBox");
+      if (summary) {
+        summary.innerHTML = html;
+      }
+
+      var ai = document.getElementById("aiText");
+      if (ai) {
+        ai.textContent =
+          "FinScope V7 aktif. TEFAS fiyatları otomatik güncelleniyor. Tahminler /api/predict üzerinden okunuyor.";
+      }
+
+      var badges = document.getElementById("badges");
+      if (badges) {
+        badges.innerHTML =
+          '<span class="badge">V7 Predict API</span>' +
+          '<span class="badge">TEFAS otomatik</span>' +
+          '<span class="badge">Yatırım tavsiyesi değildir</span>';
+      }
+
+      var predTable = document.getElementById("predTable");
+      if (predTable) {
+        var table =
+          '<table class="table">' +
+            '<tr>' +
+              '<th>Fon</th>' +
+              '<th>Tahmin</th>' +
+              '<th>Alt Aralık</th>' +
+              '<th>Üst Aralık</th>' +
+              '<th>Güven</th>' +
+              '<th>Yöntem</th>' +
+            '</tr>';
+
+        rows.forEach(function (r) {
+          table +=
+            '<tr>' +
+              '<td><b>' + r.code + '</b></td>' +
+              '<td class="' + colorClass(r.predicted) + '">' + pct(r.predicted) + '</td>' +
+              '<td>' + r.rangeLow.toFixed(2) + '%</td>' +
+              '<td>' + r.rangeHigh.toFixed(2) + '%</td>' +
+              '<td>' + confidenceText(r.confidence) + '</td>' +
+              '<td>' + r.methodology + '</td>' +
+            '</tr>';
+        });
+
+        table += '</table>';
+
+        predTable.innerHTML = table;
+      }
+
+      addV7Panel(rows);
+      addLegalNotice();
+
+    } catch (e) {
+      console.error("V7 force prediction error:", e);
+    }
+  }
+
+  function addV7Panel(rows) {
+    var dashboard = document.getElementById("dashboard");
+    if (!dashboard) return;
+
+    var panel = document.getElementById("v7PredictionPanel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "v7PredictionPanel";
+      panel.className = "panel";
+      panel.style.marginTop = "22px";
+      dashboard.appendChild(panel);
+    }
+
+    var body = '<h2>V7 Canlı Tahmin Paneli</h2>';
+
+    rows.forEach(function (r) {
+      body +=
+        '<div style="margin-bottom:10px">' +
+          '<b>' + r.code + '</b>: ' +
+          '<span class="' + colorClass(r.predicted) + '" style="font-weight:900">' +
+            pct(r.predicted) +
+          '</span>' +
+          '<span class="small"> • Güven: ' + confidenceText(r.confidence) + '</span>' +
+        '</div>';
+    });
+
+    body +=
+      '<p class="small">Bu alan /api/predict verisinden otomatik oluşturulmaktadır.</p>';
+
+    panel.innerHTML = body;
+  }
+
+  function addLegalNotice() {
+    var dashboard = document.getElementById("dashboard");
+    if (!dashboard) return;
+
+    if (document.getElementById("legalNotice")) return;
+
+    var box = document.createElement("div");
+    box.id = "legalNotice";
+    box.className = "panel";
+    box.style.marginTop = "22px";
+    box.innerHTML =
+      '<h2>Hukuki Bilgilendirme</h2>' +
+      '<p class="small">' +
+        '© 2026 FinScope Professional. Tüm hakları saklıdır. ' +
+        'Bu platformda yer alan veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır. ' +
+        'Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı kapsamında değildir. ' +
+        'Geçmiş performans gelecek dönem getirileri için garanti oluşturmaz. ' +
+        'Veriler gecikmeli, eksik veya hatalı olabilir. ' +
+        'FinScope Professional, kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.' +
+      '</p>';
+
+    dashboard.appendChild(box);
+  }
+
+  window.addEventListener("load", function () {
+    forceV7Predictions();
+
+    var fastTimer = setInterval(function () {
+      forceV7Predictions();
+
+      if (runCount >= 15) {
+        clearInterval(fastTimer);
+      }
+    }, 2000);
+
+    setInterval(forceV7Predictions, 60000);
+  });
+})();
 </script>
 
 </body></html>
