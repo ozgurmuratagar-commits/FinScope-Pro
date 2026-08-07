@@ -18,6 +18,10 @@
       "use": "@vercel/node"
     },
     {
+      "src": "api/predict.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "index.html",
       "use": "@vercel/static"
     },
@@ -42,6 +46,10 @@
     {
       "src": "/api/sync-funds",
       "dest": "/api/sync-funds.js"
+    },
+    {
+      "src": "/api/predict",
+      "dest": "/api/predict.js"
     },
     {
       "src": "/data/funds.json",
