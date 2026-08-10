@@ -488,9 +488,7 @@
       const n = num(value);
       if (n === null) return "—";
 
-      const rounded = Number(n.toFixed(digits));
-
-      return rounded.toLocaleString("tr-TR", {
+      return n.toLocaleString("tr-TR", {
         minimumFractionDigits: digits,
         maximumFractionDigits: digits
       }) + "%";
@@ -734,14 +732,19 @@
         const perf = latestRows[code] || {};
         const livePrediction = predictions[code] || {};
 
-        const predicted =
-          perf.predictedChange !== null && perf.predictedChange !== undefined
-            ? perf.predictedChange
-            : livePrediction.predictedChange;
+        const status = perf.status || "pending";
+        const isPending = status !== "completed";
+
+        const predicted = isPending
+          ? livePrediction.predictedChange
+          : (
+              perf.predictedChange !== null && perf.predictedChange !== undefined
+                ? perf.predictedChange
+                : livePrediction.predictedChange
+            );
 
         const actual = perf.actualChange;
         const error = perf.errorChange;
-        const status = perf.status || "pending";
         const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
         const statusClass = status === "completed" ? "status-completed" : "";
 
@@ -794,7 +797,7 @@
 
         <div class="summary-line">
           Yön isabet oranı: <b>${directionRate}</b>.
-          Tamamlanan veri yoksa bu alanlar “Bekliyor” görünür. Gerçekleşen TEFAS fiyatı geldikçe performans otomatik dolacaktır.
+          Bekleyen satırlarda tahmin değeri canlı Prediction Engine v6 çıktısından gösterilir. Gerçekleşme gelince kayıtlı performans verisi kullanılacaktır.
         </div>
 
         <table class="perf-table">
