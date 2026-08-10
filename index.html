@@ -318,15 +318,16 @@
   <div class="app">
     <aside>
       <div class="brand">FinScope</div>
-      <div class="version">Professional v7.0 • Prediction Engine v6</div>
+      <div class="version">Professional v7.0 • Prediction Engine v7</div>
       <div class="side-note">
         TEFAS fon fiyatları<br />
         Supabase Data Vault<br />
         Holdings weighted prediction<br />
         TEFAS smoothing model<br />
+        Accuracy Layer<br />
         Actual error learning<br />
         Performance tracking<br />
-        UI Sync Fix v6.1
+        UI Sync Fix v7.0
       </div>
 
       <nav>
@@ -343,13 +344,14 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, v6 actual error learning tahmin motoru ve performans takibi. UI Sync Fix v6.1 aktif.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Sync Fix v7.0 aktif.
           </div>
           <div class="chips">
             <span class="chip">v7.0 Dashboard</span>
-            <span class="chip">Prediction Engine v6</span>
+            <span class="chip">Prediction Engine v7</span>
+            <span class="chip">Accuracy Layer</span>
             <span class="chip">Performance API v2</span>
-            <span class="chip">UI Sync Fix v6.1</span>
+            <span class="chip">UI Sync Fix v7.0</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -369,7 +371,7 @@
           <div class="section-title">AI Analist</div>
           <div id="aiAnalyst" class="loading">Tahmin motoru yükleniyor...</div>
           <div class="chips" style="margin-top: 14px;">
-            <span class="chip">v6 Actual Error Learning</span>
+            <span class="chip">v7 Accuracy Layer</span>
             <span class="chip">TEFAS Smoothing</span>
             <span class="chip">Sapma Öğrenimi</span>
             <span class="chip">18:00 Beklenti</span>
@@ -496,6 +498,12 @@
       return predictJson && predictJson.predictions ? predictJson.predictions : {};
     }
 
+    function getModelLabel(predictJson) {
+      return predictJson && predictJson.model
+        ? predictJson.model
+        : "FinScope Prediction Engine v7 - Accuracy Layer";
+    }
+
     function renderMarketCards(marketJson, fundsJson, predictJson) {
       const cards = document.getElementById("cards");
       const marketAssets = getMarketAssets(marketJson);
@@ -544,7 +552,8 @@
             <div class="${predCls}">Tahmin: ${directionIcon(predChange)} ${formatPercent(predChange, 2)}</div>
             <div class="small">Kapsam: %${formatNumber(pred.coverage, 2)} • Güven: ${escapeHtml(pred.confidenceText || "—")}</div>
             <div class="small">Yumuşatma etkisi: ${formatPercent(pred.smoothingImpact || 0, 2)}</div>
-            <div class="small">Kalibrasyon: ${formatPercent(pred.calibrationOffset || 0, 2)}</div>
+            <div class="small">Sapma düzeltmesi: ${formatPercent(pred.calibrationOffset || 0, 2)}</div>
+            <div class="small">Accuracy damping: ${formatNumber(pred.accuracyDamping || 1, 4)}</div>
             <div class="small">TEFAS v2 • ${escapeHtml(fund.date || fund.priceDate || fund.price_date || "tarih yok")}</div>
           </div>
         `);
@@ -574,21 +583,28 @@
         const unsmoothed = p.unsmoothedChange;
         const smoothingImpact = p.smoothingImpact || 0;
         const offset = p.calibrationOffset || 0;
+        const damping = p.accuracyDamping || 1;
         const cls = directionClass(pred);
+
+        const learningStatus =
+          (p.accuracyLayer && p.accuracyLayer.status) ||
+          (p.calibration && p.calibration.status) ||
+          "no_history";
 
         lines.push(`
           <div class="summary-line">
             <b>${escapeHtml(code)}</b>:
-            <span class="${cls}">${directionIcon(pred)} v6 Tahmin ${formatPercent(pred, 2)}</span>
+            <span class="${cls}">${directionIcon(pred)} v7 Tahmin ${formatPercent(pred, 2)}</span>
             <br />
             Yumuşatılmamış: ${formatPercent(unsmoothed, 2)}
             • TEFAS yumuşatma sonrası: ${formatPercent(raw, 2)}
             • Yumuşatma etkisi: ${formatPercent(smoothingImpact, 2)}
             <br />
             Sapma düzeltmesi: ${formatPercent(offset, 2)}
+            • Accuracy damping: ${formatNumber(damping, 4)}
             • Güven: ${escapeHtml(p.confidenceText || "—")}
             • Kapsam: %${formatNumber(p.coverage, 2)}
-            • Öğrenme: ${escapeHtml((p.calibration && p.calibration.status) || "no_history")}
+            • Öğrenme: ${escapeHtml(learningStatus)}
           </div>
         `);
       });
@@ -611,14 +627,16 @@
         return;
       }
 
-      const model = predictJson.model || "FinScope Prediction Engine v6";
+      const model = getModelLabel(predictJson);
 
       const rows = FUND_ORDER.map(function(code) {
         const p = predictions[code] || {};
         return {
           code,
           pred: num(p.predictedChange) || 0,
-          smoothingImpact: num(p.smoothingImpact) || 0
+          smoothingImpact: num(p.smoothingImpact) || 0,
+          offset: num(p.calibrationOffset) || 0,
+          damping: num(p.accuracyDamping) || 1
         };
       });
 
@@ -630,19 +648,26 @@
           return sum + Math.abs(row.smoothingImpact || 0);
         }, 0) / Math.max(1, rows.length);
 
+      const avgOffset =
+        rows.reduce(function(sum, row) {
+          return sum + Math.abs(row.offset || 0);
+        }, 0) / Math.max(1, rows.length);
+
       box.innerHTML = `
         <div class="summary-line">
-          <b>${escapeHtml(model)}</b> aktif. Model; gerçek KAP portföy ağırlıkları, hisse bazlı piyasa hareketleri, residual dağılım, TEFAS yumuşatma filtresi ve gerçekleşen tahmin sapmalarını birlikte kullanır.
+          <b>${escapeHtml(model)}</b> aktif. Model; gerçek KAP portföy ağırlıkları, hisse bazlı piyasa hareketleri, residual dağılım, TEFAS yumuşatma filtresi, geçmiş sapma öğrenimi ve Accuracy Layer düzeltmesini birlikte kullanır.
         </div>
         <div class="summary-line">
           En pozitif beklenti: <b>${escapeHtml(best.code)}</b> ${formatPercent(best.pred, 2)}.
           En zayıf beklenti: <b>${escapeHtml(worst.code)}</b> ${formatPercent(worst.pred, 2)}.
         </div>
         <div class="summary-line">
-          Ortalama yumuşatma etkisi: <b>${formatPercent(avgSmoothing, 2)}</b>. Bu filtre, fon fiyatlarının hisse senedi kadar sert hareket etmemesi için tahminleri daha gerçekçi aralığa çeker.
+          Ortalama yumuşatma etkisi: <b>${formatPercent(avgSmoothing, 2)}</b>.
+          Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
+          v7, fonun geçmiş tahmin hatalarını kullanarak aşırı iyimser veya aşırı kötümser çıktıları törpüler.
         </div>
         <div class="summary-line">
-          Kapsam seviyesi PBR/PHE/TLY için %100 görünüyorsa portföy verisi tam okunuyor demektir. Öğrenme verisi arttıkça sapma düzeltmesi daha anlamlı hale gelir.
+          Kapsam seviyesi PBR/PHE/TLY için %100 görünüyorsa portföy verisi tam okunuyor demektir. Gerçekleşen TEFAS verisi arttıkça v7 Accuracy Layer daha anlamlı hale gelir.
         </div>
       `;
     }
@@ -739,7 +764,7 @@
 
         <div class="summary-line">
           Yön isabet oranı: <b>${directionRate}</b>.
-          Bekleyen satırlarda tahmin değeri doğrudan canlı Prediction Engine v6 çıktısından gösterilir. Tamamlanan satırlarda kayıtlı performans tahmini kullanılır.
+          Bekleyen satırlarda tahmin değeri doğrudan canlı Prediction Engine v7 çıktısından gösterilir. Tamamlanan satırlarda kayıtlı performans tahmini kullanılır.
         </div>
 
         <table class="perf-table">
