@@ -18,6 +18,7 @@
       --teal1: #149b8f;
       --teal2: #075166;
       --chip: #263747;
+      --blue: #5ac8ff;
     }
 
     * {
@@ -56,6 +57,7 @@
       color: #ffe066;
       font-weight: 700;
       margin-bottom: 18px;
+      line-height: 1.35;
     }
 
     .side-note {
@@ -124,13 +126,13 @@
 
     .refresh-box {
       text-align: right;
-      min-width: 140px;
+      min-width: 150px;
       font-size: 11px;
       color: var(--muted);
     }
 
     button {
-      background: #5ac8ff;
+      background: var(--blue);
       color: white;
       border: 0;
       padding: 10px 16px;
@@ -240,6 +242,68 @@
       color: var(--muted);
     }
 
+    .performance-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .metric {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .metric-value {
+      font-size: 20px;
+      font-weight: 900;
+    }
+
+    .perf-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+
+    .perf-table th,
+    .perf-table td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .perf-table th {
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      background: rgba(255, 209, 102, 0.12);
+      color: var(--yellow);
+      border: 1px solid rgba(255, 209, 102, 0.35);
+    }
+
+    .status-completed {
+      background: rgba(47, 240, 160, 0.12);
+      color: var(--green);
+      border-color: rgba(47, 240, 160, 0.35);
+    }
+
     @media (max-width: 1100px) {
       .grid {
         grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -247,6 +311,10 @@
 
       .sections {
         grid-template-columns: 1fr;
+      }
+
+      .performance-grid {
+        grid-template-columns: repeat(2, 1fr);
       }
     }
 
@@ -274,6 +342,14 @@
       .refresh-box {
         text-align: left;
       }
+
+      .performance-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .perf-table {
+        font-size: 11px;
+      }
     }
   </style>
 </head>
@@ -287,12 +363,14 @@
         TEFAS fon fiyatları<br />
         Supabase Data Vault<br />
         Holdings weighted prediction<br />
-        TEFAS smoothing model
+        TEFAS smoothing model<br />
+        Performance tracking
       </div>
 
       <nav>
         <a class="active" href="#dashboard">Dashboard</a>
         <a href="#funds">Fonlar</a>
+        <a href="#performance">Performans</a>
         <a href="#data">Data Vault</a>
         <a href="#prediction">Tahmin Motoru</a>
       </nav>
@@ -303,11 +381,12 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri ve v5 TEFAS smoothing tahmin motoru.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, v5 TEFAS smoothing tahmin motoru ve tahmin performansı.
           </div>
           <div class="chips">
             <span class="chip">v7.0 Dashboard</span>
             <span class="chip">Prediction Engine v5</span>
+            <span class="chip">Performance API v1</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -337,6 +416,11 @@
         <section class="card">
           <div class="section-title">Tahmin Özeti</div>
           <div id="predictionSummary" class="loading">Tahmin verisi yükleniyor...</div>
+        </section>
+
+        <section id="performance" class="card wide">
+          <div class="section-title">Tahmin Performansı</div>
+          <div id="performanceBox" class="loading">Performans verisi yükleniyor...</div>
         </section>
 
         <section class="card legal wide">
@@ -601,39 +685,138 @@
       `;
     }
 
+    function renderPerformance(performanceJson) {
+      const box = document.getElementById("performanceBox");
+
+      if (!performanceJson || !performanceJson.ok) {
+        box.innerHTML = `<span class="error">Performans verisi alınamadı.</span>`;
+        return;
+      }
+
+      const summary = performanceJson.summary || {};
+      const byFund = summary.byFund || {};
+      const rows = performanceJson.rows || [];
+
+      const latestRows = FUND_ORDER.map(function(code) {
+        const fundSummary = byFund[code] || {};
+        const latest =
+          fundSummary.latest ||
+          rows.find(function(row) {
+            return row.fundCode === code;
+          }) ||
+          {};
+
+        const status = latest.status || "pending";
+        const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
+        const statusClass = status === "completed" ? "status-completed" : "";
+
+        return `
+          <tr>
+            <td><b>${escapeHtml(code)}</b></td>
+            <td>${escapeHtml(latest.predictionDate || "—")}</td>
+            <td class="${directionClass(latest.predictedChange)}">${formatPercent(latest.predictedChange, 2)}</td>
+            <td>${latest.actualChange === null || latest.actualChange === undefined ? "Bekliyor" : formatPercent(latest.actualChange, 2)}</td>
+            <td>${latest.errorChange === null || latest.errorChange === undefined ? "Bekliyor" : formatPercent(latest.errorChange, 2)}</td>
+            <td>${escapeHtml(latest.grade || "Bekliyor")}</td>
+            <td><span class="status-pill ${statusClass}">${statusText}</span></td>
+          </tr>
+        `;
+      }).join("");
+
+      const avgError =
+        summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
+          ? "Bekliyor"
+          : formatPercent(summary.averageAbsoluteError, 2);
+
+      const directionRate =
+        summary.directionHitRate === null || summary.directionHitRate === undefined
+          ? "Bekliyor"
+          : formatPercent(summary.directionHitRate, 2);
+
+      box.innerHTML = `
+        <div class="performance-grid">
+          <div class="metric">
+            <div class="metric-label">Toplam Kayıt</div>
+            <div class="metric-value">${formatNumber(summary.totalRows, 0)}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Bekleyen Tahmin</div>
+            <div class="metric-value yellow">${formatNumber(summary.pendingRows, 0)}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Tamamlanan Tahmin</div>
+            <div class="metric-value up">${formatNumber(summary.completedRows, 0)}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Ortalama Sapma</div>
+            <div class="metric-value">${avgError}</div>
+          </div>
+        </div>
+
+        <div class="summary-line">
+          Yön isabet oranı: <b>${directionRate}</b>.
+          Tamamlanan veri yoksa bu alanlar “Bekliyor” görünür. Gerçekleşen TEFAS fiyatı geldikçe performans otomatik dolacaktır.
+        </div>
+
+        <table class="perf-table">
+          <thead>
+            <tr>
+              <th>Fon</th>
+              <th>Tahmin Tarihi</th>
+              <th>Tahmin</th>
+              <th>Gerçekleşen</th>
+              <th>Sapma</th>
+              <th>Not</th>
+              <th>Durum</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${latestRows}
+          </tbody>
+        </table>
+      `;
+    }
+
     async function loadAll() {
       const lastUpdate = document.getElementById("lastUpdate");
       const cards = document.getElementById("cards");
       const ai = document.getElementById("aiAnalyst");
       const summary = document.getElementById("predictionSummary");
+      const performance = document.getElementById("performanceBox");
 
       lastUpdate.textContent = "Yükleniyor...";
       cards.innerHTML = "";
       ai.innerHTML = "Tahmin motoru yükleniyor...";
       summary.innerHTML = "Tahmin verisi yükleniyor...";
+      performance.innerHTML = "Performans verisi yükleniyor...";
 
       try {
         const marketPromise = fetchJson("/api/market");
         const fundsPromise = fetchJson("/api/funds");
         const predictPromise = fetchJson("/api/predict");
+        const performancePromise = fetchJson("/api/performance");
 
         const results = await Promise.allSettled([
           marketPromise,
           fundsPromise,
-          predictPromise
+          predictPromise,
+          performancePromise
         ]);
 
         const marketJson = results[0].status === "fulfilled" ? results[0].value : { assets: {} };
         const fundsJson = results[1].status === "fulfilled" ? results[1].value : { funds: {} };
         const predictJson = results[2].status === "fulfilled" ? results[2].value : null;
+        const performanceJson = results[3].status === "fulfilled" ? results[3].value : null;
 
         if (results[0].status === "rejected") console.error("market error", results[0].reason);
         if (results[1].status === "rejected") console.error("funds error", results[1].reason);
         if (results[2].status === "rejected") console.error("predict error", results[2].reason);
+        if (results[3].status === "rejected") console.error("performance error", results[3].reason);
 
         renderMarketCards(marketJson, fundsJson, predictJson);
         renderPredictionSummary(predictJson);
         renderAiAnalyst(predictJson);
+        renderPerformance(performanceJson);
 
         const now = new Date();
         lastUpdate.textContent = "Son güncelleme: " + now.toLocaleString("tr-TR");
@@ -645,6 +828,7 @@
         `;
         ai.innerHTML = `<span class="error">AI Analist yüklenemedi.</span>`;
         summary.innerHTML = `<span class="error">Tahmin özeti yüklenemedi.</span>`;
+        performance.innerHTML = `<span class="error">Performans verisi yüklenemedi.</span>`;
         lastUpdate.textContent = "Hata oluştu";
       }
     }
