@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FinScope Professional v7.0</title>
+
   <style>
     :root {
       --bg: #07131d;
@@ -47,7 +48,7 @@
 
     .brand {
       font-size: 28px;
-      font-weight: 800;
+      font-weight: 900;
       line-height: 1;
       margin-bottom: 6px;
     }
@@ -55,7 +56,7 @@
     .version {
       font-size: 12px;
       color: #ffe066;
-      font-weight: 700;
+      font-weight: 800;
       margin-bottom: 18px;
       line-height: 1.35;
     }
@@ -71,7 +72,7 @@
       display: block;
       color: white;
       text-decoration: none;
-      font-weight: 700;
+      font-weight: 800;
       padding: 12px 14px;
       margin: 8px 0;
       border-radius: 10px;
@@ -93,7 +94,7 @@
       justify-content: space-between;
       gap: 16px;
       align-items: flex-start;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
     }
 
     h1 {
@@ -121,7 +122,7 @@
       padding: 6px 11px;
       border-radius: 999px;
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 800;
     }
 
     .refresh-box {
@@ -138,7 +139,7 @@
       padding: 10px 16px;
       border-radius: 16px;
       cursor: pointer;
-      font-weight: 800;
+      font-weight: 900;
       margin-bottom: 8px;
     }
 
@@ -175,17 +176,17 @@
 
     .up {
       color: var(--green);
-      font-weight: 800;
+      font-weight: 900;
     }
 
     .down {
       color: var(--red);
-      font-weight: 800;
+      font-weight: 900;
     }
 
     .flat {
       color: var(--muted);
-      font-weight: 800;
+      font-weight: 900;
     }
 
     .small {
@@ -223,7 +224,7 @@
 
     .yellow {
       color: var(--yellow);
-      font-weight: 800;
+      font-weight: 900;
     }
 
     .legal {
@@ -235,7 +236,7 @@
 
     .error {
       color: var(--red);
-      font-weight: 800;
+      font-weight: 900;
     }
 
     .loading {
@@ -284,7 +285,7 @@
 
     .perf-table th {
       color: var(--muted);
-      font-weight: 800;
+      font-weight: 900;
     }
 
     .status-pill {
@@ -292,7 +293,7 @@
       padding: 4px 8px;
       border-radius: 999px;
       font-size: 11px;
-      font-weight: 800;
+      font-weight: 900;
       background: rgba(255, 209, 102, 0.12);
       color: var(--yellow);
       border: 1px solid rgba(255, 209, 102, 0.35);
@@ -358,12 +359,13 @@
   <div class="app">
     <aside>
       <div class="brand">FinScope</div>
-      <div class="version">Professional v7.0 • Prediction Engine v5</div>
+      <div class="version">Professional v7.0 • Prediction Engine v6</div>
       <div class="side-note">
         TEFAS fon fiyatları<br />
         Supabase Data Vault<br />
         Holdings weighted prediction<br />
         TEFAS smoothing model<br />
+        Actual error learning<br />
         Performance tracking
       </div>
 
@@ -381,12 +383,12 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, v5 TEFAS smoothing tahmin motoru ve tahmin performansı.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, v6 actual error learning tahmin motoru ve performans takibi.
           </div>
           <div class="chips">
             <span class="chip">v7.0 Dashboard</span>
-            <span class="chip">Prediction Engine v5</span>
-            <span class="chip">Performance API v1</span>
+            <span class="chip">Prediction Engine v6</span>
+            <span class="chip">Performance API v2</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -406,10 +408,10 @@
           <div class="section-title">AI Analist</div>
           <div id="aiAnalyst" class="loading">Tahmin motoru yükleniyor...</div>
           <div class="chips" style="margin-top: 14px;">
-            <span class="chip">v5 TEFAS Smoothing Model</span>
+            <span class="chip">v6 Actual Error Learning</span>
+            <span class="chip">TEFAS Smoothing</span>
             <span class="chip">Sapma Öğrenimi</span>
             <span class="chip">18:00 Beklenti</span>
-            <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
         </section>
 
@@ -468,7 +470,7 @@
     }
 
     function num(value) {
-      const n = Number(value);
+      const n = Number(String(value ?? "").replace(",", "."));
       return Number.isFinite(n) ? n : null;
     }
 
@@ -477,8 +479,8 @@
       if (n === null) return "—";
 
       return n.toLocaleString("tr-TR", {
-        maximumFractionDigits: digits,
-        minimumFractionDigits: 0
+        minimumFractionDigits: 0,
+        maximumFractionDigits: digits
       });
     }
 
@@ -486,7 +488,9 @@
       const n = num(value);
       if (n === null) return "—";
 
-      return n.toLocaleString("tr-TR", {
+      const rounded = Number(n.toFixed(digits));
+
+      return rounded.toLocaleString("tr-TR", {
         minimumFractionDigits: digits,
         maximumFractionDigits: digits
       }) + "%";
@@ -523,11 +527,24 @@
       return await response.json();
     }
 
+    function getMarketAssets(marketJson) {
+      return marketJson && marketJson.assets ? marketJson.assets : {};
+    }
+
+    function getFunds(fundsJson) {
+      return fundsJson && fundsJson.funds ? fundsJson.funds : {};
+    }
+
+    function getPredictions(predictJson) {
+      return predictJson && predictJson.predictions ? predictJson.predictions : {};
+    }
+
     function renderMarketCards(marketJson, fundsJson, predictJson) {
       const cards = document.getElementById("cards");
-      const marketAssets = marketJson && marketJson.assets ? marketJson.assets : {};
-      const fundData = fundsJson && fundsJson.funds ? fundsJson.funds : {};
-      const predictions = predictJson && predictJson.predictions ? predictJson.predictions : {};
+
+      const marketAssets = getMarketAssets(marketJson);
+      const fundData = getFunds(fundsJson);
+      const predictions = getPredictions(predictJson);
 
       const html = [];
 
@@ -535,7 +552,8 @@
         const asset = marketAssets[key];
         if (!asset) return;
 
-        const change = num(asset.change);
+        const value = asset.value ?? asset.price;
+        const change = asset.change ?? asset.dailyChange;
         const cls = directionClass(change);
         const icon = directionIcon(change);
 
@@ -546,7 +564,7 @@
         html.push(`
           <div class="card">
             <h3>${escapeHtml(MARKET_LABELS[key] || key)}</h3>
-            <div class="value">${formatNumber(asset.value, 4)}${suffix}</div>
+            <div class="value">${formatNumber(value, 4)}${suffix}</div>
             <div class="${cls}">${icon} ${formatPercent(change, 2)}</div>
             <div class="small">canlı/gecikmeli</div>
             <div class="small">${escapeHtml(sourceText(asset.source))}</div>
@@ -557,22 +575,22 @@
       FUND_ORDER.forEach(function(code) {
         const fund = fundData[code] || {};
         const pred = predictions[code] || {};
-        const change = num(fund.dailyChange);
-        const predChange = num(pred.predictedChange);
 
-        const cls = directionClass(change);
+        const fundChange = fund.dailyChange ?? fund.daily_change;
+        const predChange = pred.predictedChange;
+        const cls = directionClass(fundChange);
         const predCls = directionClass(predChange);
 
         html.push(`
           <div class="card">
             <h3>${escapeHtml(code)}</h3>
             <div class="value">${formatNumber(fund.price, 4)}</div>
-            <div class="${cls}">${directionIcon(change)} ${formatPercent(change, 2)}</div>
+            <div class="${cls}">${directionIcon(fundChange)} ${formatPercent(fundChange, 2)}</div>
             <div class="${predCls}">Tahmin: ${directionIcon(predChange)} ${formatPercent(predChange, 2)}</div>
             <div class="small">Kapsam: %${formatNumber(pred.coverage, 2)} • Güven: ${escapeHtml(pred.confidenceText || "—")}</div>
             <div class="small">Yumuşatma etkisi: ${formatPercent(pred.smoothingImpact || 0, 2)}</div>
             <div class="small">Kalibrasyon: ${formatPercent(pred.calibrationOffset || 0, 2)}</div>
-            <div class="small">TEFAS v2 • ${escapeHtml(fund.date || fund.priceDate || "tarih yok")}</div>
+            <div class="small">TEFAS v2 • ${escapeHtml(fund.date || fund.priceDate || fund.price_date || "tarih yok")}</div>
           </div>
         `);
       });
@@ -583,30 +601,30 @@
 
     function renderPredictionSummary(predictJson) {
       const box = document.getElementById("predictionSummary");
+      const predictions = getPredictions(predictJson);
 
-      if (!predictJson || !predictJson.predictions) {
+      if (!Object.keys(predictions).length) {
         box.innerHTML = `<span class="error">Tahmin verisi alınamadı.</span>`;
         return;
       }
 
-      const predictions = predictJson.predictions;
       const lines = [];
 
       FUND_ORDER.forEach(function(code) {
         const p = predictions[code];
         if (!p) return;
 
-        const pred = num(p.predictedChange);
-        const raw = num(p.rawPredictedChange);
-        const unsmoothed = num(p.unsmoothedChange);
-        const smoothingImpact = num(p.smoothingImpact || 0);
-        const offset = num(p.calibrationOffset || 0);
+        const pred = p.predictedChange;
+        const raw = p.rawPredictedChange;
+        const unsmoothed = p.unsmoothedChange;
+        const smoothingImpact = p.smoothingImpact || 0;
+        const offset = p.calibrationOffset || 0;
         const cls = directionClass(pred);
 
         lines.push(`
           <div class="summary-line">
             <b>${escapeHtml(code)}</b>:
-            <span class="${cls}">${directionIcon(pred)} v5 Tahmin ${formatPercent(pred, 2)}</span>
+            <span class="${cls}">${directionIcon(pred)} v6 Tahmin ${formatPercent(pred, 2)}</span>
             <br />
             Yumuşatılmamış: ${formatPercent(unsmoothed, 2)}
             • TEFAS yumuşatma sonrası: ${formatPercent(raw, 2)}
@@ -631,14 +649,14 @@
 
     function renderAiAnalyst(predictJson) {
       const box = document.getElementById("aiAnalyst");
+      const predictions = getPredictions(predictJson);
 
-      if (!predictJson || !predictJson.predictions) {
+      if (!Object.keys(predictions).length) {
         box.innerHTML = `<span class="error">AI Analist için tahmin verisi alınamadı.</span>`;
         return;
       }
 
-      const predictions = predictJson.predictions;
-      const model = predictJson.model || "FinScope Prediction Engine v5";
+      const model = predictJson.model || "FinScope Prediction Engine v6";
 
       const rows = FUND_ORDER.map(function(code) {
         const p = predictions[code] || {};
@@ -650,7 +668,6 @@
           smoothingImpact: num(p.smoothingImpact) || 0,
           confidence: p.confidenceText || "—",
           coverage: num(p.coverage) || 0,
-          residual: num(p.residualWeight) || 0,
           sample: p.calibration ? p.calibration.sampleSize : 0
         };
       });
@@ -670,7 +687,7 @@
 
       box.innerHTML = `
         <div class="summary-line">
-          <b>${escapeHtml(model)}</b> aktif. Model; gerçek KAP portföy ağırlıkları, hisse bazlı piyasa hareketleri, residual dağılım, TEFAS yumuşatma filtresi ve geçmiş sapma kalibrasyonunu birlikte kullanır.
+          <b>${escapeHtml(model)}</b> aktif. Model; gerçek KAP portföy ağırlıkları, hisse bazlı piyasa hareketleri, residual dağılım, TEFAS yumuşatma filtresi ve gerçekleşen tahmin sapmalarını birlikte kullanır.
         </div>
         <div class="summary-line">
           En pozitif beklenti: <b>${escapeHtml(best.code)}</b> ${formatPercent(best.pred, 2)}.
@@ -680,12 +697,28 @@
           Ortalama yumuşatma etkisi: <b>${formatPercent(avgSmoothing, 2)}</b>. Bu filtre, fon fiyatlarının hisse senedi kadar sert hareket etmemesi için tahminleri daha gerçekçi aralığa çeker.
         </div>
         <div class="summary-line">
-          Kapsam seviyesi PBR/PHE/TLY için %100 görünüyorsa portföy verisi tam okunuyor demektir. Öğrenme verisi arttıkça kalibrasyon daha anlamlı hale gelir.
+          Kapsam seviyesi PBR/PHE/TLY için %100 görünüyorsa portföy verisi tam okunuyor demektir. Öğrenme verisi arttıkça sapma düzeltmesi daha anlamlı hale gelir.
         </div>
       `;
     }
 
-    function renderPerformance(performanceJson) {
+    function getLatestPerformanceRows(performanceJson) {
+      const rows = performanceJson && Array.isArray(performanceJson.rows)
+        ? performanceJson.rows
+        : [];
+
+      const out = {};
+
+      FUND_ORDER.forEach(function(code) {
+        out[code] = rows.find(function(row) {
+          return row.fundCode === code;
+        }) || null;
+      });
+
+      return out;
+    }
+
+    function renderPerformance(performanceJson, predictJson) {
       const box = document.getElementById("performanceBox");
 
       if (!performanceJson || !performanceJson.ok) {
@@ -694,34 +727,40 @@
       }
 
       const summary = performanceJson.summary || {};
-      const byFund = summary.byFund || {};
-      const rows = performanceJson.rows || [];
+      const latestRows = getLatestPerformanceRows(performanceJson);
+      const predictions = getPredictions(predictJson);
 
-      const latestRows = FUND_ORDER.map(function(code) {
-        const fundSummary = byFund[code] || {};
-        const latest =
-          fundSummary.latest ||
-          rows.find(function(row) {
-            return row.fundCode === code;
-          }) ||
-          {};
+      const tableRows = FUND_ORDER.map(function(code) {
+        const perf = latestRows[code] || {};
+        const livePrediction = predictions[code] || {};
 
-        const status = latest.status || "pending";
+        const predicted =
+          perf.predictedChange !== null && perf.predictedChange !== undefined
+            ? perf.predictedChange
+            : livePrediction.predictedChange;
+
+        const actual = perf.actualChange;
+        const error = perf.errorChange;
+        const status = perf.status || "pending";
         const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
         const statusClass = status === "completed" ? "status-completed" : "";
 
         return `
           <tr>
             <td><b>${escapeHtml(code)}</b></td>
-            <td>${escapeHtml(latest.predictionDate || "—")}</td>
-            <td class="${directionClass(latest.predictedChange)}">${formatPercent(latest.predictedChange, 2)}</td>
-            <td>${latest.actualChange === null || latest.actualChange === undefined ? "Bekliyor" : formatPercent(latest.actualChange, 2)}</td>
-            <td>${latest.errorChange === null || latest.errorChange === undefined ? "Bekliyor" : formatPercent(latest.errorChange, 2)}</td>
-            <td>${escapeHtml(latest.grade || "Bekliyor")}</td>
+            <td>${escapeHtml(perf.predictionDate || performanceJson.predictionDate || "—")}</td>
+            <td class="${directionClass(predicted)}">${formatPercent(predicted, 2)}</td>
+            <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
+            <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
+            <td>${escapeHtml(perf.grade || "Bekliyor")}</td>
             <td><span class="status-pill ${statusClass}">${statusText}</span></td>
           </tr>
         `;
       }).join("");
+
+      const totalRows = summary.totalRows ?? 0;
+      const pendingRows = summary.pendingRows ?? 0;
+      const completedRows = summary.completedRows ?? 0;
 
       const avgError =
         summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
@@ -737,15 +776,15 @@
         <div class="performance-grid">
           <div class="metric">
             <div class="metric-label">Toplam Kayıt</div>
-            <div class="metric-value">${formatNumber(summary.totalRows, 0)}</div>
+            <div class="metric-value">${formatNumber(totalRows, 0)}</div>
           </div>
           <div class="metric">
             <div class="metric-label">Bekleyen Tahmin</div>
-            <div class="metric-value yellow">${formatNumber(summary.pendingRows, 0)}</div>
+            <div class="metric-value yellow">${formatNumber(pendingRows, 0)}</div>
           </div>
           <div class="metric">
             <div class="metric-label">Tamamlanan Tahmin</div>
-            <div class="metric-value up">${formatNumber(summary.completedRows, 0)}</div>
+            <div class="metric-value up">${formatNumber(completedRows, 0)}</div>
           </div>
           <div class="metric">
             <div class="metric-label">Ortalama Sapma</div>
@@ -771,7 +810,7 @@
             </tr>
           </thead>
           <tbody>
-            ${latestRows}
+            ${tableRows}
           </tbody>
         </table>
       `;
@@ -793,30 +832,34 @@
       try {
         const marketPromise = fetchJson("/api/market");
         const fundsPromise = fetchJson("/api/funds");
-        const predictPromise = fetchJson("/api/predict");
-        const performancePromise = fetchJson("/api/performance");
 
-        const results = await Promise.allSettled([
-          marketPromise,
-          fundsPromise,
-          predictPromise,
-          performancePromise
-        ]);
+        const predictJson = await fetchJson("/api/predict");
+        const performanceJson = await fetchJson("/api/performance");
 
-        const marketJson = results[0].status === "fulfilled" ? results[0].value : { assets: {} };
-        const fundsJson = results[1].status === "fulfilled" ? results[1].value : { funds: {} };
-        const predictJson = results[2].status === "fulfilled" ? results[2].value : null;
-        const performanceJson = results[3].status === "fulfilled" ? results[3].value : null;
+        const marketResult = await Promise.allSettled([marketPromise, fundsPromise]);
 
-        if (results[0].status === "rejected") console.error("market error", results[0].reason);
-        if (results[1].status === "rejected") console.error("funds error", results[1].reason);
-        if (results[2].status === "rejected") console.error("predict error", results[2].reason);
-        if (results[3].status === "rejected") console.error("performance error", results[3].reason);
+        const marketJson =
+          marketResult[0].status === "fulfilled"
+            ? marketResult[0].value
+            : { assets: {} };
+
+        const fundsJson =
+          marketResult[1].status === "fulfilled"
+            ? marketResult[1].value
+            : { funds: {} };
+
+        if (marketResult[0].status === "rejected") {
+          console.error("market error", marketResult[0].reason);
+        }
+
+        if (marketResult[1].status === "rejected") {
+          console.error("funds error", marketResult[1].reason);
+        }
 
         renderMarketCards(marketJson, fundsJson, predictJson);
         renderPredictionSummary(predictJson);
         renderAiAnalyst(predictJson);
-        renderPerformance(performanceJson);
+        renderPerformance(performanceJson, predictJson);
 
         const now = new Date();
         lastUpdate.textContent = "Son güncelleme: " + now.toLocaleString("tr-TR");
