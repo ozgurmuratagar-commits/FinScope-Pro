@@ -71,7 +71,19 @@
   "crons": [
     {
       "path": "/api/sync-funds",
-      "schedule": "0 18 * * 1-5"
+      "schedule": "0 16 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "10 16 * * 1-5"
+    },
+    {
+      "path": "/api/sync-funds",
+      "schedule": "30 16 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "40 16 * * 1-5"
     }
   ]
 }
