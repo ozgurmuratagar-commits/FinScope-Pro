@@ -1,7 +1,7 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_NAME = "FinScope Prediction Engine v6 - Actual Error Learning Model";
-const MODEL_KEY = "v6_actual_error_learning";
+const MODEL_NAME = "FinScope Prediction Engine v7 - Accuracy Layer";
+const MODEL_KEY = "v7_accuracy_layer";
 
 const STOCK_SYMBOL_MAP = {
   XU100: "XU100.IS",
@@ -38,6 +38,7 @@ function todayTR() {
     month: "2-digit",
     day: "2-digit"
   });
+
   return formatter.format(now);
 }
 
@@ -48,6 +49,7 @@ function nowHourTR() {
     hour: "2-digit",
     hour12: false
   });
+
   return Number(formatter.format(now));
 }
 
@@ -350,7 +352,7 @@ function getHoldingMarketChange(holding, marketChanges) {
 
 async function getCalibrationRows() {
   const rows = await supabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&error_change=not.is.null&order=updated_at.desc,created_at.desc&limit=150"
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&error_change=not.is.null&order=updated_at.desc,created_at.desc&limit=240"
   );
 
   const byFund = {};
@@ -362,7 +364,21 @@ async function getCalibrationRows() {
   return byFund;
 }
 
-function getCalibrationForFund(code, calibrationRows) {
+function calculateDirectionHit(row) {
+  const predicted =
+    num(row.calibrated_change) ??
+    num(row.predicted_change) ??
+    num(row.raw_predicted_change);
+
+  const actual = num(row.actual_change);
+
+  if (predicted === null || actual === null) return null;
+  if (Math.abs(predicted) < 0.01 || Math.abs(actual) < 0.01) return null;
+
+  return direction(predicted) === direction(actual);
+}
+
+function getAccuracyLayerForFund(code, calibrationRows) {
   const rows = calibrationRows[code] || [];
 
   if (!rows.length) {
@@ -370,23 +386,77 @@ function getCalibrationForFund(code, calibrationRows) {
       status: "no_history",
       sampleSize: 0,
       averageError: 0,
-      offset: 0
+      recentError: 0,
+      averageAbsoluteError: 0,
+      directionHitRate: null,
+      offset: 0,
+      dampingFactor: 1,
+      confidencePenalty: 0,
+      note: "Geçmiş gerçekleşen veri yok; v7 düzeltmesi uygulanmadı."
     };
   }
 
-  const recent = rows.slice(0, 20);
-  const avgError =
+  const recent = rows.slice(0, 24);
+  const recentShort = rows.slice(0, 6);
+
+  const averageError =
     recent.reduce((sum, row) => sum + num(row.error_change, 0), 0) / recent.length;
+
+  const recentError =
+    recentShort.reduce((sum, row) => sum + num(row.error_change, 0), 0) / recentShort.length;
+
+  const averageAbsoluteError =
+    recent.reduce((sum, row) => sum + Math.abs(num(row.error_change, 0)), 0) / recent.length;
+
+  const directionHits = recent
+    .map(calculateDirectionHit)
+    .filter(v => v !== null);
+
+  const directionHitRate =
+    directionHits.length > 0
+      ? (directionHits.filter(Boolean).length / directionHits.length) * 100
+      : null;
+
+  const learningStrength = clamp(recent.length / 12, 0.2, 1);
+
+  const blendedError =
+    averageError * 0.65 +
+    recentError * 0.35;
+
+  const offset = clamp(blendedError * learningStrength, -0.55, 0.55);
+
+  let dampingFactor = 1;
+
+  if (averageAbsoluteError > 1.4) dampingFactor = 0.82;
+  else if (averageAbsoluteError > 1.0) dampingFactor = 0.88;
+  else if (averageAbsoluteError > 0.7) dampingFactor = 0.94;
+
+  let confidencePenalty = 0;
+
+  if (averageAbsoluteError > 1.4) confidencePenalty = 12;
+  else if (averageAbsoluteError > 1.0) confidencePenalty = 8;
+  else if (averageAbsoluteError > 0.7) confidencePenalty = 4;
+
+  if (directionHitRate !== null && directionHitRate < 45) {
+    confidencePenalty += 5;
+    dampingFactor = Math.min(dampingFactor, 0.9);
+  }
 
   return {
     status: "learned",
     sampleSize: recent.length,
-    averageError: round(avgError, 4),
-    offset: round(clamp(avgError, -0.45, 0.45), 4)
+    averageError: round(averageError, 4),
+    recentError: round(recentError, 4),
+    averageAbsoluteError: round(averageAbsoluteError, 4),
+    directionHitRate: directionHitRate === null ? null : round(directionHitRate, 2),
+    offset: round(offset, 4),
+    dampingFactor: round(dampingFactor, 4),
+    confidencePenalty: round(confidencePenalty, 2),
+    note: "v7 fon bazlı geçmiş sapma, yakın dönem hata ve yön isabetiyle tahmini kalibre etti."
   };
 }
 
-function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, calibration) {
+function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, accuracyLayer) {
   const details = [];
 
   let weightedChange = 0;
@@ -439,28 +509,30 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
   const smoothedChange = unsmoothedChange * smoothingFactor;
   const smoothingImpact = smoothedChange - unsmoothedChange;
 
-  const calibratedChange = clamp(
-    smoothedChange + calibration.offset,
-    -2.25,
-    2.25
-  );
+  const afterErrorOffset = smoothedChange + accuracyLayer.offset;
+  const afterDamping = afterErrorOffset * accuracyLayer.dampingFactor;
+
+  const calibratedChange = clamp(afterDamping, -2.15, 2.15);
 
   const coverage = clamp(totalWeight, 0, 100);
 
-  const confidence =
+  const baseConfidence =
     coverage >= 98
-      ? 88 + Math.min(5, calibration.sampleSize)
+      ? 88 + Math.min(5, accuracyLayer.sampleSize)
       : coverage >= 80
         ? 78
         : 68;
 
+  const confidence = clamp(baseConfidence - accuracyLayer.confidencePenalty, 60, 96);
+
   return {
-    status: "v6_actual_error_learning",
+    status: "v7_accuracy_layer",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(unsmoothedChange, 4),
-    rangeLow: round(calibratedChange - 0.45, 4),
-    rangeHigh: round(calibratedChange + 0.45, 4),
+    preAccuracyChange: round(smoothedChange, 4),
+    rangeLow: round(calibratedChange - 0.42, 4),
+    rangeHigh: round(calibratedChange + 0.42, 4),
     confidence: clamp(confidence, 60, 96),
     confidenceText: confidenceText(confidence),
     coverage: round(coverage, 2),
@@ -472,11 +544,13 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
     negativeContribution: round(negativeContribution, 4),
     smoothingFactor: round(smoothingFactor, 4),
     smoothingImpact: round(smoothingImpact, 4),
-    calibrationOffset: round(calibration.offset, 4),
-    calibration,
+    calibrationOffset: round(accuracyLayer.offset, 4),
+    accuracyDamping: round(accuracyLayer.dampingFactor, 4),
+    calibration: accuracyLayer,
+    accuracyLayer,
     observations: details.length,
     methodology:
-      "v6: eski bekleyen tahminleri gerçek TEFAS verisiyle kapatır, hata sapmasını öğrenir, holdings ağırlıklı piyasa hareketini TEFAS yumuşatma filtresiyle gerçekçi aralığa çeker.",
+      "v7: v6 holdings ağırlıklı tahmin temelini korur; TEFAS yumuşatma filtresi, fon bazlı geçmiş sapma öğrenimi, yakın dönem hata ortalaması, yön isabeti ve aşırı oynaklık törpüsüyle tahmini daha gerçekçi aralığa çeker.",
     details
   };
 }
@@ -603,6 +677,7 @@ async function updatePendingActuals(latestFundPrices) {
       id: row.id,
       fundCode: code,
       predictionDate,
+      model: row.model || null,
       predicted: round(predicted, 4),
       actual: round(actual, 4),
       error: round(error, 4)
@@ -636,14 +711,14 @@ module.exports = async function handler(req, res) {
     const predictions = {};
 
     for (const code of FUNDS) {
-      const calibration = getCalibrationForFund(code, calibrationRows);
+      const accuracyLayer = getAccuracyLayerForFund(code, calibrationRows);
 
       predictions[code] = buildPredictionForFund(
         code,
         groupedHoldings[code] || [],
         marketChanges,
         latestFundPrices[code] || null,
-        calibration
+        accuracyLayer
       );
     }
 
