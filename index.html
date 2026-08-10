@@ -704,6 +704,116 @@ renderTabs();
 loadAll();
 
 setInterval(loadAll,60000);
+<script>
+(function finScopeV4DashboardTextPatch() {
+  function replaceTextInNode(root) {
+    if (!root) return;
+
+    const walker = document.createTreeWalker(
+      root,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+
+    const replacements = [
+      [
+        "V7 Holdings Model",
+        "v4 Kalibre Model"
+      ],
+      [
+        "FinScope V7 Holdings Weighted Prediction aktif",
+        "FinScope v4 Calibrated Residual Model aktif"
+      ],
+      [
+        "Tahminler fon portföy ağırlıkları",
+        "Tahminler gerçek portföy ağırlıkları, kalibrasyon geçmişi"
+      ],
+      [
+        "Holdings weighted prediction",
+        "v4 calibrated residual prediction"
+      ],
+      [
+        "Professional v7.0 Prediction Engine",
+        "Professional v7.0 • Prediction Engine v4"
+      ]
+    ];
+
+    const textNodes = [];
+
+    while (walker.nextNode()) {
+      textNodes.push(walker.currentNode);
+    }
+
+    textNodes.forEach(function(node) {
+      let text = node.nodeValue;
+      let changed = false;
+
+      replacements.forEach(function(pair) {
+        if (text.includes(pair[0])) {
+          text = text.split(pair[0]).join(pair[1]);
+          changed = true;
+        }
+      });
+
+      if (changed) {
+        node.nodeValue = text;
+      }
+    });
+  }
+
+  function patchBadges() {
+    const candidates = document.querySelectorAll("span, button, div, p, small, strong");
+
+    candidates.forEach(function(el) {
+      const text = (el.textContent || "").trim();
+
+      if (text === "V7 Holdings Model") {
+        el.textContent = "v4 Kalibre Model";
+      }
+
+      if (text === "Prediction Pro") {
+        el.textContent = "v4 Prediction";
+      }
+    });
+  }
+
+  function patchDashboardText() {
+    replaceTextInNode(document.body);
+    patchBadges();
+
+    const aiBox = Array.from(document.querySelectorAll("h2, h3, div, p"))
+      .find(function(el) {
+        return (el.textContent || "").includes("AI Analist");
+      });
+
+    if (aiBox) {
+      const card = aiBox.closest("section, div");
+      if (card && card.textContent.includes("FinScope")) {
+        replaceTextInNode(card);
+      }
+    }
+  }
+
+  patchDashboardText();
+
+  let runs = 0;
+  const timer = setInterval(function() {
+    patchDashboardText();
+    runs += 1;
+    if (runs >= 12) clearInterval(timer);
+  }, 1000);
+
+  const observer = new MutationObserver(function() {
+    patchDashboardText();
+  });
+
+  if (document.body) {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+})();
 </script>
 
 </body>
