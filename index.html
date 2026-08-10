@@ -22,9 +22,7 @@
       --blue: #5ac8ff;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -143,9 +141,7 @@
       margin-bottom: 8px;
     }
 
-    button:hover {
-      filter: brightness(1.08);
-    }
+    button:hover { filter: brightness(1.08); }
 
     .grid {
       display: grid;
@@ -202,9 +198,7 @@
       margin-top: 14px;
     }
 
-    .wide {
-      grid-column: 1 / -1;
-    }
+    .wide { grid-column: 1 / -1; }
 
     .section-title {
       font-size: 18px;
@@ -218,9 +212,7 @@
       line-height: 1.45;
     }
 
-    .summary-line b {
-      color: white;
-    }
+    .summary-line b { color: white; }
 
     .yellow {
       color: var(--yellow);
@@ -239,9 +231,7 @@
       font-weight: 900;
     }
 
-    .loading {
-      color: var(--muted);
-    }
+    .loading { color: var(--muted); }
 
     .performance-grid {
       display: grid;
@@ -306,51 +296,20 @@
     }
 
     @media (max-width: 1100px) {
-      .grid {
-        grid-template-columns: repeat(2, minmax(220px, 1fr));
-      }
-
-      .sections {
-        grid-template-columns: 1fr;
-      }
-
-      .performance-grid {
-        grid-template-columns: repeat(2, 1fr);
-      }
+      .grid { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+      .sections { grid-template-columns: 1fr; }
+      .performance-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
     @media (max-width: 760px) {
-      .app {
-        flex-direction: column;
-      }
-
-      aside {
-        width: 100%;
-      }
-
-      main {
-        padding: 18px;
-      }
-
-      .grid {
-        grid-template-columns: 1fr;
-      }
-
-      .topbar {
-        flex-direction: column;
-      }
-
-      .refresh-box {
-        text-align: left;
-      }
-
-      .performance-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .perf-table {
-        font-size: 11px;
-      }
+      .app { flex-direction: column; }
+      aside { width: 100%; }
+      main { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      .topbar { flex-direction: column; }
+      .refresh-box { text-align: left; }
+      .performance-grid { grid-template-columns: 1fr; }
+      .perf-table { font-size: 11px; }
     }
   </style>
 </head>
@@ -366,7 +325,8 @@
         Holdings weighted prediction<br />
         TEFAS smoothing model<br />
         Actual error learning<br />
-        Performance tracking
+        Performance tracking<br />
+        UI Sync Fix v6.1
       </div>
 
       <nav>
@@ -383,12 +343,13 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, v6 actual error learning tahmin motoru ve performans takibi.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, v6 actual error learning tahmin motoru ve performans takibi. UI Sync Fix v6.1 aktif.
           </div>
           <div class="chips">
             <span class="chip">v7.0 Dashboard</span>
             <span class="chip">Prediction Engine v6</span>
             <span class="chip">Performance API v2</span>
+            <span class="chip">UI Sync Fix v6.1</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -477,7 +438,6 @@
     function formatNumber(value, digits = 4) {
       const n = num(value);
       if (n === null) return "—";
-
       return n.toLocaleString("tr-TR", {
         minimumFractionDigits: 0,
         maximumFractionDigits: digits
@@ -487,7 +447,6 @@
     function formatPercent(value, digits = 2) {
       const n = num(value);
       if (n === null) return "—";
-
       return n.toLocaleString("tr-TR", {
         minimumFractionDigits: digits,
         maximumFractionDigits: digits
@@ -539,11 +498,9 @@
 
     function renderMarketCards(marketJson, fundsJson, predictJson) {
       const cards = document.getElementById("cards");
-
       const marketAssets = getMarketAssets(marketJson);
       const fundData = getFunds(fundsJson);
       const predictions = getPredictions(predictJson);
-
       const html = [];
 
       MARKET_ORDER.forEach(function(key) {
@@ -661,22 +618,12 @@
         return {
           code,
           pred: num(p.predictedChange) || 0,
-          raw: num(p.rawPredictedChange) || 0,
-          unsmoothed: num(p.unsmoothedChange) || 0,
-          smoothingImpact: num(p.smoothingImpact) || 0,
-          confidence: p.confidenceText || "—",
-          coverage: num(p.coverage) || 0,
-          sample: p.calibration ? p.calibration.sampleSize : 0
+          smoothingImpact: num(p.smoothingImpact) || 0
         };
       });
 
-      const best = rows.slice().sort(function(a, b) {
-        return b.pred - a.pred;
-      })[0];
-
-      const worst = rows.slice().sort(function(a, b) {
-        return a.pred - b.pred;
-      })[0];
+      const best = rows.slice().sort(function(a, b) { return b.pred - a.pred; })[0];
+      const worst = rows.slice().sort(function(a, b) { return a.pred - b.pred; })[0];
 
       const avgSmoothing =
         rows.reduce(function(sum, row) {
@@ -706,7 +653,6 @@
         : [];
 
       const out = {};
-
       FUND_ORDER.forEach(function(code) {
         out[code] = rows.find(function(row) {
           return row.fundCode === code;
@@ -733,15 +679,11 @@
         const livePrediction = predictions[code] || {};
 
         const status = perf.status || "pending";
-        const isPending = status !== "completed";
 
-        const predicted = isPending
-          ? livePrediction.predictedChange
-          : (
-              perf.predictedChange !== null && perf.predictedChange !== undefined
-                ? perf.predictedChange
-                : livePrediction.predictedChange
-            );
+        const predicted =
+          status === "completed" && perf.predictedChange !== null && perf.predictedChange !== undefined
+            ? perf.predictedChange
+            : livePrediction.predictedChange;
 
         const actual = perf.actualChange;
         const error = perf.errorChange;
@@ -797,7 +739,7 @@
 
         <div class="summary-line">
           Yön isabet oranı: <b>${directionRate}</b>.
-          Bekleyen satırlarda tahmin değeri canlı Prediction Engine v6 çıktısından gösterilir. Gerçekleşme gelince kayıtlı performans verisi kullanılacaktır.
+          Bekleyen satırlarda tahmin değeri doğrudan canlı Prediction Engine v6 çıktısından gösterilir. Tamamlanan satırlarda kayıtlı performans tahmini kullanılır.
         </div>
 
         <table class="perf-table">
@@ -850,14 +792,6 @@
           marketResult[1].status === "fulfilled"
             ? marketResult[1].value
             : { funds: {} };
-
-        if (marketResult[0].status === "rejected") {
-          console.error("market error", marketResult[0].reason);
-        }
-
-        if (marketResult[1].status === "rejected") {
-          console.error("funds error", marketResult[1].reason);
-        }
 
         renderMarketCards(marketJson, fundsJson, predictJson);
         renderPredictionSummary(predictJson);
