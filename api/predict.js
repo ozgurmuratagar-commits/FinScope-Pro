@@ -53,6 +53,7 @@ function nowHourTR() {
 
 function nextBusinessDay(dateText) {
   const d = new Date(dateText + "T12:00:00Z");
+
   do {
     d.setUTCDate(d.getUTCDate() + 1);
   } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
@@ -146,7 +147,7 @@ async function supabaseRequest(path, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 700)}`
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 900)}`
     );
   }
 
@@ -156,7 +157,7 @@ async function supabaseRequest(path, options = {}) {
 
 async function getLatestFundPrices() {
   const rows = await supabaseRequest(
-    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc,created_at.desc&limit=60"
+    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc,created_at.desc&limit=80"
   );
 
   const latest = {};
@@ -277,7 +278,11 @@ async function getMarketChangesForHoldings(groupedHoldings) {
 
   await Promise.all(
     list.map(async symbol => {
-      results[symbol] = await fetchYahooChange(symbol);
+      const normalized = normalizeSymbol(symbol);
+      const data = await fetchYahooChange(symbol);
+
+      results[symbol] = data;
+      if (normalized) results[normalized] = data;
     })
   );
 
@@ -310,7 +315,6 @@ function getHoldingMarketChange(holding, marketChanges) {
   if (assetType === "STOCK") {
     const direct = marketChanges[symbol];
     const normalized = marketChanges[normalizeSymbol(symbol)];
-
     const data = direct || normalized;
 
     if (data && num(data.change) !== null) {
@@ -321,7 +325,7 @@ function getHoldingMarketChange(holding, marketChanges) {
       };
     }
 
-    const bist = marketChanges.XU100;
+    const bist = marketChanges.XU100 || marketChanges["XU100.IS"];
     if (bist && num(bist.change) !== null) {
       return {
         marketChange: num(bist.change, 0),
@@ -346,7 +350,7 @@ function getHoldingMarketChange(holding, marketChanges) {
 
 async function getCalibrationRows() {
   const rows = await supabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&error_change=not.is.null&order=created_at.desc&limit=120"
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&error_change=not.is.null&order=updated_at.desc,created_at.desc&limit=150"
   );
 
   const byFund = {};
@@ -384,6 +388,7 @@ function getCalibrationForFund(code, calibrationRows) {
 
 function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, calibration) {
   const details = [];
+
   let weightedChange = 0;
   let directWeight = 0;
   let totalWeight = 0;
@@ -441,6 +446,7 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
   );
 
   const coverage = clamp(totalWeight, 0, 100);
+
   const confidence =
     coverage >= 98
       ? 88 + Math.min(5, calibration.sampleSize)
@@ -460,6 +466,8 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
     coverage: round(coverage, 2),
     missingWeight: round(residualWeight, 2),
     residualWeight: round(residualWeight, 2),
+    directPricedWeight: round(directWeight, 2),
+    proxyWeight: round(100 - directWeight, 2),
     positiveContribution: round(positiveContribution, 4),
     negativeContribution: round(negativeContribution, 4),
     smoothingFactor: round(smoothingFactor, 4),
@@ -468,19 +476,19 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
     calibration,
     observations: details.length,
     methodology:
-      "v6: gerçek TEFAS gerçekleşmesiyle eski tahminleri kapatır, hata sapmasını öğrenir, holdings ağırlıklı piyasa hareketini TEFAS yumuşatma filtresiyle gerçekçi aralığa çeker.",
+      "v6: eski bekleyen tahminleri gerçek TEFAS verisiyle kapatır, hata sapmasını öğrenir, holdings ağırlıklı piyasa hareketini TEFAS yumuşatma filtresiyle gerçekçi aralığa çeker.",
     details
   };
 }
 
 async function savePredictionHistory(predictionDate, predictions) {
-  const rows = [];
+  const saved = [];
 
   for (const code of FUNDS) {
     const p = predictions[code];
     if (!p) continue;
 
-    rows.push({
+    const payload = {
       fund_code: code,
       prediction_date: predictionDate,
       model: MODEL_KEY,
@@ -488,26 +496,58 @@ async function savePredictionHistory(predictionDate, predictions) {
       raw_predicted_change: p.rawPredictedChange,
       calibrated_change: p.predictedChange,
       calibration_offset: p.calibrationOffset,
-      actual_change: null,
-      error_change: null,
       confidence: p.confidence,
       coverage: p.coverage,
       residual_weight: p.residualWeight,
-      sample_size: p.calibration ? p.calibration.sampleSize : 0
-    });
+      sample_size: p.calibration ? p.calibration.sampleSize : 0,
+      updated_at: new Date().toISOString()
+    };
+
+    const existing = await supabaseRequest(
+      `prediction_history?select=id&fund_code=eq.${encodeURIComponent(code)}&prediction_date=eq.${encodeURIComponent(predictionDate)}&model=eq.${encodeURIComponent(MODEL_KEY)}&limit=1`
+    );
+
+    if (existing && existing.length > 0) {
+      const patched = await supabaseRequest(
+        `prediction_history?id=eq.${encodeURIComponent(existing[0].id)}`,
+        {
+          method: "PATCH",
+          body: payload
+        }
+      );
+
+      saved.push({
+        fundCode: code,
+        action: "updated",
+        id: existing[0].id,
+        rows: patched
+      });
+    } else {
+      const inserted = await supabaseRequest("prediction_history", {
+        method: "POST",
+        body: [
+          {
+            ...payload,
+            actual_change: null,
+            error_change: null
+          }
+        ]
+      });
+
+      saved.push({
+        fundCode: code,
+        action: "inserted",
+        rows: inserted
+      });
+    }
   }
 
-  if (!rows.length) return [];
-
-  return await supabaseRequest("prediction_history", {
-    method: "POST",
-    body: rows
-  });
+  return saved;
 }
 
 async function updatePendingActuals(latestFundPrices) {
   const pendingRows = await supabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=is.null&order=created_at.asc&limit=200"
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=is.null&order=created_at.asc&limit=300"
   );
 
   const today = todayTR();
@@ -547,16 +587,17 @@ async function updatePendingActuals(latestFundPrices) {
 
     const error = actual - predicted;
 
-    const patchPath = `prediction_history?id=eq.${encodeURIComponent(row.id)}`;
-
-    await supabaseRequest(patchPath, {
-      method: "PATCH",
-      body: {
-        actual_change: round(actual, 4),
-        error_change: round(error, 4),
-        updated_at: new Date().toISOString()
+    await supabaseRequest(
+      `prediction_history?id=eq.${encodeURIComponent(row.id)}`,
+      {
+        method: "PATCH",
+        body: {
+          actual_change: round(actual, 4),
+          error_change: round(error, 4),
+          updated_at: new Date().toISOString()
+        }
       }
-    });
+    );
 
     updated.push({
       id: row.id,
@@ -596,6 +637,7 @@ module.exports = async function handler(req, res) {
 
     for (const code of FUNDS) {
       const calibration = getCalibrationForFund(code, calibrationRows);
+
       predictions[code] = buildPredictionForFund(
         code,
         groupedHoldings[code] || [],
@@ -608,8 +650,10 @@ module.exports = async function handler(req, res) {
     const savedRows = await savePredictionHistory(predictionDate, predictions);
 
     const latestByFund = {};
+
     for (const code of FUNDS) {
       const fp = latestFundPrices[code] || {};
+
       latestByFund[code] = {
         priceDate: fp.price_date || null,
         actualChange: fp.daily_change ?? null,
@@ -634,6 +678,7 @@ module.exports = async function handler(req, res) {
       latestByFund,
       predictionDate,
       savedToday: savedRows.length,
+      saveActions: savedRows,
       funds: FUNDS,
       predictions,
       disclaimer:
@@ -643,7 +688,8 @@ module.exports = async function handler(req, res) {
     res.status(500).json({
       ok: false,
       error: String(err.message || err),
-      model: MODEL_NAME
+      model: MODEL_NAME,
+      modelKey: MODEL_KEY
     });
   }
 };
