@@ -1,820 +1,574 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_KEY = "v5_tefas_smoothing";
-const MODEL_NAME = "FinScope Prediction Engine v5 - TEFAS Realistic Smoothing Model";
+const MODEL_NAME = "FinScope Prediction Engine v6 - Actual Error Learning Model";
+const MODEL_KEY = "v6_actual_error_learning";
 
-const DEFAULT_REPO_DAILY_CHANGE = Number(process.env.REPO_DAILY_CHANGE || 0.12);
-const DEFAULT_CASH_DAILY_CHANGE = Number(process.env.CASH_DAILY_CHANGE || 0);
-const DEFAULT_BOND_DAILY_CHANGE = Number(process.env.BOND_DAILY_CHANGE || 0.06);
-
-const FUND_PROFILE = {
-  PBR: {
-    stockSensitivity: 0.72,
-    residualSensitivity: 0.62,
-    maxDailyMove: 1.15,
-    residualStyle: "balanced_income_equity"
-  },
-  PHE: {
-    stockSensitivity: 0.78,
-    residualSensitivity: 0.68,
-    maxDailyMove: 1.25,
-    residualStyle: "equity_heavy"
-  },
-  TLY: {
-    stockSensitivity: 0.66,
-    residualSensitivity: 0.58,
-    maxDailyMove: 1.05,
-    residualStyle: "mixed_tefas"
-  }
+const STOCK_SYMBOL_MAP = {
+  XU100: "XU100.IS",
+  XU050: "XU050.IS",
+  XU030: "XU030.IS",
+  USDTRY: "USDTRY=X",
+  EURTRY: "EURTRY=X",
+  GBPTRY: "GBPTRY=X",
+  EURUSD: "EURUSD=X",
+  GBPUSD: "GBPUSD=X",
+  DXY: "DX-Y.NYB",
+  XAU: "GC=F",
+  XAG: "SI=F",
+  BRENT: "BZ=F",
+  BTCUSD: "BTC-USD"
 };
 
-function num(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(String(v).replace(",", "."));
-  return Number.isFinite(n) ? n : null;
+function num(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(String(value).replace(",", "."));
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function round(v, d = 4) {
-  const n = Number(v || 0);
-  return Number(n.toFixed(d));
+function round(value, digits = 4) {
+  const n = num(value, 0);
+  return Number(n.toFixed(digits));
 }
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+function todayTR() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Istanbul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+  return formatter.format(now);
 }
 
-function confidenceText(v) {
-  v = Number(v || 0);
-  if (v >= 90) return "Çok yüksek";
-  if (v >= 75) return "Yüksek";
-  if (v >= 60) return "Orta";
-  if (v > 0) return "Düşük";
-  return "—";
+function nowHourTR() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("tr-TR", {
+    timeZone: "Europe/Istanbul",
+    hour: "2-digit",
+    hour12: false
+  });
+  return Number(formatter.format(now));
 }
 
-function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
+function nextBusinessDay(dateText) {
+  const d = new Date(dateText + "T12:00:00Z");
+  do {
+    d.setUTCDate(d.getUTCDate() + 1);
+  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+
+  return d.toISOString().slice(0, 10);
 }
 
-async function supabaseRequest(method, path, key, body, extraHeaders = {}) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${path}`;
+function choosePredictionDate(latestFundDate) {
+  const trToday = todayTR();
+  const hour = nowHourTR();
 
-  const response = await fetch(url, {
-    method,
+  if (latestFundDate && latestFundDate >= trToday && hour >= 18) {
+    return nextBusinessDay(latestFundDate);
+  }
+
+  if (latestFundDate && latestFundDate > trToday) {
+    return latestFundDate;
+  }
+
+  return trToday;
+}
+
+function direction(value) {
+  const n = num(value, 0);
+  if (n > 0) return "up";
+  if (n < 0) return "down";
+  return "flat";
+}
+
+function confidenceText(score) {
+  const s = num(score, 0);
+  if (s >= 90) return "Çok yüksek";
+  if (s >= 80) return "Yüksek";
+  if (s >= 70) return "Orta";
+  return "Düşük";
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeSymbol(symbol) {
+  if (!symbol) return "";
+  const s = String(symbol).trim().toUpperCase();
+
+  if (STOCK_SYMBOL_MAP[s]) return STOCK_SYMBOL_MAP[s];
+
+  if (
+    s.includes("=") ||
+    s.includes("-") ||
+    s.endsWith(".IS") ||
+    s.endsWith(".NYB")
+  ) {
+    return s;
+  }
+
+  return s + ".IS";
+}
+
+function getSupabaseConfig() {
+  const url = process.env.SUPABASE_URL;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_ANON_KEY;
+
+  if (!url || !key) {
+    throw new Error("SUPABASE_URL veya Supabase key eksik.");
+  }
+
+  return { url, key };
+}
+
+async function supabaseRequest(path, options = {}) {
+  const { url, key } = getSupabaseConfig();
+
+  const response = await fetch(`${url}/rest/v1/${path}`, {
+    method: options.method || "GET",
     headers: {
       apikey: key,
       Authorization: `Bearer ${key}`,
       Accept: "application/json",
       "Content-Type": "application/json",
-      ...extraHeaders
+      Prefer: options.prefer || "return=representation",
+      ...(options.headers || {})
     },
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: options.body ? JSON.stringify(options.body) : undefined
   });
 
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(`Supabase ${method} ${path} HTTP ${response.status}: ${text.slice(0, 500)}`);
+    throw new Error(
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 700)}`
+    );
   }
 
-  if (!text) return null;
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  if (!text) return [];
+  return JSON.parse(text);
 }
 
-async function supabaseGet(path, key) {
-  return supabaseRequest("GET", path, key);
-}
+async function getLatestFundPrices() {
+  const rows = await supabaseRequest(
+    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc,created_at.desc&limit=60"
+  );
 
-async function fetchMarketFromSelf(req) {
-  try {
-    const host = req.headers.host;
-    const protocol =
-      req.headers["x-forwarded-proto"] ||
-      (host && host.includes("localhost") ? "http" : "https");
+  const latest = {};
 
-    const url = `${protocol}://${host}/api/market?t=${Date.now()}`;
-
-    const response = await fetch(url, { cache: "no-store" });
-
-    if (!response.ok) throw new Error(`market HTTP ${response.status}`);
-
-    return await response.json();
-  } catch (e) {
-    return {
-      assets: {},
-      error: String(e.message || e)
-    };
-  }
-}
-
-function normalizeSymbol(symbol) {
-  const s = String(symbol || "").trim().toUpperCase();
-
-  if (!s) return "";
-
-  if (s === "XU100" || s === "BIST100" || s === "BIST 100") return "XU100";
-  if (s === "XU030" || s === "BIST30" || s === "BIST 30") return "XU030";
-  if (s === "XU050" || s === "BIST50" || s === "BIST 50") return "XU050";
-
-  if (s === "TRY" || s === "CASH" || s === "TL") return "TRY";
-  if (s === "REPO" || s === "MONEY_MARKET" || s === "PARA_PIYASASI") return "REPO";
-  if (s === "RESIDUAL" || s === "KALAN") return "RESIDUAL";
-
-  if (s === "USD" || s === "USDTRY") return "USDTRY";
-  if (s === "EUR" || s === "EURTRY") return "EURTRY";
-  if (s === "GBP" || s === "GBPTRY") return "GBPTRY";
-
-  if (s === "GOLD" || s === "ALTIN" || s === "XAU") return "XAU";
-  if (s === "SILVER" || s === "GUMUS" || s === "GÜMÜŞ" || s === "XAG") return "XAG";
-
-  return s.replace(".IS", "");
-}
-
-function yahooSymbolForBist(symbol) {
-  const s = normalizeSymbol(symbol);
-
-  if (!s) return null;
-
-  if (["XU100", "XU030", "XU050"].includes(s)) return null;
-
-  if (
-    ["TRY", "REPO", "RESIDUAL", "USDTRY", "EURTRY", "GBPTRY", "XAU", "XAG"].includes(s)
-  ) {
-    return null;
+  for (const row of rows) {
+    if (!latest[row.fund_code]) {
+      latest[row.fund_code] = row;
+    }
   }
 
-  return `${s}.IS`;
+  return latest;
 }
 
-async function yahooQuote(symbol) {
+async function getHoldings() {
+  const rows = await supabaseRequest(
+    "fund_holdings?select=*&fund_code=in.(PBR,PHE,TLY)&order=fund_code.asc,weight.desc"
+  );
+
+  const grouped = {};
+
+  for (const code of FUNDS) {
+    grouped[code] = [];
+  }
+
+  for (const row of rows) {
+    if (!grouped[row.fund_code]) grouped[row.fund_code] = [];
+    grouped[row.fund_code].push(row);
+  }
+
+  return grouped;
+}
+
+async function fetchYahooChange(symbol) {
+  const yahooSymbol = normalizeSymbol(symbol);
+  if (!yahooSymbol) return null;
+
   const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
-    `?range=5d&interval=1d`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+    "https://query1.finance.yahoo.com/v8/finance/chart/" +
+    encodeURIComponent(yahooSymbol) +
+    "?range=5d&interval=1d";
 
   try {
     const response = await fetch(url, {
-      signal: controller.signal,
       headers: {
-        "User-Agent": "FinScope/7.0",
-        Accept: "application/json,*/*"
+        "User-Agent": "Mozilla/5.0 FinScope/1.0"
       }
     });
 
-    if (!response.ok) throw new Error(`Yahoo HTTP ${response.status}`);
+    if (!response.ok) return null;
 
     const json = await response.json();
-    const result = json?.chart?.result?.[0] || {};
+    const result = json.chart && json.chart.result && json.chart.result[0];
+
+    if (!result) return null;
+
     const meta = result.meta || {};
-    const quote = result.indicators?.quote?.[0] || {};
-    const closes = (quote.close || []).filter(v => typeof v === "number");
+    const current = num(meta.regularMarketPrice);
+    const previous = num(meta.chartPreviousClose);
 
-    const last = Number(
-      meta.regularMarketPrice ||
-      closes[closes.length - 1] ||
-      meta.previousClose ||
-      meta.chartPreviousClose
-    );
+    if (current !== null && previous !== null && previous !== 0) {
+      return {
+        symbol: yahooSymbol,
+        price: current,
+        previous,
+        change: ((current - previous) / previous) * 100,
+        source: "Yahoo Finance"
+      };
+    }
 
-    const prev =
-      closes.length > 1
-        ? Number(closes[closes.length - 2])
-        : Number(meta.previousClose || meta.chartPreviousClose);
+    const closes =
+      result.indicators &&
+      result.indicators.quote &&
+      result.indicators.quote[0] &&
+      result.indicators.quote[0].close
+        ? result.indicators.quote[0].close.filter(v => v !== null && v !== undefined)
+        : [];
 
-    if (!last || !prev) throw new Error(`Yahoo fiyat eksik: ${symbol}`);
+    if (closes.length >= 2) {
+      const last = num(closes[closes.length - 1]);
+      const prev = num(closes[closes.length - 2]);
 
-    return {
-      value: last,
-      change: ((last - prev) / prev) * 100,
-      source: `Yahoo Finance • ${symbol}`
-    };
-  } finally {
-    clearTimeout(timer);
+      if (last !== null && prev !== null && prev !== 0) {
+        return {
+          symbol: yahooSymbol,
+          price: last,
+          previous: prev,
+          change: ((last - prev) / prev) * 100,
+          source: "Yahoo Finance"
+        };
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 
-async function buildStockMoveMap(holdingsRows, marketAssets) {
+async function getMarketChangesForHoldings(groupedHoldings) {
   const symbols = new Set();
 
-  for (const row of holdingsRows || []) {
-    const type = String(row.asset_type || "").toUpperCase();
-    const symbol = normalizeSymbol(row.symbol);
+  for (const code of FUNDS) {
+    for (const h of groupedHoldings[code] || []) {
+      const assetType = String(h.asset_type || "").toUpperCase();
 
-    if (type === "STOCK") {
-      const yahoo = yahooSymbolForBist(symbol);
-      if (yahoo) symbols.add(yahoo);
+      if (assetType === "STOCK") {
+        symbols.add(h.symbol);
+      }
     }
   }
 
-  const out = {};
-  const list = Array.from(symbols).slice(0, 150);
+  symbols.add("XU100");
+  symbols.add("USDTRY");
+  symbols.add("DXY");
+
+  const list = Array.from(symbols).filter(Boolean);
+  const results = {};
 
   await Promise.all(
-    list.map(async yahoo => {
-      const baseSymbol = yahoo.replace(".IS", "");
-
-      try {
-        const q = await yahooQuote(yahoo);
-
-        out[baseSymbol] = {
-          change: num(q.change),
-          value: num(q.value),
-          source: q.source,
-          direct: true
-        };
-      } catch (e) {
-        const proxy =
-          marketAssets.XU100 && marketAssets.XU100.change != null
-            ? num(marketAssets.XU100.change)
-            : 0;
-
-        out[baseSymbol] = {
-          change: proxy,
-          value: null,
-          source: "XU100 proxy - hisse fiyatı alınamadı",
-          direct: false,
-          error: String(e.message || e)
-        };
-      }
+    list.map(async symbol => {
+      results[symbol] = await fetchYahooChange(symbol);
     })
   );
 
-  return out;
+  return results;
 }
 
-function marketChangeForIndex(symbol, marketAssets) {
-  const s = normalizeSymbol(symbol);
+function proxyChangeForNonStock(assetType, symbol) {
+  const type = String(assetType || "").toUpperCase();
+  const sym = String(symbol || "").toUpperCase();
 
-  if (s === "XU100") return num(marketAssets.XU100 && marketAssets.XU100.change) || 0;
-  if (s === "XU030") return num(marketAssets.XU030 && marketAssets.XU030.change) || 0;
-  if (s === "XU050") return num(marketAssets.XU050 && marketAssets.XU050.change) || 0;
+  if (type.includes("MONEY") || sym.includes("REPO") || sym.includes("PARA")) {
+    return 0.12;
+  }
 
-  return num(marketAssets.XU100 && marketAssets.XU100.change) || 0;
+  if (type.includes("CASH") || sym === "TRY") {
+    return 0;
+  }
+
+  if (type.includes("BOND") || type.includes("DEBT")) {
+    return 0.05;
+  }
+
+  return 0;
 }
 
-function residualChangeForFund(fundCode, marketAssets) {
-  const xu100 = marketChangeForIndex("XU100", marketAssets);
-  const xu030 = marketChangeForIndex("XU030", marketAssets);
-  const xu050 = marketChangeForIndex("XU050", marketAssets);
+function getHoldingMarketChange(holding, marketChanges) {
+  const assetType = String(holding.asset_type || "").toUpperCase();
+  const symbol = String(holding.symbol || "").trim();
 
-  const bistBlend = xu100 * 0.55 + xu030 * 0.25 + xu050 * 0.2;
-  const repo = DEFAULT_REPO_DAILY_CHANGE;
-  const bond = DEFAULT_BOND_DAILY_CHANGE;
-  const cash = DEFAULT_CASH_DAILY_CHANGE;
+  if (assetType === "STOCK") {
+    const direct = marketChanges[symbol];
+    const normalized = marketChanges[normalizeSymbol(symbol)];
 
-  if (fundCode === "PBR") {
-    return {
-      change: repo * 0.48 + bistBlend * 0.22 + bond * 0.20 + cash * 0.10,
-      source: "PBR residual v5: repo + fon proxy + borçlanma + nakit",
-      direct: false,
-      bucket: "residual"
-    };
-  }
+    const data = direct || normalized;
 
-  if (fundCode === "PHE") {
-    return {
-      change: bistBlend * 0.50 + repo * 0.30 + cash * 0.20,
-      source: "PHE residual v5: hisse/fon proxy + repo + nakit",
-      direct: false,
-      bucket: "residual"
-    };
-  }
-
-  if (fundCode === "TLY") {
-    return {
-      change: repo * 0.50 + bistBlend * 0.20 + bond * 0.20 + cash * 0.10,
-      source: "TLY residual v5: repo + fon/gyo proxy + borçlanma + nakit",
-      direct: false,
-      bucket: "residual"
-    };
-  }
-
-  return {
-    change: repo * 0.50 + bistBlend * 0.30 + cash * 0.20,
-    source: "residual v5 genel varsayım",
-    direct: false,
-    bucket: "residual"
-  };
-}
-
-function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
-  const fundCode = String(asset.fundCode || asset.fund_code || "").toUpperCase();
-  const type = String(asset.asset_type || asset.assetType || "").toUpperCase();
-  const symbol = normalizeSymbol(asset.symbol);
-
-  if (symbol === "RESIDUAL") return residualChangeForFund(fundCode, marketAssets);
-
-  if (type === "CASH" || symbol === "TRY") {
-    return {
-      change: DEFAULT_CASH_DAILY_CHANGE,
-      source: "cash/TRY varsayımı",
-      direct: true,
-      bucket: "cash"
-    };
-  }
-
-  if (type === "MONEY_MARKET" || type === "REPO" || symbol === "REPO") {
-    return {
-      change: DEFAULT_REPO_DAILY_CHANGE,
-      source: "repo/para piyasası günlük varsayım",
-      direct: true,
-      bucket: "repo"
-    };
-  }
-
-  if (type === "STOCK") {
-    if (symbol === "XU100" || symbol === "XU030" || symbol === "XU050") {
+    if (data && num(data.change) !== null) {
       return {
-        change: marketChangeForIndex(symbol, marketAssets),
-        source: symbol,
-        direct: true,
-        bucket: "stock"
+        marketChange: num(data.change, 0),
+        directPricing: true,
+        pricingSource: `${data.source} • ${data.symbol}`
       };
     }
 
-    if (stockMoveMap[symbol]) {
+    const bist = marketChanges.XU100;
+    if (bist && num(bist.change) !== null) {
       return {
-        change: num(stockMoveMap[symbol].change) || 0,
-        source: stockMoveMap[symbol].source,
-        direct: !!stockMoveMap[symbol].direct,
-        bucket: "stock"
+        marketChange: num(bist.change, 0),
+        directPricing: false,
+        pricingSource: "BIST 100 proxy"
       };
     }
 
     return {
-      change: marketChangeForIndex("XU100", marketAssets),
-      source: "XU100 proxy - hisse eşleşmedi",
-      direct: false,
-      bucket: "stock"
-    };
-  }
-
-  if (type === "BIST" || symbol === "XU100" || symbol === "XU030" || symbol === "XU050") {
-    return {
-      change: marketChangeForIndex(symbol || "XU100", marketAssets),
-      source: symbol || "XU100",
-      direct: true,
-      bucket: "stock"
-    };
-  }
-
-  if (type === "FX" || symbol === "USDTRY" || symbol === "EURTRY" || symbol === "GBPTRY") {
-    return {
-      change: num(marketAssets[symbol] && marketAssets[symbol].change) || 0,
-      source: symbol,
-      direct: true,
-      bucket: "fx"
-    };
-  }
-
-  if (type === "GOLD" || type === "PRECIOUS_METAL" || symbol === "XAU") {
-    return {
-      change: num(marketAssets.XAU && marketAssets.XAU.change) || 0,
-      source: "XAU",
-      direct: true,
-      bucket: "commodity"
-    };
-  }
-
-  if (type === "SILVER" || symbol === "XAG") {
-    return {
-      change: num(marketAssets.XAG && marketAssets.XAG.change) || 0,
-      source: "XAG",
-      direct: true,
-      bucket: "commodity"
-    };
-  }
-
-  if (type === "BOND" || type === "EUROBOND" || type === "DEBT") {
-    return {
-      change: DEFAULT_BOND_DAILY_CHANGE,
-      source: "tahvil/borçlanma günlük proxy",
-      direct: false,
-      bucket: "bond"
+      marketChange: 0,
+      directPricing: false,
+      pricingSource: "stock fallback"
     };
   }
 
   return {
-    change: 0,
-    source: "bilinmeyen varlık tipi",
-    direct: false,
-    bucket: "unknown"
+    marketChange: proxyChangeForNonStock(assetType, symbol),
+    directPricing: false,
+    pricingSource: "non-stock proxy"
   };
 }
 
-function smoothPredictionForFund(code, raw, bucketContributions, confidence, residualWeight) {
-  const profile = FUND_PROFILE[code] || FUND_PROFILE.PBR;
+async function getCalibrationRows() {
+  const rows = await supabaseRequest(
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&error_change=not.is.null&order=created_at.desc&limit=120"
+  );
 
-  const stock = bucketContributions.stock || 0;
-  const residual = bucketContributions.residual || 0;
-  const repo = bucketContributions.repo || 0;
-  const cash = bucketContributions.cash || 0;
-  const bond = bucketContributions.bond || 0;
-  const fx = bucketContributions.fx || 0;
-  const commodity = bucketContributions.commodity || 0;
-  const unknown = bucketContributions.unknown || 0;
-
-  const smoothed =
-    stock * profile.stockSensitivity +
-    residual * profile.residualSensitivity +
-    repo +
-    cash +
-    bond * 0.85 +
-    fx * 0.75 +
-    commodity * 0.75 +
-    unknown * 0.50;
-
-  const residualDrag =
-    residualWeight >= 30 ? 0.92 :
-    residualWeight >= 20 ? 0.95 :
-    1.00;
-
-  const confidenceDrag =
-    confidence >= 90 ? 1.00 :
-    confidence >= 80 ? 0.96 :
-    confidence >= 70 ? 0.92 :
-    0.88;
-
-  const tefasLagFactor = 0.96;
-
-  const adjusted = smoothed * residualDrag * confidenceDrag * tefasLagFactor;
-
-  const capped = clamp(adjusted, -profile.maxDailyMove, profile.maxDailyMove);
-
-  return {
-    unsmoothedChange: round(raw, 4),
-    smoothedChange: round(capped, 4),
-    smoothingImpact: round(capped - raw, 4),
-    maxDailyMove: profile.maxDailyMove,
-    stockSensitivity: profile.stockSensitivity,
-    residualSensitivity: profile.residualSensitivity,
-    tefasLagFactor,
-    residualDrag,
-    confidenceDrag
-  };
-}
-
-async function updateActualsFromFundPrices(key) {
-  const latestRows = await supabaseGet(
-    "fund_prices?select=fund_code,daily_change,price_date&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc&limit=90",
-    key
-  ).catch(() => []);
-
-  const latestByFund = {};
-
-  for (const row of latestRows || []) {
-    const code = String(row.fund_code || "").toUpperCase();
-    if (!FUNDS.includes(code)) continue;
-    if (latestByFund[code]) continue;
-
-    latestByFund[code] = {
-      priceDate: row.price_date,
-      actualChange: num(row.daily_change)
-    };
-  }
-
-  const pending = await supabaseGet(
-    "prediction_history?select=id,fund_code,prediction_date,predicted_change,calibrated_change,actual_change&fund_code=in.(PBR,PHE,TLY)&actual_change=is.null&order=prediction_date.asc&limit=300",
-    key
-  ).catch(() => []);
-
-  let updated = 0;
-
-  for (const row of pending || []) {
-    const code = String(row.fund_code || "").toUpperCase();
-    const latest = latestByFund[code];
-
-    if (!latest || latest.actualChange === null || !latest.priceDate) continue;
-    if (String(latest.priceDate) <= String(row.prediction_date)) continue;
-
-    const predicted = num(row.calibrated_change) ?? num(row.predicted_change);
-    if (predicted === null) continue;
-
-    const actual = latest.actualChange;
-    const error = actual - predicted;
-
-    await supabaseRequest(
-      "PATCH",
-      `prediction_history?id=eq.${row.id}`,
-      key,
-      {
-        actual_change: round(actual, 4),
-        error_change: round(error, 4),
-        actual_price_date: latest.priceDate,
-        updated_at: new Date().toISOString()
-      },
-      { Prefer: "return=minimal" }
-    ).catch(() => null);
-
-    updated++;
-  }
-
-  return {
-    updated,
-    latestByFund
-  };
-}
-
-async function readCalibration(key) {
-  const rows = await supabaseGet(
-    "prediction_history?select=fund_code,error_change&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&order=prediction_date.desc&limit=120",
-    key
-  ).catch(() => []);
-
-  const grouped = {};
-  for (const code of FUNDS) grouped[code] = [];
-
-  for (const row of rows || []) {
-    const code = String(row.fund_code || "").toUpperCase();
-    const err = num(row.error_change);
-    if (!FUNDS.includes(code) || err === null) continue;
-    if (grouped[code].length < 40) grouped[code].push(err);
-  }
-
-  const out = {};
+  const byFund = {};
 
   for (const code of FUNDS) {
-    const arr = grouped[code] || [];
-    const n = arr.length;
+    byFund[code] = rows.filter(r => r.fund_code === code);
+  }
 
-    if (!n) {
-      out[code] = {
-        sampleSize: 0,
-        averageError: 0,
-        offset: 0,
-        status: "no_history"
-      };
-      continue;
-    }
+  return byFund;
+}
 
-    const avg = arr.reduce((a, b) => a + b, 0) / n;
-    const learningStrength = Math.min(1, n / 7);
-    const offset = clamp(avg * learningStrength, -0.30, 0.30);
+function getCalibrationForFund(code, calibrationRows) {
+  const rows = calibrationRows[code] || [];
 
-    out[code] = {
-      sampleSize: n,
-      averageError: round(avg, 4),
-      offset: round(offset, 4),
-      status: n >= 7 ? "active" : "warming_up"
+  if (!rows.length) {
+    return {
+      status: "no_history",
+      sampleSize: 0,
+      averageError: 0,
+      offset: 0
     };
   }
 
-  return out;
+  const recent = rows.slice(0, 20);
+  const avgError =
+    recent.reduce((sum, row) => sum + num(row.error_change, 0), 0) / recent.length;
+
+  return {
+    status: "learned",
+    sampleSize: recent.length,
+    averageError: round(avgError, 4),
+    offset: round(clamp(avgError, -0.45, 0.45), 4)
+  };
 }
 
-function buildPredictions(holdingsRows, marketJson, stockMoveMap, calibration) {
-  const marketAssets = marketJson.assets || {};
-  const grouped = {};
+function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, calibration) {
+  const details = [];
+  let weightedChange = 0;
+  let directWeight = 0;
+  let totalWeight = 0;
+  let positiveContribution = 0;
+  let negativeContribution = 0;
 
-  for (const row of holdingsRows || []) {
-    const code = String(row.fund_code || "").toUpperCase();
-    if (!FUNDS.includes(code)) continue;
+  for (const h of holdings) {
+    const weight = num(h.weight, 0);
+    if (weight <= 0) continue;
 
-    if (!grouped[code]) grouped[code] = [];
+    const pricing = getHoldingMarketChange(h, marketChanges);
+    const contribution = (weight / 100) * pricing.marketChange;
 
-    grouped[code].push({
-      fundCode: code,
-      asset_type: row.asset_type || "",
-      symbol: row.symbol || "",
-      name: row.name || row.symbol || "",
-      weight: num(row.weight) || 0,
-      reportDate: row.report_date || "",
-      source: row.source || ""
+    totalWeight += weight;
+    weightedChange += contribution;
+
+    if (pricing.directPricing) directWeight += weight;
+    if (contribution >= 0) positiveContribution += contribution;
+    if (contribution < 0) negativeContribution += contribution;
+
+    details.push({
+      assetType: h.asset_type,
+      symbol: h.symbol,
+      name: h.name,
+      weight: round(weight, 4),
+      marketChange: round(pricing.marketChange, 4),
+      contribution: round(contribution, 4),
+      pricingSource: pricing.pricingSource,
+      directPricing: pricing.directPricing,
+      reportDate: h.report_date,
+      source: h.source
     });
   }
 
-  const predictions = {};
+  const residualWeight = clamp(100 - totalWeight, 0, 100);
+  const latestActual = latestFundPrice ? num(latestFundPrice.daily_change, 0) : 0;
 
-  for (const code of FUNDS) {
-    const holdings = grouped[code] || [];
+  const residualContribution = (residualWeight / 100) * latestActual * 0.35;
+  const unsmoothedChange = weightedChange + residualContribution;
 
-    let rawUnsmoothed = 0;
-    let totalWeight = 0;
-    let directPricedWeight = 0;
-    let proxyWeight = 0;
-    let positiveContribution = 0;
-    let negativeContribution = 0;
-    let residualWeight = 0;
+  const volatility = Math.abs(unsmoothedChange);
+  let smoothingFactor = 0.58;
 
-    const bucketContributions = {
-      stock: 0,
-      residual: 0,
-      repo: 0,
-      cash: 0,
-      bond: 0,
-      fx: 0,
-      commodity: 0,
-      unknown: 0
-    };
+  if (volatility > 2.5) smoothingFactor = 0.42;
+  else if (volatility > 1.5) smoothingFactor = 0.48;
+  else if (volatility < 0.5) smoothingFactor = 0.68;
 
-    const details = [];
+  const smoothedChange = unsmoothedChange * smoothingFactor;
+  const smoothingImpact = smoothedChange - unsmoothedChange;
 
-    for (const h of holdings) {
-      const weight = num(h.weight) || 0;
-      totalWeight += weight;
+  const calibratedChange = clamp(
+    smoothedChange + calibration.offset,
+    -2.25,
+    2.25
+  );
 
-      const move = assetChangeFromMarket(h, marketAssets, stockMoveMap);
-      const change = num(move.change) || 0;
-      const contribution = (weight * change) / 100;
-      const bucket = move.bucket || "unknown";
+  const coverage = clamp(totalWeight, 0, 100);
+  const confidence =
+    coverage >= 98
+      ? 88 + Math.min(5, calibration.sampleSize)
+      : coverage >= 80
+        ? 78
+        : 68;
 
-      rawUnsmoothed += contribution;
-      bucketContributions[bucket] = (bucketContributions[bucket] || 0) + contribution;
-
-      if (normalizeSymbol(h.symbol) === "RESIDUAL") residualWeight += weight;
-
-      if (move.direct) directPricedWeight += weight;
-      else proxyWeight += weight;
-
-      if (contribution >= 0) positiveContribution += contribution;
-      else negativeContribution += contribution;
-
-      details.push({
-        assetType: h.asset_type,
-        symbol: h.symbol,
-        name: h.name,
-        weight: round(weight, 4),
-        marketChange: round(change, 4),
-        contribution: round(contribution, 4),
-        bucket,
-        pricingSource: move.source,
-        directPricing: !!move.direct,
-        reportDate: h.reportDate,
-        source: h.source
-      });
-    }
-
-    const coverage = Math.min(100, totalWeight);
-    const missingWeight = Math.max(0, 100 - coverage);
-    const directRatio = coverage > 0 ? directPricedWeight / coverage : 0;
-
-    const residualPenalty =
-      residualWeight >= 35 ? 11 :
-      residualWeight >= 30 ? 9 :
-      residualWeight >= 20 ? 6 :
-      residualWeight >= 10 ? 3 :
-      0;
-
-    const coveragePenalty =
-      coverage >= 99 ? 0 :
-      coverage >= 95 ? 4 :
-      coverage >= 90 ? 8 :
-      15;
-
-    const directPenalty =
-      directRatio >= 0.75 ? 0 :
-      directRatio >= 0.55 ? 5 :
-      directRatio >= 0.35 ? 10 :
-      18;
-
-    const cal = calibration[code] || {
-      sampleSize: 0,
-      averageError: 0,
-      offset: 0,
-      status: "no_history"
-    };
-
-    const calibrationBonus =
-      cal.sampleSize >= 12 ? 5 :
-      cal.sampleSize >= 7 ? 3 :
-      cal.sampleSize >= 3 ? 1 :
-      0;
-
-    const calibrationPenalty =
-      cal.sampleSize === 0 ? 4 :
-      cal.sampleSize < 3 ? 2 :
-      0;
-
-    const confidence = Math.min(
-      97,
-      Math.max(
-        35,
-        Math.round(
-          96 -
-          residualPenalty -
-          coveragePenalty -
-          directPenalty +
-          calibrationBonus -
-          calibrationPenalty +
-          Math.min(details.length, 60) * 0.04
-        )
-      )
-    );
-
-    const smoothing = smoothPredictionForFund(
-      code,
-      rawUnsmoothed,
-      bucketContributions,
-      confidence,
-      residualWeight
-    );
-
-    const rawPredicted = smoothing.smoothedChange;
-    const calibrationOffset = num(cal.offset) || 0;
-    const calibrated = rawPredicted + calibrationOffset;
-
-    const volatilityBuffer =
-      confidence >= 90 ? 0.18 :
-      confidence >= 80 ? 0.26 :
-      confidence >= 70 ? 0.38 :
-      0.55;
-
-    const rangeLow = calibrated - volatilityBuffer;
-    const rangeHigh = calibrated + volatilityBuffer;
-
-    const topPositive = details
-      .filter(x => x.contribution > 0)
-      .sort((a, b) => b.contribution - a.contribution)
-      .slice(0, 5);
-
-    const topNegative = details
-      .filter(x => x.contribution < 0)
-      .sort((a, b) => a.contribution - b.contribution)
-      .slice(0, 5);
-
-    predictions[code] = {
-      status: holdings.length ? "holdings_weighted_v5_tefas_smoothing" : "no_holdings",
-      unsmoothedChange: round(rawUnsmoothed, 4),
-      rawPredictedChange: round(rawPredicted, 4),
-      smoothingImpact: round(smoothing.smoothingImpact, 4),
-      calibrationOffset: round(calibrationOffset, 4),
-      predictedChange: round(calibrated, 4),
-      rangeLow: round(rangeLow, 4),
-      rangeHigh: round(rangeHigh, 4),
-      confidence,
-      confidenceText: confidenceText(confidence),
-      coverage: round(coverage, 2),
-      missingWeight: round(missingWeight, 2),
-      residualWeight: round(residualWeight, 2),
-      observations: details.length,
-      directPricedWeight: round(directPricedWeight, 2),
-      proxyWeight: round(proxyWeight, 2),
-      positiveContribution: round(positiveContribution, 4),
-      negativeContribution: round(negativeContribution, 4),
-      bucketContributions: Object.fromEntries(
-        Object.entries(bucketContributions).map(([k, v]) => [k, round(v, 4)])
-      ),
-      smoothing,
-      calibration: {
-        status: cal.status,
-        sampleSize: cal.sampleSize,
-        averageError: cal.averageError,
-        appliedOffset: round(calibrationOffset, 4)
-      },
-      topPositive,
-      topNegative,
-      methodology:
-        "Holdings ağırlıklı v5: gerçek hisse fiyatı + residual dağılım + TEFAS yumuşatma + fon tipi freni + geçmiş sapma kalibrasyonu.",
-      horizon: "next published daily fund return",
-      details
-    };
-  }
-
-  return predictions;
+  return {
+    status: "v6_actual_error_learning",
+    predictedChange: round(calibratedChange, 4),
+    rawPredictedChange: round(smoothedChange, 4),
+    unsmoothedChange: round(unsmoothedChange, 4),
+    rangeLow: round(calibratedChange - 0.45, 4),
+    rangeHigh: round(calibratedChange + 0.45, 4),
+    confidence: clamp(confidence, 60, 96),
+    confidenceText: confidenceText(confidence),
+    coverage: round(coverage, 2),
+    missingWeight: round(residualWeight, 2),
+    residualWeight: round(residualWeight, 2),
+    positiveContribution: round(positiveContribution, 4),
+    negativeContribution: round(negativeContribution, 4),
+    smoothingFactor: round(smoothingFactor, 4),
+    smoothingImpact: round(smoothingImpact, 4),
+    calibrationOffset: round(calibration.offset, 4),
+    calibration,
+    observations: details.length,
+    methodology:
+      "v6: gerçek TEFAS gerçekleşmesiyle eski tahminleri kapatır, hata sapmasını öğrenir, holdings ağırlıklı piyasa hareketini TEFAS yumuşatma filtresiyle gerçekçi aralığa çeker.",
+    details
+  };
 }
 
-async function upsertTodayPredictions(key, predictions) {
-  const predictionDate = todayIso();
+async function savePredictionHistory(predictionDate, predictions) {
+  const rows = [];
 
-  const rows = FUNDS.map(code => {
-    const p = predictions[code] || {};
+  for (const code of FUNDS) {
+    const p = predictions[code];
+    if (!p) continue;
 
-    return {
+    rows.push({
       fund_code: code,
       prediction_date: predictionDate,
       model: MODEL_KEY,
       model_version: MODEL_NAME,
-      raw_predicted_change: p.rawPredictedChange ?? null,
-      predicted_change: p.predictedChange ?? null,
-      calibrated_change: p.predictedChange ?? null,
-      calibration_offset: p.calibrationOffset ?? null,
-      confidence: p.confidence ?? null,
-      coverage: p.coverage ?? null,
-      residual_weight: p.residualWeight ?? null,
-      sample_size: p.calibration?.sampleSize ?? 0,
-      source: "api/predict v5",
-      updated_at: new Date().toISOString()
-    };
+      raw_predicted_change: p.rawPredictedChange,
+      calibrated_change: p.predictedChange,
+      calibration_offset: p.calibrationOffset,
+      actual_change: null,
+      error_change: null,
+      confidence: p.confidence,
+      coverage: p.coverage,
+      residual_weight: p.residualWeight,
+      sample_size: p.calibration ? p.calibration.sampleSize : 0
+    });
+  }
+
+  if (!rows.length) return [];
+
+  return await supabaseRequest("prediction_history", {
+    method: "POST",
+    body: rows
   });
+}
 
-  await supabaseRequest(
-    "POST",
-    "prediction_history?on_conflict=fund_code,prediction_date,model",
-    key,
-    rows,
-    {
-      Prefer: "resolution=merge-duplicates,return=minimal"
+async function updatePendingActuals(latestFundPrices) {
+  const pendingRows = await supabaseRequest(
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=is.null&order=created_at.asc&limit=200"
+  );
+
+  const today = todayTR();
+  const updated = [];
+
+  for (const row of pendingRows) {
+    const code = row.fund_code;
+    const predictionDate = row.prediction_date;
+    const latest = latestFundPrices[code];
+
+    if (!latest || !predictionDate) continue;
+
+    const latestDate = latest.price_date || latest.date;
+    const latestUpdatedAt = latest.updated_at || latest.created_at;
+    const rowCreatedAt = row.created_at;
+
+    const sameDateActualArrivedAfterPrediction =
+      latestDate === predictionDate &&
+      latestUpdatedAt &&
+      rowCreatedAt &&
+      new Date(latestUpdatedAt).getTime() > new Date(rowCreatedAt).getTime();
+
+    const olderPredictionCanBeClosed =
+      predictionDate < today && latestDate >= predictionDate;
+
+    if (!sameDateActualArrivedAfterPrediction && !olderPredictionCanBeClosed) {
+      continue;
     }
-  ).catch(() => null);
 
-  return rows.length;
+    const actual = num(latest.daily_change);
+    const predicted =
+      num(row.calibrated_change) ??
+      num(row.predicted_change) ??
+      num(row.raw_predicted_change);
+
+    if (actual === null || predicted === null) continue;
+
+    const error = actual - predicted;
+
+    const patchPath = `prediction_history?id=eq.${encodeURIComponent(row.id)}`;
+
+    await supabaseRequest(patchPath, {
+      method: "PATCH",
+      body: {
+        actual_change: round(actual, 4),
+        error_change: round(error, 4),
+        updated_at: new Date().toISOString()
+      }
+    });
+
+    updated.push({
+      id: row.id,
+      fundCode: code,
+      predictionDate,
+      predicted: round(predicted, 4),
+      actual: round(actual, 4),
+      error: round(error, 4)
+    });
+  }
+
+  return updated;
 }
 
 module.exports = async function handler(req, res) {
@@ -822,32 +576,47 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   try {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SECRET_KEY ||
-      process.env.SUPABASE_ANON_KEY;
+    const latestFundPrices = await getLatestFundPrices();
 
-    if (!supabaseUrl || !supabaseKey) {
-      return res.status(500).json({
-        ok: false,
-        error: "SUPABASE_URL veya Supabase key eksik."
-      });
+    const actualUpdates = await updatePendingActuals(latestFundPrices);
+
+    const groupedHoldings = await getHoldings();
+    const marketChanges = await getMarketChangesForHoldings(groupedHoldings);
+    const calibrationRows = await getCalibrationRows();
+
+    const latestDates = FUNDS
+      .map(code => latestFundPrices[code] && latestFundPrices[code].price_date)
+      .filter(Boolean)
+      .sort();
+
+    const latestFundDate = latestDates[latestDates.length - 1] || todayTR();
+    const predictionDate = choosePredictionDate(latestFundDate);
+
+    const predictions = {};
+
+    for (const code of FUNDS) {
+      const calibration = getCalibrationForFund(code, calibrationRows);
+      predictions[code] = buildPredictionForFund(
+        code,
+        groupedHoldings[code] || [],
+        marketChanges,
+        latestFundPrices[code] || null,
+        calibration
+      );
     }
 
-    const actualUpdate = await updateActualsFromFundPrices(supabaseKey);
-    const calibration = await readCalibration(supabaseKey);
+    const savedRows = await savePredictionHistory(predictionDate, predictions);
 
-    const holdingsRows = await supabaseGet(
-      "fund_holdings?select=*&order=fund_code.asc,weight.desc",
-      supabaseKey
-    );
-
-    const marketJson = await fetchMarketFromSelf(req);
-    const stockMoveMap = await buildStockMoveMap(holdingsRows, marketJson.assets || {});
-    const predictions = buildPredictions(holdingsRows, marketJson, stockMoveMap, calibration);
-
-    const savedToday = await upsertTodayPredictions(supabaseKey, predictions);
+    const latestByFund = {};
+    for (const code of FUNDS) {
+      const fp = latestFundPrices[code] || {};
+      latestByFund[code] = {
+        priceDate: fp.price_date || null,
+        actualChange: fp.daily_change ?? null,
+        price: fp.price ?? null,
+        updatedAt: fp.updated_at || fp.created_at || null
+      };
+    }
 
     res.status(200).json({
       ok: true,
@@ -855,17 +624,17 @@ module.exports = async function handler(req, res) {
       model: MODEL_NAME,
       modelKey: MODEL_KEY,
       horizon: "next published daily fund return",
-      marketSource: marketJson.version || "api/market",
+      marketSource: "Yahoo Finance delayed market data + BIST proxy fallback",
       holdingsSource: "supabase.fund_holdings",
       calibrationSource: "supabase.prediction_history",
-      actualUpdate,
-      savedToday,
-      stockPricing: {
-        provider: "Yahoo Finance delayed where symbol exists",
-        mappedSymbols: Object.keys(stockMoveMap).length
+      actualUpdate: {
+        updated: actualUpdates.length,
+        rows: actualUpdates
       },
+      latestByFund,
+      predictionDate,
+      savedToday: savedRows.length,
       funds: FUNDS,
-      calibration,
       predictions,
       disclaimer:
         "Bu tahminler model bazlıdır, kesinlik içermez ve yatırım tavsiyesi değildir."
@@ -873,7 +642,8 @@ module.exports = async function handler(req, res) {
   } catch (err) {
     res.status(500).json({
       ok: false,
-      error: String(err.message || err)
+      error: String(err.message || err),
+      model: MODEL_NAME
     });
   }
 };
