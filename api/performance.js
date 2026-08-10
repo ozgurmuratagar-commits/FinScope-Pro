@@ -1,4 +1,5 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
+const DEFAULT_MODEL = "v6_actual_error_learning";
 
 function num(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -28,10 +29,24 @@ function gradeFromError(absError) {
   return "Zayıf";
 }
 
-async function supabaseGet(path, key) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${path}`;
+function getSupabaseConfig() {
+  const url = process.env.SUPABASE_URL;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_ANON_KEY;
 
-  const response = await fetch(url, {
+  if (!url || !key) {
+    throw new Error("SUPABASE_URL veya Supabase key eksik.");
+  }
+
+  return { url, key };
+}
+
+async function supabaseGet(path) {
+  const { url, key } = getSupabaseConfig();
+
+  const response = await fetch(`${url}/rest/v1/${path}`, {
     method: "GET",
     headers: {
       apikey: key,
@@ -43,11 +58,10 @@ async function supabaseGet(path, key) {
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(`Supabase GET ${path} HTTP ${response.status}: ${text.slice(0, 500)}`);
+    throw new Error(`Supabase GET ${path} HTTP ${response.status}: ${text.slice(0, 700)}`);
   }
 
   if (!text) return [];
-
   return JSON.parse(text);
 }
 
@@ -58,6 +72,7 @@ function enrichRow(row) {
     num(row.raw_predicted_change);
 
   const actual = num(row.actual_change);
+
   const error =
     row.error_change !== null && row.error_change !== undefined
       ? num(row.error_change)
@@ -85,7 +100,7 @@ function enrichRow(row) {
     residualWeight: num(row.residual_weight),
     sampleSize: num(row.sample_size) || 0,
     createdAt: row.created_at,
-    updatedAt: row.updated_at || null,
+    updatedAt: row.updated_at || row.created_at || null,
     status: actual === null ? "pending" : "completed",
     predictedDirection: predicted === null ? "unknown" : direction(predicted),
     actualDirection: actual === null ? "unknown" : direction(actual),
@@ -97,9 +112,20 @@ function enrichRow(row) {
   };
 }
 
+function latestByFund(rows) {
+  const out = {};
+
+  for (const code of FUNDS) {
+    out[code] = rows.find(r => r.fundCode === code) || null;
+  }
+
+  return out;
+}
+
 function summarize(rows) {
   const completed = rows.filter(r => r.status === "completed");
   const pending = rows.filter(r => r.status === "pending");
+  const latest = latestByFund(rows);
 
   const byFund = {};
 
@@ -123,7 +149,7 @@ function summarize(rows) {
         fundCompleted.length > 0
           ? round((directionHits / fundCompleted.length) * 100, 2)
           : null,
-      latest: fundRows[0] || null
+      latest: latest[code]
     };
   }
 
@@ -152,45 +178,31 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   try {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SECRET_KEY ||
-      process.env.SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-      return res.status(500).json({
-        ok: false,
-        error: "SUPABASE_URL veya Supabase key eksik."
-      });
-    }
-
     const limit = Math.min(Math.max(Number(req.query.limit || 60), 1), 300);
-    const model = req.query.model ? String(req.query.model) : "";
+    const model = req.query.model ? String(req.query.model) : DEFAULT_MODEL;
 
-    let path =
+    const path =
       "prediction_history?" +
       "select=*" +
       "&fund_code=in.(PBR,PHE,TLY)" +
-      `&order=created_at.desc` +
+      `&model=eq.${encodeURIComponent(model)}` +
+      "&order=updated_at.desc.nullslast" +
+      "&order=created_at.desc" +
       `&limit=${limit}`;
 
-    if (model) {
-      path += `&model=eq.${encodeURIComponent(model)}`;
-    }
-
-    const rawRows = await supabaseGet(path, supabaseKey);
+    const rawRows = await supabaseGet(path);
     const rows = rawRows.map(enrichRow);
 
     res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      version: "FinScope Performance API v1",
+      version: "FinScope Performance API v2",
       source: "supabase.prediction_history",
+      model,
       rows,
       summary: summarize(rows),
       note:
-        "actualChange ve errorChange alanları, ilgili tahminin gerçekleşen TEFAS verisi geldikten sonra dolar. Boş değerler bekleyen tahmin anlamına gelir."
+        "Performans verisi updated_at öncelikli sıralanır. Böylece v6 upsert sonrası en güncel tahmin kayıtları dashboard ile uyumlu gelir."
     });
   } catch (err) {
     res.status(500).json({
