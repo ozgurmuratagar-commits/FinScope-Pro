@@ -1,5 +1,8 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
+const MODEL_KEY = "v4_calibrated";
+const MODEL_NAME = "FinScope Holdings Weighted Prediction v4 - Calibrated Residual Model";
+
 const DEFAULT_REPO_DAILY_CHANGE = Number(process.env.REPO_DAILY_CHANGE || 0.12);
 const DEFAULT_CASH_DAILY_CHANGE = Number(process.env.CASH_DAILY_CHANGE || 0);
 const DEFAULT_BOND_DAILY_CHANGE = Number(process.env.BOND_DAILY_CHANGE || 0.06);
@@ -15,6 +18,10 @@ function round(v, d = 4) {
   return Number(n.toFixed(d));
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function confidenceText(v) {
   v = Number(v || 0);
   if (v >= 90) return "Çok yüksek";
@@ -24,31 +31,42 @@ function confidenceText(v) {
   return "—";
 }
 
-async function supabaseGet(path, key) {
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+async function supabaseRequest(method, path, key, body, extraHeaders = {}) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/${path}`;
 
   const response = await fetch(url, {
-    method: "GET",
+    method,
     headers: {
       apikey: key,
       Authorization: `Bearer ${key}`,
-      Accept: "application/json"
-    }
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...extraHeaders
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
   });
 
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(
-      `Supabase GET ${path} HTTP ${response.status}: ${text.slice(0, 500)}`
-    );
+    throw new Error(`Supabase ${method} ${path} HTTP ${response.status}: ${text.slice(0, 500)}`);
   }
+
+  if (!text) return null;
 
   try {
     return JSON.parse(text);
-  } catch (e) {
-    throw new Error(`Supabase JSON parse error: ${text.slice(0, 500)}`);
+  } catch {
+    return text;
   }
+}
+
+async function supabaseGet(path, key) {
+  return supabaseRequest("GET", path, key);
 }
 
 async function fetchMarketFromSelf(req) {
@@ -60,13 +78,9 @@ async function fetchMarketFromSelf(req) {
 
     const url = `${protocol}://${host}/api/market?t=${Date.now()}`;
 
-    const response = await fetch(url, {
-      cache: "no-store"
-    });
+    const response = await fetch(url, { cache: "no-store" });
 
-    if (!response.ok) {
-      throw new Error(`market HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`market HTTP ${response.status}`);
 
     return await response.json();
   } catch (e) {
@@ -133,9 +147,7 @@ async function yahooQuote(symbol) {
       }
     });
 
-    if (!response.ok) {
-      throw new Error(`Yahoo HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Yahoo HTTP ${response.status}`);
 
     const json = await response.json();
     const result = json?.chart?.result?.[0] || {};
@@ -155,9 +167,7 @@ async function yahooQuote(symbol) {
         ? Number(closes[closes.length - 2])
         : Number(meta.previousClose || meta.chartPreviousClose);
 
-    if (!last || !prev) {
-      throw new Error(`Yahoo fiyat eksik: ${symbol}`);
-    }
+    if (!last || !prev) throw new Error(`Yahoo fiyat eksik: ${symbol}`);
 
     return {
       value: last,
@@ -233,38 +243,38 @@ function residualChangeForFund(fundCode, marketAssets) {
   const xu030 = marketChangeForIndex("XU030", marketAssets);
   const xu050 = marketChangeForIndex("XU050", marketAssets);
 
-  const bistBlend = (xu100 * 0.55) + (xu030 * 0.25) + (xu050 * 0.20);
+  const bistBlend = xu100 * 0.55 + xu030 * 0.25 + xu050 * 0.2;
   const repo = DEFAULT_REPO_DAILY_CHANGE;
   const bond = DEFAULT_BOND_DAILY_CHANGE;
   const cash = DEFAULT_CASH_DAILY_CHANGE;
 
   if (fundCode === "PBR") {
     return {
-      change: (repo * 0.45) + (bistBlend * 0.25) + (bond * 0.20) + (cash * 0.10),
-      source: "PBR residual v3: repo + fon proxy + borçlanma + nakit",
+      change: repo * 0.45 + bistBlend * 0.25 + bond * 0.2 + cash * 0.1,
+      source: "PBR residual v4: repo + fon proxy + borçlanma + nakit",
       direct: false
     };
   }
 
   if (fundCode === "PHE") {
     return {
-      change: (bistBlend * 0.55) + (repo * 0.25) + (cash * 0.20),
-      source: "PHE residual v3: fon/hisse proxy + repo + nakit",
+      change: bistBlend * 0.55 + repo * 0.25 + cash * 0.2,
+      source: "PHE residual v4: fon/hisse proxy + repo + nakit",
       direct: false
     };
   }
 
   if (fundCode === "TLY") {
     return {
-      change: (repo * 0.45) + (bistBlend * 0.25) + (bond * 0.20) + (cash * 0.10),
-      source: "TLY residual v3: repo + fon/gyo proxy + borçlanma + nakit",
+      change: repo * 0.45 + bistBlend * 0.25 + bond * 0.2 + cash * 0.1,
+      source: "TLY residual v4: repo + fon/gyo proxy + borçlanma + nakit",
       direct: false
     };
   }
 
   return {
-    change: (repo * 0.50) + (bistBlend * 0.30) + (cash * 0.20),
-    source: "residual v3 genel varsayım",
+    change: repo * 0.5 + bistBlend * 0.3 + cash * 0.2,
+    source: "residual v4 genel varsayım",
     direct: false
   };
 }
@@ -274,9 +284,7 @@ function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
   const type = String(asset.asset_type || asset.assetType || "").toUpperCase();
   const symbol = normalizeSymbol(asset.symbol);
 
-  if (symbol === "RESIDUAL") {
-    return residualChangeForFund(fundCode, marketAssets);
-  }
+  if (symbol === "RESIDUAL") return residualChangeForFund(fundCode, marketAssets);
 
   if (type === "CASH" || symbol === "TRY") {
     return {
@@ -286,12 +294,7 @@ function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
     };
   }
 
-  if (
-    type === "MONEY_MARKET" ||
-    type === "REPO" ||
-    symbol === "REPO" ||
-    symbol === "MONEY_MARKET"
-  ) {
+  if (type === "MONEY_MARKET" || type === "REPO" || symbol === "REPO") {
     return {
       change: DEFAULT_REPO_DAILY_CHANGE,
       source: "repo/para piyasası günlük varsayım",
@@ -332,10 +335,9 @@ function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
   }
 
   if (type === "FX" || symbol === "USDTRY" || symbol === "EURTRY" || symbol === "GBPTRY") {
-    const key = symbol;
     return {
-      change: num(marketAssets[key] && marketAssets[key].change) || 0,
-      source: key,
+      change: num(marketAssets[symbol] && marketAssets[symbol].change) || 0,
+      source: symbol,
       direct: true
     };
   }
@@ -356,13 +358,7 @@ function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
     };
   }
 
-  if (
-    type === "BOND" ||
-    type === "EUROBOND" ||
-    type === "DEBT" ||
-    type === "PRIVATE_BOND" ||
-    type === "GOV_BOND"
-  ) {
+  if (type === "BOND" || type === "EUROBOND" || type === "DEBT") {
     return {
       change: DEFAULT_BOND_DAILY_CHANGE,
       source: "tahvil/borçlanma günlük proxy",
@@ -377,7 +373,117 @@ function assetChangeFromMarket(asset, marketAssets, stockMoveMap) {
   };
 }
 
-function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
+async function updateActualsFromFundPrices(key) {
+  const latestRows = await supabaseGet(
+    "fund_prices?select=fund_code,daily_change,price_date&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc&limit=90",
+    key
+  ).catch(() => []);
+
+  const latestByFund = {};
+
+  for (const row of latestRows || []) {
+    const code = String(row.fund_code || "").toUpperCase();
+    if (!FUNDS.includes(code)) continue;
+    if (latestByFund[code]) continue;
+
+    latestByFund[code] = {
+      priceDate: row.price_date,
+      actualChange: num(row.daily_change)
+    };
+  }
+
+  const pending = await supabaseGet(
+    "prediction_history?select=id,fund_code,prediction_date,predicted_change,calibrated_change,actual_change&fund_code=in.(PBR,PHE,TLY)&actual_change=is.null&order=prediction_date.asc&limit=200",
+    key
+  ).catch(() => []);
+
+  let updated = 0;
+
+  for (const row of pending || []) {
+    const code = String(row.fund_code || "").toUpperCase();
+    const latest = latestByFund[code];
+
+    if (!latest || latest.actualChange === null || !latest.priceDate) continue;
+
+    if (String(latest.priceDate) <= String(row.prediction_date)) continue;
+
+    const predicted = num(row.calibrated_change) ?? num(row.predicted_change);
+    if (predicted === null) continue;
+
+    const actual = latest.actualChange;
+    const error = actual - predicted;
+
+    await supabaseRequest(
+      "PATCH",
+      `prediction_history?id=eq.${row.id}`,
+      key,
+      {
+        actual_change: round(actual, 4),
+        error_change: round(error, 4),
+        actual_price_date: latest.priceDate,
+        updated_at: new Date().toISOString()
+      },
+      { Prefer: "return=minimal" }
+    ).catch(() => null);
+
+    updated++;
+  }
+
+  return {
+    updated,
+    latestByFund
+  };
+}
+
+async function readCalibration(key) {
+  const rows = await supabaseGet(
+    "prediction_history?select=fund_code,error_change&fund_code=in.(PBR,PHE,TLY)&actual_change=not.is.null&order=prediction_date.desc&limit=90",
+    key
+  ).catch(() => []);
+
+  const grouped = {};
+
+  for (const code of FUNDS) grouped[code] = [];
+
+  for (const row of rows || []) {
+    const code = String(row.fund_code || "").toUpperCase();
+    const err = num(row.error_change);
+    if (!FUNDS.includes(code) || err === null) continue;
+    if (grouped[code].length < 30) grouped[code].push(err);
+  }
+
+  const out = {};
+
+  for (const code of FUNDS) {
+    const arr = grouped[code] || [];
+    const n = arr.length;
+
+    if (!n) {
+      out[code] = {
+        sampleSize: 0,
+        averageError: 0,
+        offset: 0,
+        status: "no_history"
+      };
+      continue;
+    }
+
+    const avg = arr.reduce((a, b) => a + b, 0) / n;
+    const learningStrength = Math.min(1, n / 5);
+    const offset = clamp(avg * learningStrength, -0.35, 0.35);
+
+    out[code] = {
+      sampleSize: n,
+      averageError: round(avg, 4),
+      offset: round(offset, 4),
+      status: n >= 5 ? "active" : "warming_up"
+    };
+  }
+
+  return out;
+}
+
+function buildPredictions(holdingsRows, marketJson, stockMoveMap, calibration) {
   const marketAssets = marketJson.assets || {};
   const grouped = {};
 
@@ -403,7 +509,7 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
   for (const code of FUNDS) {
     const holdings = grouped[code] || [];
 
-    let predicted = 0;
+    let rawPredicted = 0;
     let totalWeight = 0;
     let directPricedWeight = 0;
     let proxyWeight = 0;
@@ -421,7 +527,7 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       const change = num(move.change) || 0;
       const contribution = (weight * change) / 100;
 
-      predicted += contribution;
+      rawPredicted += contribution;
 
       if (normalizeSymbol(h.symbol) === "RESIDUAL") residualWeight += weight;
 
@@ -445,6 +551,16 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       });
     }
 
+    const cal = calibration[code] || {
+      sampleSize: 0,
+      averageError: 0,
+      offset: 0,
+      status: "no_history"
+    };
+
+    const calibrationOffset = num(cal.offset) || 0;
+    const calibrated = rawPredicted + calibrationOffset;
+
     const coverage = Math.min(100, totalWeight);
     const missingWeight = Math.max(0, 100 - coverage);
     const directRatio = coverage > 0 ? directPricedWeight / coverage : 0;
@@ -467,8 +583,19 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       directRatio >= 0.35 ? 10 :
       18;
 
+    const calibrationBonus =
+      cal.sampleSize >= 10 ? 5 :
+      cal.sampleSize >= 5 ? 3 :
+      cal.sampleSize >= 2 ? 1 :
+      0;
+
+    const calibrationPenalty =
+      cal.sampleSize === 0 ? 4 :
+      cal.sampleSize < 3 ? 2 :
+      0;
+
     const confidence = Math.min(
-      96,
+      97,
       Math.max(
         35,
         Math.round(
@@ -476,19 +603,21 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
           residualPenalty -
           coveragePenalty -
           directPenalty +
+          calibrationBonus -
+          calibrationPenalty +
           Math.min(details.length, 50) * 0.05
         )
       )
     );
 
     const volatilityBuffer =
-      confidence >= 90 ? 0.22 :
-      confidence >= 80 ? 0.32 :
-      confidence >= 70 ? 0.45 :
+      confidence >= 90 ? 0.2 :
+      confidence >= 80 ? 0.3 :
+      confidence >= 70 ? 0.43 :
       0.65;
 
-    const rangeLow = predicted - volatilityBuffer;
-    const rangeHigh = predicted + volatilityBuffer;
+    const rangeLow = calibrated - volatilityBuffer;
+    const rangeHigh = calibrated + volatilityBuffer;
 
     const topPositive = details
       .filter(x => x.contribution > 0)
@@ -501,8 +630,10 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       .slice(0, 5);
 
     predictions[code] = {
-      status: holdings.length ? "holdings_weighted_v3" : "no_holdings",
-      predictedChange: round(predicted, 4),
+      status: holdings.length ? "holdings_weighted_v4_calibrated" : "no_holdings",
+      rawPredictedChange: round(rawPredicted, 4),
+      calibrationOffset: round(calibrationOffset, 4),
+      predictedChange: round(calibrated, 4),
       rangeLow: round(rangeLow, 4),
       rangeHigh: round(rangeHigh, 4),
       confidence,
@@ -515,16 +646,59 @@ function buildPredictions(holdingsRows, marketJson, stockMoveMap) {
       proxyWeight: round(proxyWeight, 2),
       positiveContribution: round(positiveContribution, 4),
       negativeContribution: round(negativeContribution, 4),
+      calibration: {
+        status: cal.status,
+        sampleSize: cal.sampleSize,
+        averageError: cal.averageError,
+        appliedOffset: round(calibrationOffset, 4)
+      },
       topPositive,
       topNegative,
       methodology:
-        "Holdings ağırlıklı v3: gerçek hisse fiyatı + BIST proxy + fon bazlı residual dağılımı + güven skoru.",
+        "Holdings ağırlıklı v4: gerçek hisse fiyatı + BIST proxy + fon bazlı residual dağılımı + geçmiş sapma kalibrasyonu.",
       horizon: "next published daily fund return",
       details
     };
   }
 
   return predictions;
+}
+
+async function upsertTodayPredictions(key, predictions) {
+  const predictionDate = todayIso();
+
+  const rows = FUNDS.map(code => {
+    const p = predictions[code] || {};
+
+    return {
+      fund_code: code,
+      prediction_date: predictionDate,
+      model: MODEL_KEY,
+      model_version: MODEL_NAME,
+      raw_predicted_change: p.rawPredictedChange ?? null,
+      predicted_change: p.predictedChange ?? null,
+      calibrated_change: p.predictedChange ?? null,
+      calibration_offset: p.calibrationOffset ?? null,
+      confidence: p.confidence ?? null,
+      coverage: p.coverage ?? null,
+      residual_weight: p.residualWeight ?? null,
+      sample_size: p.calibration?.sampleSize ?? 0,
+      source: "api/predict v4",
+      updated_at: new Date().toISOString()
+    };
+  });
+
+  await supabaseRequest(
+    "POST",
+    "prediction_history?on_conflict=fund_code,prediction_date,model",
+    key,
+    rows,
+    {
+      Prefer: "resolution=merge-duplicates,return=minimal"
+    }
+  ).catch(() => null);
+
+  return rows.length;
 }
 
 module.exports = async function handler(req, res) {
@@ -545,6 +719,9 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    const actualUpdate = await updateActualsFromFundPrices(supabaseKey);
+    const calibration = await readCalibration(supabaseKey);
+
     const holdingsRows = await supabaseGet(
       "fund_holdings?select=*&order=fund_code.asc,weight.desc",
       supabaseKey
@@ -552,20 +729,27 @@ module.exports = async function handler(req, res) {
 
     const marketJson = await fetchMarketFromSelf(req);
     const stockMoveMap = await buildStockMoveMap(holdingsRows, marketJson.assets || {});
-    const predictions = buildPredictions(holdingsRows, marketJson, stockMoveMap);
+    const predictions = buildPredictions(holdingsRows, marketJson, stockMoveMap, calibration);
+
+    const savedToday = await upsertTodayPredictions(supabaseKey, predictions);
 
     res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      model: "FinScope Holdings Weighted Prediction v3 - Residual Smart Model",
+      model: MODEL_NAME,
+      modelKey: MODEL_KEY,
       horizon: "next published daily fund return",
       marketSource: marketJson.version || "api/market",
       holdingsSource: "supabase.fund_holdings",
+      calibrationSource: "supabase.prediction_history",
+      actualUpdate,
+      savedToday,
       stockPricing: {
         provider: "Yahoo Finance delayed where symbol exists",
         mappedSymbols: Object.keys(stockMoveMap).length
       },
       funds: FUNDS,
+      calibration,
       predictions,
       disclaimer:
         "Bu tahminler model bazlıdır, kesinlik içermez ve yatırım tavsiyesi değildir."
