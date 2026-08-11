@@ -30,6 +30,10 @@
       "use": "@vercel/node"
     },
     {
+      "src": "api/debug-market.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "index.html",
       "use": "@vercel/static"
     },
@@ -68,6 +72,10 @@
       "dest": "/api/debug-tefas.js"
     },
     {
+      "src": "/api/debug-market",
+      "dest": "/api/debug-market.js"
+    },
+    {
       "src": "/data/funds.json",
       "dest": "/data/funds.json"
     },
@@ -79,19 +87,35 @@
   "crons": [
     {
       "path": "/api/sync-funds",
-      "schedule": "0 16 * * 1-5"
+      "schedule": "30 7 * * 1-5"
     },
     {
       "path": "/api/predict",
-      "schedule": "10 16 * * 1-5"
+      "schedule": "40 7 * * 1-5"
     },
     {
       "path": "/api/sync-funds",
-      "schedule": "30 16 * * 1-5"
+      "schedule": "30 10 * * 1-5"
     },
     {
       "path": "/api/predict",
-      "schedule": "40 16 * * 1-5"
+      "schedule": "40 10 * * 1-5"
+    },
+    {
+      "path": "/api/sync-funds",
+      "schedule": "30 13 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "40 13 * * 1-5"
+    },
+    {
+      "path": "/api/sync-funds",
+      "schedule": "30 15 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "40 15 * * 1-5"
     }
   ]
 }
