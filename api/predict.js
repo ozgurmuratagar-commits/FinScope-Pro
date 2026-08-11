@@ -1,7 +1,7 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_NAME = "FinScope Prediction Engine v7 - Accuracy Layer";
-const MODEL_KEY = "v7_accuracy_layer";
+const MODEL_NAME = "FinScope Prediction Engine v7.1 - Accuracy Layer";
+const MODEL_KEY = "v7_1_accuracy_layer";
 
 const STOCK_SYMBOL_MAP = {
   XU100: "XU100.IS",
@@ -164,7 +164,7 @@ async function getLatestFundPrices() {
 
   const latest = {};
 
-  for (const row of rows) {
+  for (const row of rows || []) {
     if (!latest[row.fund_code]) {
       latest[row.fund_code] = row;
     }
@@ -184,7 +184,7 @@ async function getHoldings() {
     grouped[code] = [];
   }
 
-  for (const row of rows) {
+  for (const row of rows || []) {
     if (!grouped[row.fund_code]) grouped[row.fund_code] = [];
     grouped[row.fund_code].push(row);
   }
@@ -328,6 +328,7 @@ function getHoldingMarketChange(holding, marketChanges) {
     }
 
     const bist = marketChanges.XU100 || marketChanges["XU100.IS"];
+
     if (bist && num(bist.change) !== null) {
       return {
         marketChange: num(bist.change, 0),
@@ -392,7 +393,7 @@ function getAccuracyLayerForFund(code, calibrationRows) {
       offset: 0,
       dampingFactor: 1,
       confidencePenalty: 0,
-      note: "Geçmiş gerçekleşen veri yok; v7 düzeltmesi uygulanmadı."
+      note: "Geçmiş gerçekleşen veri yok; v7.1 düzeltmesi uygulanmadı."
     };
   }
 
@@ -452,7 +453,7 @@ function getAccuracyLayerForFund(code, calibrationRows) {
     offset: round(offset, 4),
     dampingFactor: round(dampingFactor, 4),
     confidencePenalty: round(confidencePenalty, 2),
-    note: "v7 fon bazlı geçmiş sapma, yakın dönem hata ve yön isabetiyle tahmini kalibre etti."
+    note: "v7.1 fon bazlı geçmiş sapma, yakın dönem hata ve yön isabetiyle tahmini kalibre etti."
   };
 }
 
@@ -526,7 +527,7 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
   const confidence = clamp(baseConfidence - accuracyLayer.confidencePenalty, 60, 96);
 
   return {
-    status: "v7_accuracy_layer",
+    status: "v7_1_accuracy_layer",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(unsmoothedChange, 4),
@@ -550,7 +551,7 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
     accuracyLayer,
     observations: details.length,
     methodology:
-      "v7: v6 holdings ağırlıklı tahmin temelini korur; TEFAS yumuşatma filtresi, fon bazlı geçmiş sapma öğrenimi, yakın dönem hata ortalaması, yön isabeti ve aşırı oynaklık törpüsüyle tahmini daha gerçekçi aralığa çeker.",
+      "v7.1: v7 Accuracy Layer modelini korur; ek olarak bekleyen tahminlerin TEFAS gerçekleşen verisiyle kapanış mantığını güçlendirir.",
     details
   };
 }
@@ -620,34 +621,46 @@ async function savePredictionHistory(predictionDate, predictions) {
 }
 
 async function updatePendingActuals(latestFundPrices) {
-  const pendingRows = await supabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&actual_change=is.null&order=created_at.asc&limit=300"
+  const rows = await supabaseRequest(
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&order=created_at.asc&limit=500"
   );
 
-  const today = todayTR();
   const updated = [];
+  const skipped = [];
 
-  for (const row of pendingRows) {
+  for (const row of rows || []) {
     const code = row.fund_code;
-    const predictionDate = row.prediction_date;
     const latest = latestFundPrices[code];
 
-    if (!latest || !predictionDate) continue;
+    if (!latest) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "no_latest_fund_price"
+      });
+      continue;
+    }
 
+    if (row.actual_change !== null && row.actual_change !== undefined) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "already_closed"
+      });
+      continue;
+    }
+
+    const predictionDate = row.prediction_date;
     const latestDate = latest.price_date || latest.date;
-    const latestUpdatedAt = latest.updated_at || latest.created_at;
-    const rowCreatedAt = row.created_at;
 
-    const sameDateActualArrivedAfterPrediction =
-      latestDate === predictionDate &&
-      latestUpdatedAt &&
-      rowCreatedAt &&
-      new Date(latestUpdatedAt).getTime() > new Date(rowCreatedAt).getTime();
-
-    const olderPredictionCanBeClosed =
-      predictionDate < today && latestDate >= predictionDate;
-
-    if (!sameDateActualArrivedAfterPrediction && !olderPredictionCanBeClosed) {
+    if (!predictionDate || !latestDate) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "missing_date",
+        predictionDate,
+        latestDate
+      });
       continue;
     }
 
@@ -657,11 +670,54 @@ async function updatePendingActuals(latestFundPrices) {
       num(row.predicted_change) ??
       num(row.raw_predicted_change);
 
-    if (actual === null || predicted === null) continue;
+    if (actual === null || predicted === null) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "missing_actual_or_prediction",
+        actual,
+        predicted
+      });
+      continue;
+    }
+
+    /*
+      Güçlendirilmiş kapanış mantığı:
+      1. TEFAS fiyat tarihi tahmin tarihinden büyükse tahmin kapanır.
+      2. TEFAS fiyat tarihi tahmin tarihiyle aynıysa, sadece fiyat kaydı tahminden sonra güncellendiyse kapanır.
+      3. Böylece yeni açılmış bugünkü tahmin, aynı günün eski fiyatıyla yanlışlıkla kapanmaz.
+    */
+
+    const latestIsAfterPredictionDate = latestDate > predictionDate;
+
+    const latestUpdatedAt = latest.updated_at || latest.created_at || null;
+    const rowCreatedAt = row.created_at || null;
+
+    const sameDateButFundUpdatedAfterPrediction =
+      latestDate === predictionDate &&
+      latestUpdatedAt &&
+      rowCreatedAt &&
+      new Date(latestUpdatedAt).getTime() > new Date(rowCreatedAt).getTime();
+
+    const shouldClose =
+      latestIsAfterPredictionDate || sameDateButFundUpdatedAfterPrediction;
+
+    if (!shouldClose) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "not_ready_to_close",
+        predictionDate,
+        latestDate,
+        latestUpdatedAt,
+        rowCreatedAt
+      });
+      continue;
+    }
 
     const error = actual - predicted;
 
-    await supabaseRequest(
+    const patched = await supabaseRequest(
       `prediction_history?id=eq.${encodeURIComponent(row.id)}`,
       {
         method: "PATCH",
@@ -677,14 +733,21 @@ async function updatePendingActuals(latestFundPrices) {
       id: row.id,
       fundCode: code,
       predictionDate,
+      latestDate,
       model: row.model || null,
       predicted: round(predicted, 4),
       actual: round(actual, 4),
-      error: round(error, 4)
+      error: round(error, 4),
+      patched
     });
   }
 
-  return updated;
+  return {
+    updated: updated.length,
+    rows: updated,
+    skippedCount: skipped.length,
+    skipped: skipped.slice(0, 30)
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -694,7 +757,7 @@ module.exports = async function handler(req, res) {
   try {
     const latestFundPrices = await getLatestFundPrices();
 
-    const actualUpdates = await updatePendingActuals(latestFundPrices);
+    const actualUpdate = await updatePendingActuals(latestFundPrices);
 
     const groupedHoldings = await getHoldings();
     const marketChanges = await getMarketChangesForHoldings(groupedHoldings);
@@ -746,10 +809,8 @@ module.exports = async function handler(req, res) {
       marketSource: "Yahoo Finance delayed market data + BIST proxy fallback",
       holdingsSource: "supabase.fund_holdings",
       calibrationSource: "supabase.prediction_history",
-      actualUpdate: {
-        updated: actualUpdates.length,
-        rows: actualUpdates
-      },
+      closeLogic: "v7.1 strengthened pending actual close logic",
+      actualUpdate,
       latestByFund,
       predictionDate,
       savedToday: savedRows.length,
