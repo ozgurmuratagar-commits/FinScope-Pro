@@ -1,8 +1,8 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const API_VERSION = "FinScope Performance API v4";
+const API_VERSION = "FinScope Performance API v5";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const FINAL_LABEL = "18:00 sonrası nihai tahmin";
+const FINAL_LABEL = "Önceki 18:00 Nihai Tahmin";
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -11,7 +11,8 @@ function num(value, fallback = null) {
 }
 
 function round(value, digits = 4) {
-  const n = num(value, 0);
+  const n = num(value, null);
+  if (n === null) return null;
   return Number(n.toFixed(digits));
 }
 
@@ -22,26 +23,14 @@ function direction(value) {
   return "flat";
 }
 
-function getPredictedChange(row) {
-  return (
-    num(row.calibrated_change) ??
-    num(row.predicted_change) ??
-    num(row.raw_predicted_change)
-  );
-}
+function getFinalPrediction(row) {
+  /*
+    Bu API'de performans sapmasının tek doğru kaynağı:
+    prediction_history.calibrated_change
 
-function getTurkeyHourFromIso(isoValue) {
-  if (!isoValue) return null;
-  const d = new Date(isoValue);
-  if (Number.isNaN(d.getTime())) return null;
-
-  const turkey = new Date(d.getTime() + 3 * 60 * 60 * 1000);
-  return turkey.getUTCHours() + turkey.getUTCMinutes() / 60;
-}
-
-function isAfterFinalWindow(row) {
-  const hour = getTurkeyHourFromIso(row.created_at || row.updated_at);
-  return hour !== null && hour >= 18;
+    raw_predicted_change sadece teknik referans olarak döner.
+  */
+  return num(row.calibrated_change);
 }
 
 function getGrade(errorAbs) {
@@ -54,8 +43,21 @@ function getGrade(errorAbs) {
   return "Çok zayıf";
 }
 
-function normalizeRow(row, currentPredictionChange = null) {
-  const finalPrediction = getPredictedChange(row);
+function sortNewest(a, b) {
+  const dateCompare = String(b.prediction_date || "").localeCompare(
+    String(a.prediction_date || "")
+  );
+
+  if (dateCompare !== 0) return dateCompare;
+
+  const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
+  const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
+
+  return timeB - timeA;
+}
+
+function normalizeRow(row) {
+  const finalPrediction = getFinalPrediction(row);
   const actual = num(row.actual_change);
 
   const completed = actual !== null && finalPrediction !== null;
@@ -65,50 +67,36 @@ function normalizeRow(row, currentPredictionChange = null) {
     id: row.id,
     fundCode: row.fund_code,
     predictionDate: row.prediction_date,
-    model: row.model || null,
+    model: row.model || ACTIVE_MODEL,
     modelVersion: row.model_version || null,
 
     status: completed ? "completed" : "pending",
 
     /*
-      Backward compatibility:
-      Dashboard eski hali row.predictedChange kullanıyorsa bozulmasın diye
-      predictedChange hâlâ kıyaslamada kullanılan nihai tahmini gösterir.
+      Dashboard geriye dönük uyumluluk için predictedChange alanını okuyabilir.
+      Bu yüzden predictedChange de finalPredictionChange ile aynı kaynaktan gelir.
     */
     predictedChange: finalPrediction === null ? null : round(finalPrediction, 4),
 
     /*
-      Yeni açık alan:
-      Sapmanın hangi tahmine göre hesaplandığını netleştirir.
+      Yeni ve net alan:
+      Performans tablosundaki "Önceki 18:00 Nihai Tahmin" sütunu bunu göstermeli.
     */
     finalPredictionChange: finalPrediction === null ? null : round(finalPrediction, 4),
     finalPredictionLabel: FINAL_LABEL,
+    finalPredictionSource: "prediction_history.calibrated_change",
 
-    /*
-      Varsa aynı fonun güncel bekleyen tahmini.
-      UI isterse bunu ayrı gösterebilir.
-    */
-    currentPredictionChange:
-      currentPredictionChange === null || currentPredictionChange === undefined
-        ? null
-        : round(currentPredictionChange, 4),
-
-    rawPredictedChange:
-      row.raw_predicted_change === null || row.raw_predicted_change === undefined
-        ? null
-        : round(row.raw_predicted_change, 4),
-
-    calibratedChange:
-      row.calibrated_change === null || row.calibrated_change === undefined
-        ? null
-        : round(row.calibrated_change, 4),
+    rawPredictedChange: round(row.raw_predicted_change, 4),
+    calibratedChange: round(row.calibrated_change, 4),
 
     actualChange: actual === null ? null : round(actual, 4),
     errorChange: error === null ? null : round(error, 4),
     absoluteError: error === null ? null : round(Math.abs(error), 4),
 
-    predictedDirection: finalPrediction === null ? "unknown" : direction(finalPrediction),
-    actualDirection: actual === null ? "unknown" : direction(actual),
+    predictedDirection:
+      finalPrediction === null ? "unknown" : direction(finalPrediction),
+    actualDirection:
+      actual === null ? "unknown" : direction(actual),
 
     directionHit:
       finalPrediction === null ||
@@ -123,47 +111,14 @@ function normalizeRow(row, currentPredictionChange = null) {
     residualWeight: row.residual_weight ?? null,
     sampleSize: row.sample_size ?? null,
 
-    isFinalWindowPrediction: isAfterFinalWindow(row),
-
     grade: completed ? getGrade(Math.abs(error)) : "Bekliyor",
     note: completed
-      ? `Sapma ${FINAL_LABEL} baz alınarak hesaplandı.`
+      ? "Sapma, gerçekleşen TEFAS değişimi ile önceki 18:00 nihai tahmin arasındaki farktır."
       : "Gerçekleşen TEFAS fiyatı bekleniyor.",
 
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null
   };
-}
-
-function sortRawRowsNewestFirst(a, b) {
-  const predictionDateCompare = String(b.prediction_date || "").localeCompare(
-    String(a.prediction_date || "")
-  );
-
-  if (predictionDateCompare !== 0) return predictionDateCompare;
-
-  const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
-  const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
-
-  return timeB - timeA;
-}
-
-function sortPreferFinalCompleted(a, b) {
-  const predictionDateCompare = String(b.prediction_date || "").localeCompare(
-    String(a.prediction_date || "")
-  );
-
-  if (predictionDateCompare !== 0) return predictionDateCompare;
-
-  const finalA = isAfterFinalWindow(a) ? 1 : 0;
-  const finalB = isAfterFinalWindow(b) ? 1 : 0;
-
-  if (finalB !== finalA) return finalB - finalA;
-
-  const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
-  const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
-
-  return timeB - timeA;
 }
 
 function getSupabaseConfig() {
@@ -209,11 +164,32 @@ async function supabaseRequest(path, options = {}) {
 }
 
 async function getPredictionHistory() {
-  const rows = await supabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&order=prediction_date.desc,created_at.desc&limit=1000"
-  );
+  const path =
+    "prediction_history" +
+    "?select=*" +
+    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&model=eq.v7_1_accuracy_layer" +
+    "&order=prediction_date.desc,created_at.desc" +
+    "&limit=500";
 
+  const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
+}
+
+function latestCompletedByFund(rawRows) {
+  const result = {};
+
+  for (const code of FUNDS) {
+    const completed = rawRows
+      .filter(row => row.fund_code === code)
+      .filter(row => row.actual_change !== null && row.actual_change !== undefined)
+      .filter(row => row.calibrated_change !== null && row.calibrated_change !== undefined)
+      .sort(sortNewest);
+
+    result[code] = completed[0] || null;
+  }
+
+  return result;
 }
 
 function latestPendingByFund(rawRows) {
@@ -223,7 +199,7 @@ function latestPendingByFund(rawRows) {
     const pending = rawRows
       .filter(row => row.fund_code === code)
       .filter(row => row.actual_change === null || row.actual_change === undefined)
-      .sort(sortRawRowsNewestFirst);
+      .sort(sortNewest);
 
     result[code] = pending[0] || null;
   }
@@ -231,37 +207,16 @@ function latestPendingByFund(rawRows) {
   return result;
 }
 
-function latestCompletedFinalByFund(rawRows) {
-  const result = {};
-
-  for (const code of FUNDS) {
-    const completed = rawRows
-      .filter(row => row.fund_code === code)
-      .filter(row => row.actual_change !== null && row.actual_change !== undefined)
-      .sort(sortPreferFinalCompleted);
-
-    result[code] = completed[0] || null;
-  }
-
-  return result;
-}
-
 function buildDisplayRows(rawRows) {
+  const completedMap = latestCompletedByFund(rawRows);
   const pendingMap = latestPendingByFund(rawRows);
-  const completedMap = latestCompletedFinalByFund(rawRows);
 
   return FUNDS.map(code => {
     const completed = completedMap[code];
     const pending = pendingMap[code];
-    const currentPrediction = pending ? getPredictedChange(pending) : null;
 
-    if (completed) {
-      return normalizeRow(completed, currentPrediction);
-    }
-
-    if (pending) {
-      return normalizeRow(pending, currentPrediction);
-    }
+    if (completed) return normalizeRow(completed);
+    if (pending) return normalizeRow(pending);
 
     return {
       fundCode: code,
@@ -271,7 +226,7 @@ function buildDisplayRows(rawRows) {
       predictedChange: null,
       finalPredictionChange: null,
       finalPredictionLabel: FINAL_LABEL,
-      currentPredictionChange: null,
+      finalPredictionSource: "prediction_history.calibrated_change",
       actualChange: null,
       errorChange: null,
       absoluteError: null,
@@ -282,34 +237,32 @@ function buildDisplayRows(rawRows) {
 }
 
 function buildHistories(rawRows) {
-  const pendingMap = latestPendingByFund(rawRows);
-
   const normalized = rawRows
-    .sort(sortRawRowsNewestFirst)
-    .map(row => {
-      const pending = pendingMap[row.fund_code];
-      const currentPrediction = pending ? getPredictedChange(pending) : null;
-      return normalizeRow(row, currentPrediction);
-    });
+    .sort(sortNewest)
+    .map(row => normalizeRow(row));
 
   return {
     normalized,
-    completedHistory: normalized.filter(row => row.status === "completed").slice(0, 50),
-    pendingHistory: normalized.filter(row => row.status === "pending").slice(0, 50)
+    completedHistory: normalized
+      .filter(row => row.status === "completed")
+      .slice(0, 50),
+    pendingHistory: normalized
+      .filter(row => row.status === "pending")
+      .slice(0, 50)
   };
 }
 
 function buildSummary(displayRows, allRows) {
-  const completedDisplayRows = displayRows.filter(row => row.status === "completed");
-  const pendingRows = allRows.filter(row => row.status === "pending");
   const completedRows = allRows.filter(row => row.status === "completed");
+  const pendingRows = allRows.filter(row => row.status === "pending");
 
   const completedWithError = completedRows.filter(row => row.absoluteError !== null);
   const directionRows = completedRows.filter(row => row.directionHit !== null);
 
   const averageAbsoluteError =
     completedWithError.length > 0
-      ? completedWithError.reduce((sum, row) => sum + row.absoluteError, 0) / completedWithError.length
+      ? completedWithError.reduce((sum, row) => sum + row.absoluteError, 0) /
+        completedWithError.length
       : null;
 
   const directionHitRate =
@@ -336,14 +289,17 @@ function buildSummary(displayRows, allRows) {
       averageAbsoluteError:
         completedErrors.length > 0
           ? round(
-              completedErrors.reduce((sum, row) => sum + row.absoluteError, 0) / completedErrors.length,
+              completedErrors.reduce((sum, row) => sum + row.absoluteError, 0) /
+                completedErrors.length,
               4
             )
           : null,
       directionHitRate:
         directionFundRows.length > 0
           ? round(
-              (directionFundRows.filter(row => row.directionHit).length / directionFundRows.length) * 100,
+              (directionFundRows.filter(row => row.directionHit).length /
+                directionFundRows.length) *
+                100,
               2
             )
           : null
@@ -355,51 +311,56 @@ function buildSummary(displayRows, allRows) {
     dashboardRows: displayRows.length,
     completedRows: completedRows.length,
     pendingRows: pendingRows.length,
-    completedDisplayRows: completedDisplayRows.length,
+    completedDisplayRows: displayRows.filter(row => row.status === "completed").length,
     averageAbsoluteError:
       averageAbsoluteError === null ? null : round(averageAbsoluteError, 4),
     directionHitRate:
       directionHitRate === null ? null : round(directionHitRate, 2),
     finalPredictionLabel: FINAL_LABEL,
+    finalPredictionSource: "prediction_history.calibrated_change",
     deviationFormula:
-      "Sapma = gerçekleşen TEFAS değişimi - 18:00 sonrası nihai tahmin",
+      "Sapma = gerçekleşen TEFAS değişimi - önceki 18:00 nihai tahmin",
     byFund
   };
 }
 
 module.exports = async function handler(req, res) {
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   try {
     const rawRows = await getPredictionHistory();
-    const filteredRows = rawRows.filter(row => FUNDS.includes(row.fund_code));
 
-    const displayRows = buildDisplayRows(filteredRows);
-    const histories = buildHistories(filteredRows);
+    const displayRows = buildDisplayRows(rawRows);
+    const histories = buildHistories(rawRows);
     const summary = buildSummary(displayRows, histories.normalized);
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
       version: API_VERSION,
       source: "supabase.prediction_history",
       model: ACTIVE_MODEL,
       logic:
-        "Performance v4: sapma, gerçekleşen TEFAS değişimi ile 18:00 sonrası nihai tahmin arasındaki fark olarak hesaplanır.",
+        "Performance v5: finalPredictionChange doğrudan prediction_history.calibrated_change alanından alınır. Sapma actual_change - calibrated_change olarak hesaplanır.",
       finalPredictionLabel: FINAL_LABEL,
+      finalPredictionSource: "prediction_history.calibrated_change",
       rows: displayRows,
       summary,
       byFund: summary.byFund,
       completedHistory: histories.completedHistory,
       pendingHistory: histories.pendingHistory,
       note:
-        "finalPredictionChange alanı performans sapmasının baz aldığı 18:00 sonrası nihai tahmini gösterir."
+        "Bu API sadece v7_1_accuracy_layer model kayıtlarını kullanır. Önceki 18:00 nihai tahmin alanı calibrated_change değeridir."
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       version: API_VERSION,
+      model: ACTIVE_MODEL,
       error: String(err.message || err)
     });
   }
