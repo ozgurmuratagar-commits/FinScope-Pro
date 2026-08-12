@@ -1,6 +1,11 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_NAME = "FinScope Prediction Engine v7.1 - Accuracy Layer";
+const MODEL_NAME = "FinScope Prediction Engine v7.2 - Safe Current Prediction";
+
+/*
+  Model key'i şimdilik v7_1_accuracy_layer olarak koruyoruz.
+  Çünkü performance.js ve predictions.js bu model key üzerinden okuyor.
+*/
 const MODEL_KEY = "v7_1_accuracy_layer";
 
 const STOCK_SYMBOL_MAP = {
@@ -26,7 +31,8 @@ function num(value, fallback = null) {
 }
 
 function round(value, digits = 4) {
-  const n = num(value, 0);
+  const n = num(value, null);
+  if (n === null) return null;
   return Number(n.toFixed(digits));
 }
 
@@ -42,17 +48,6 @@ function todayTR() {
   return formatter.format(now);
 }
 
-function nowHourTR() {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat("tr-TR", {
-    timeZone: "Europe/Istanbul",
-    hour: "2-digit",
-    hour12: false
-  });
-
-  return Number(formatter.format(now));
-}
-
 function nextBusinessDay(dateText) {
   const d = new Date(dateText + "T12:00:00Z");
 
@@ -63,16 +58,36 @@ function nextBusinessDay(dateText) {
   return d.toISOString().slice(0, 10);
 }
 
+function isWeekend(dateText) {
+  const d = new Date(dateText + "T12:00:00Z");
+  const day = d.getUTCDay();
+  return day === 0 || day === 6;
+}
+
 function choosePredictionDate(latestFundDate) {
   const trToday = todayTR();
-  const hour = nowHourTR();
 
-  if (latestFundDate && latestFundDate >= trToday && hour >= 18) {
+  /*
+    Kritik düzeltme:
+    Eğer TEFAS fiyat tarihi bugün veya bugünden ileriyse,
+    bugünün performansı artık kapanmış sayılır.
+    Yeni tahmin aynı güne yazılmamalı; bir sonraki iş gününe yazılmalı.
+  */
+  if (latestFundDate && latestFundDate >= trToday) {
     return nextBusinessDay(latestFundDate);
   }
 
-  if (latestFundDate && latestFundDate > trToday) {
-    return latestFundDate;
+  /*
+    Eğer son TEFAS tarihi bugünden eskiyse:
+    - Bugün iş günüyse bugünkü açıklanacak TEFAS için tahmin üret.
+    - Bugün hafta sonuysa son TEFAS tarihinden sonraki iş gününü hedefle.
+  */
+  if (latestFundDate && latestFundDate < trToday) {
+    if (isWeekend(trToday)) {
+      return nextBusinessDay(latestFundDate);
+    }
+
+    return trToday;
   }
 
   return trToday;
@@ -393,7 +408,7 @@ function getAccuracyLayerForFund(code, calibrationRows) {
       offset: 0,
       dampingFactor: 1,
       confidencePenalty: 0,
-      note: "Geçmiş gerçekleşen veri yok; v7.1 düzeltmesi uygulanmadı."
+      note: "Geçmiş gerçekleşen veri yok; v7.2 düzeltmesi uygulanmadı."
     };
   }
 
@@ -453,7 +468,7 @@ function getAccuracyLayerForFund(code, calibrationRows) {
     offset: round(offset, 4),
     dampingFactor: round(dampingFactor, 4),
     confidencePenalty: round(confidencePenalty, 2),
-    note: "v7.1 fon bazlı geçmiş sapma, yakın dönem hata ve yön isabetiyle tahmini kalibre etti."
+    note: "v7.2 fon bazlı geçmiş sapma, yakın dönem hata ve yön isabetiyle tahmini kalibre etti."
   };
 }
 
@@ -514,7 +529,6 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
   const afterDamping = afterErrorOffset * accuracyLayer.dampingFactor;
 
   const calibratedChange = clamp(afterDamping, -2.15, 2.15);
-
   const coverage = clamp(totalWeight, 0, 100);
 
   const baseConfidence =
@@ -527,7 +541,7 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
   const confidence = clamp(baseConfidence - accuracyLayer.confidencePenalty, 60, 96);
 
   return {
-    status: "v7_1_accuracy_layer",
+    status: "v7_2_safe_current_prediction",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(unsmoothedChange, 4),
@@ -551,9 +565,55 @@ function buildPredictionForFund(code, holdings, marketChanges, latestFundPrice, 
     accuracyLayer,
     observations: details.length,
     methodology:
-      "v7.1: v7 Accuracy Layer modelini korur; ek olarak bekleyen tahminlerin TEFAS gerçekleşen verisiyle kapanış mantığını güçlendirir.",
+      "v7.2: kapanmış performans kayıtlarını ezmeden, en son TEFAS fiyatından sonraki iş günü için bekleyen güncel tahmin üretir.",
     details
   };
+}
+
+function buildPayload(code, predictionDate, prediction) {
+  return {
+    fund_code: code,
+    prediction_date: predictionDate,
+    model: MODEL_KEY,
+    model_version: MODEL_NAME,
+    raw_predicted_change: prediction.rawPredictedChange,
+    calibrated_change: prediction.predictedChange,
+    calibration_offset: prediction.calibrationOffset,
+    confidence: prediction.confidence,
+    coverage: prediction.coverage,
+    residual_weight: prediction.residualWeight,
+    sample_size: prediction.calibration ? prediction.calibration.sampleSize : 0,
+    updated_at: new Date().toISOString()
+  };
+}
+
+async function getExistingPendingPrediction(code, predictionDate) {
+  return await supabaseRequest(
+    `prediction_history?select=id&fund_code=eq.${encodeURIComponent(code)}&prediction_date=eq.${encodeURIComponent(predictionDate)}&model=eq.${encodeURIComponent(MODEL_KEY)}&actual_change=is.null&limit=1`
+  );
+}
+
+async function insertPrediction(payload) {
+  return await supabaseRequest("prediction_history", {
+    method: "POST",
+    body: [
+      {
+        ...payload,
+        actual_change: null,
+        error_change: null
+      }
+    ]
+  });
+}
+
+async function patchPrediction(id, payload) {
+  return await supabaseRequest(
+    `prediction_history?id=eq.${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      body: payload
+    }
+  );
 }
 
 async function savePredictionHistory(predictionDate, predictions) {
@@ -563,57 +623,77 @@ async function savePredictionHistory(predictionDate, predictions) {
     const p = predictions[code];
     if (!p) continue;
 
-    const payload = {
-      fund_code: code,
-      prediction_date: predictionDate,
-      model: MODEL_KEY,
-      model_version: MODEL_NAME,
-      raw_predicted_change: p.rawPredictedChange,
-      calibrated_change: p.predictedChange,
-      calibration_offset: p.calibrationOffset,
-      confidence: p.confidence,
-      coverage: p.coverage,
-      residual_weight: p.residualWeight,
-      sample_size: p.calibration ? p.calibration.sampleSize : 0,
-      updated_at: new Date().toISOString()
-    };
+    let targetDate = predictionDate;
+    let payload = buildPayload(code, targetDate, p);
 
-    const existing = await supabaseRequest(
-      `prediction_history?select=id&fund_code=eq.${encodeURIComponent(code)}&prediction_date=eq.${encodeURIComponent(predictionDate)}&model=eq.${encodeURIComponent(MODEL_KEY)}&limit=1`
-    );
+    const existingPending = await getExistingPendingPrediction(code, targetDate);
 
-    if (existing && existing.length > 0) {
-      const patched = await supabaseRequest(
-        `prediction_history?id=eq.${encodeURIComponent(existing[0].id)}`,
-        {
-          method: "PATCH",
-          body: payload
-        }
-      );
+    if (existingPending && existingPending.length > 0) {
+      const patched = await patchPrediction(existingPending[0].id, payload);
 
       saved.push({
         fundCode: code,
-        action: "updated",
-        id: existing[0].id,
+        action: "updated_pending",
+        predictionDate: targetDate,
+        id: existingPending[0].id,
         rows: patched
       });
-    } else {
-      const inserted = await supabaseRequest("prediction_history", {
-        method: "POST",
-        body: [
-          {
-            ...payload,
-            actual_change: null,
-            error_change: null
-          }
-        ]
-      });
+
+      continue;
+    }
+
+    try {
+      const inserted = await insertPrediction(payload);
 
       saved.push({
         fundCode: code,
-        action: "inserted",
+        action: "inserted_pending",
+        predictionDate: targetDate,
         rows: inserted
       });
+    } catch (err) {
+      const message = String(err.message || err);
+
+      /*
+        Güvenlik:
+        Eğer aynı gün için kapalı/unique kayıt varsa asla onu ezme.
+        Bir sonraki iş gününe fallback yap.
+      */
+      if (
+        message.includes("duplicate") ||
+        message.includes("23505") ||
+        message.includes("409")
+      ) {
+        targetDate = nextBusinessDay(targetDate);
+        payload = buildPayload(code, targetDate, p);
+
+        const fallbackExisting = await getExistingPendingPrediction(code, targetDate);
+
+        if (fallbackExisting && fallbackExisting.length > 0) {
+          const patched = await patchPrediction(fallbackExisting[0].id, payload);
+
+          saved.push({
+            fundCode: code,
+            action: "updated_pending_fallback_next_business_day",
+            predictionDate: targetDate,
+            id: fallbackExisting[0].id,
+            rows: patched
+          });
+        } else {
+          const insertedFallback = await insertPrediction(payload);
+
+          saved.push({
+            fundCode: code,
+            action: "inserted_pending_fallback_next_business_day",
+            predictionDate: targetDate,
+            rows: insertedFallback
+          });
+        }
+
+        continue;
+      }
+
+      throw err;
     }
   }
 
@@ -680,13 +760,6 @@ async function updatePendingActuals(latestFundPrices) {
       });
       continue;
     }
-
-    /*
-      Güçlendirilmiş kapanış mantığı:
-      1. TEFAS fiyat tarihi tahmin tarihinden büyükse tahmin kapanır.
-      2. TEFAS fiyat tarihi tahmin tarihiyle aynıysa, sadece fiyat kaydı tahminden sonra güncellendiyse kapanır.
-      3. Böylece yeni açılmış bugünkü tahmin, aynı günün eski fiyatıyla yanlışlıkla kapanmaz.
-    */
 
     const latestIsAfterPredictionDate = latestDate > predictionDate;
 
@@ -800,19 +873,16 @@ module.exports = async function handler(req, res) {
       };
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
       generatedAt: new Date().toISOString(),
       model: MODEL_NAME,
       modelKey: MODEL_KEY,
-      horizon: "next published daily fund return",
-      marketSource: "Yahoo Finance delayed market data + BIST proxy fallback",
-      holdingsSource: "supabase.fund_holdings",
-      calibrationSource: "supabase.prediction_history",
-      closeLogic: "v7.1 strengthened pending actual close logic",
+      closeLogic: "v7.2 safe current prediction; closed performance rows are never overwritten",
+      latestFundDate,
+      predictionDate,
       actualUpdate,
       latestByFund,
-      predictionDate,
       savedToday: savedRows.length,
       saveActions: savedRows,
       funds: FUNDS,
@@ -821,7 +891,7 @@ module.exports = async function handler(req, res) {
         "Bu tahminler model bazlıdır, kesinlik içermez ve yatırım tavsiyesi değildir."
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: String(err.message || err),
       model: MODEL_NAME,
