@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FinScope Professional v7.0</title>
+  <title>FinScope Professional v7.1</title>
 
   <style>
     :root {
@@ -318,7 +318,7 @@
   <div class="app">
     <aside>
       <div class="brand">FinScope</div>
-      <div class="version">Professional v7.0 • Prediction Engine v7</div>
+      <div class="version">Professional v7.1 • Prediction Engine v7.1</div>
       <div class="side-note">
         TEFAS fon fiyatları<br />
         Supabase Data Vault<br />
@@ -327,7 +327,7 @@
         Accuracy Layer<br />
         Actual error learning<br />
         Performance tracking<br />
-        UI Sync Fix v7.0
+        UI Final Prediction Sync v7.1
       </div>
 
       <nav>
@@ -344,14 +344,14 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Sync Fix v7.0 aktif.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Final Prediction Sync v7.1 aktif.
           </div>
           <div class="chips">
-            <span class="chip">v7.0 Dashboard</span>
-            <span class="chip">Prediction Engine v7</span>
+            <span class="chip">v7.1 Dashboard</span>
+            <span class="chip">Prediction Engine v7.1</span>
             <span class="chip">Accuracy Layer</span>
-            <span class="chip">Performance API v2</span>
-            <span class="chip">UI Sync Fix v7.0</span>
+            <span class="chip">Performance API v4</span>
+            <span class="chip">UI Final Prediction Sync v7.1</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -371,7 +371,7 @@
           <div class="section-title">AI Analist</div>
           <div id="aiAnalyst" class="loading">Tahmin motoru yükleniyor...</div>
           <div class="chips" style="margin-top: 14px;">
-            <span class="chip">v7 Accuracy Layer</span>
+            <span class="chip">v7.1 Accuracy Layer</span>
             <span class="chip">TEFAS Smoothing</span>
             <span class="chip">Sapma Öğrenimi</span>
             <span class="chip">18:00 Beklenti</span>
@@ -501,7 +501,7 @@
     function getModelLabel(predictJson) {
       return predictJson && predictJson.model
         ? predictJson.model
-        : "FinScope Prediction Engine v7 - Accuracy Layer";
+        : "FinScope Prediction Engine v7.1 - Accuracy Layer";
     }
 
     function renderMarketCards(marketJson, fundsJson, predictJson) {
@@ -594,7 +594,7 @@
         lines.push(`
           <div class="summary-line">
             <b>${escapeHtml(code)}</b>:
-            <span class="${cls}">${directionIcon(pred)} v7 Tahmin ${formatPercent(pred, 2)}</span>
+            <span class="${cls}">${directionIcon(pred)} v7.1 Tahmin ${formatPercent(pred, 2)}</span>
             <br />
             Yumuşatılmamış: ${formatPercent(unsmoothed, 2)}
             • TEFAS yumuşatma sonrası: ${formatPercent(raw, 2)}
@@ -705,13 +705,37 @@
 
         const status = perf.status || "pending";
 
-        const predicted =
-          status === "completed" && perf.predictedChange !== null && perf.predictedChange !== undefined
-            ? perf.predictedChange
+        /*
+          Güncel Tahmin:
+          - Önce Performance API v4'ün currentPredictionChange alanı kullanılır.
+          - Yoksa canlı /api/predict çıktısı kullanılır.
+          Bu değer bir sonraki TEFAS beklentisini temsil eder.
+        */
+        const currentPrediction =
+          perf.currentPredictionChange !== null && perf.currentPredictionChange !== undefined
+            ? perf.currentPredictionChange
             : livePrediction.predictedChange;
 
+        /*
+          Önceki 18:00 Nihai Tahmin:
+          - Sapmanın baz aldığı tahmindir.
+          - Performance API v4'te finalPredictionChange olarak gelir.
+          - Eski kayıtlarla uyum için predictedChange fallback olarak korunur.
+        */
+        const finalPrediction =
+          perf.finalPredictionChange !== null && perf.finalPredictionChange !== undefined
+            ? perf.finalPredictionChange
+            : perf.predictedChange;
+
         const actual = perf.actualChange;
-        const error = perf.errorChange;
+
+        const error =
+          perf.errorChange !== null && perf.errorChange !== undefined
+            ? perf.errorChange
+            : actual !== null && actual !== undefined && finalPrediction !== null && finalPrediction !== undefined
+              ? actual - finalPrediction
+              : null;
+
         const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
         const statusClass = status === "completed" ? "status-completed" : "";
 
@@ -719,8 +743,9 @@
           <tr>
             <td><b>${escapeHtml(code)}</b></td>
             <td>${escapeHtml(perf.predictionDate || performanceJson.predictionDate || "—")}</td>
-            <td class="${directionClass(predicted)}">${formatPercent(predicted, 2)}</td>
+            <td class="${directionClass(currentPrediction)}">${formatPercent(currentPrediction, 2)}</td>
             <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
+            <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
             <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
             <td>${escapeHtml(perf.grade || "Bekliyor")}</td>
             <td><span class="status-pill ${statusClass}">${statusText}</span></td>
@@ -741,6 +766,10 @@
         summary.directionHitRate === null || summary.directionHitRate === undefined
           ? "Bekliyor"
           : formatPercent(summary.directionHitRate, 2);
+
+      const deviationFormula =
+        summary.deviationFormula ||
+        "Sapma = gerçekleşen TEFAS değişimi - 18:00 sonrası nihai tahmin";
 
       box.innerHTML = `
         <div class="performance-grid">
@@ -764,7 +793,9 @@
 
         <div class="summary-line">
           Yön isabet oranı: <b>${directionRate}</b>.
-          Bekleyen satırlarda tahmin değeri doğrudan canlı Prediction Engine v7 çıktısından gösterilir. Tamamlanan satırlarda kayıtlı performans tahmini kullanılır.
+          Güncel tahmin sütunu canlı Prediction Engine v7.1 çıktısını gösterir.
+          <b>Önceki 18:00 Nihai Tahmin</b> sütunu ise sapmanın baz aldığı kapanmış tahmindir.
+          ${escapeHtml(deviationFormula)}.
         </div>
 
         <table class="perf-table">
@@ -772,8 +803,9 @@
             <tr>
               <th>Fon</th>
               <th>Tahmin Tarihi</th>
-              <th>Tahmin</th>
+              <th>Güncel Tahmin</th>
               <th>Gerçekleşen</th>
+              <th>Önceki 18:00 Nihai Tahmin</th>
               <th>Sapma</th>
               <th>Not</th>
               <th>Durum</th>
