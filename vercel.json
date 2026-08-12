@@ -18,6 +18,10 @@
       "use": "@vercel/node"
     },
     {
+      "src": "api/cron-sync-funds.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "api/predict.js",
       "use": "@vercel/node"
     },
@@ -60,6 +64,10 @@
       "dest": "/api/sync-funds.js"
     },
     {
+      "src": "/api/cron-sync-funds",
+      "dest": "/api/cron-sync-funds.js"
+    },
+    {
       "src": "/api/predict",
       "dest": "/api/predict.js"
     },
@@ -86,7 +94,7 @@
   ],
   "crons": [
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "0 6 * * 1-5"
     },
     {
@@ -94,7 +102,7 @@
       "schedule": "10 6 * * 1-5"
     },
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "30 6 * * 1-5"
     },
     {
@@ -102,7 +110,7 @@
       "schedule": "40 6 * * 1-5"
     },
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "0 7 * * 1-5"
     },
     {
@@ -110,7 +118,7 @@
       "schedule": "10 7 * * 1-5"
     },
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "0 10 * * 1-5"
     },
     {
@@ -118,7 +126,7 @@
       "schedule": "10 10 * * 1-5"
     },
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "0 12 * * 1-5"
     },
     {
@@ -126,7 +134,7 @@
       "schedule": "10 12 * * 1-5"
     },
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "0 14 * * 1-5"
     },
     {
@@ -134,7 +142,7 @@
       "schedule": "10 14 * * 1-5"
     },
     {
-      "path": "/api/sync-funds",
+      "path": "/api/cron-sync-funds",
       "schedule": "0 15 * * 1-5"
     },
     {
