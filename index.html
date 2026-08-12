@@ -327,7 +327,7 @@
         Accuracy Layer<br />
         Actual error learning<br />
         Performance tracking<br />
-        UI Final Prediction Sync v7.2
+        UI Final Prediction Sync v7.3
       </div>
 
       <nav>
@@ -344,14 +344,14 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Final Prediction Sync v7.2 aktif.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Final Prediction Sync v7.3 aktif.
           </div>
           <div class="chips">
             <span class="chip">v7.1 Dashboard</span>
             <span class="chip">Prediction Engine v7.1</span>
             <span class="chip">Accuracy Layer</span>
-            <span class="chip">Performance API v4</span>
-            <span class="chip">UI Final Prediction Sync v7.2</span>
+            <span class="chip">Performance API v6</span>
+            <span class="chip">UI Final Prediction Sync v7.3</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -672,22 +672,68 @@
       `;
     }
 
+    function performanceGrade(errorAbs) {
+      const e = Math.abs(num(errorAbs, 0));
+      if (e <= 0.25) return "Çok iyi";
+      if (e <= 0.50) return "İyi";
+      if (e <= 0.85) return "Makul";
+      if (e <= 1.25) return "Zayıf";
+      return "Çok zayıf";
+    }
+
     function getLatestPerformanceRows(performanceJson) {
       const rows = performanceJson && Array.isArray(performanceJson.rows)
         ? performanceJson.rows
         : [];
 
+      const byFund = performanceJson && performanceJson.byFund
+        ? performanceJson.byFund
+        : {};
+
       const out = {};
+
       FUND_ORDER.forEach(function(code) {
-        out[code] = rows.find(function(row) {
-          return row.fundCode === code;
-        }) || null;
+        /*
+          UI Final Prediction Sync v7.3:
+          Performans tablosu canlı tahmin/predictJson değerini kullanmaz.
+          Önceki 18:00 Nihai Tahmin sadece Performance API'den gelen
+          rows[].finalPredictionChange veya latestDisplayRow.finalPredictionChange değeridir.
+        */
+        const directRow = rows.find(function(row) {
+          return row && row.fundCode === code;
+        });
+
+        const displayRow =
+          byFund[code] && byFund[code].latestDisplayRow
+            ? byFund[code].latestDisplayRow
+            : null;
+
+        out[code] = directRow || displayRow || null;
       });
 
       return out;
     }
 
-    function renderPerformance(performanceJson, predictJson) {
+    function resolveFinalPrediction(perf) {
+      if (!perf) return null;
+
+      if (perf.finalPredictionChange !== null && perf.finalPredictionChange !== undefined) {
+        return num(perf.finalPredictionChange, null);
+      }
+
+      if (perf.calibratedChange !== null && perf.calibratedChange !== undefined) {
+        return num(perf.calibratedChange, null);
+      }
+
+      /*
+        Özellikle predictedChange fallback kullanılmıyor.
+        Çünkü bazı eski UI sürümlerinde predictedChange canlı tahminle karıştı
+        ve performans tablosunda yanlış "önceki nihai tahmin" gösterdi.
+      */
+      return null;
+    }
+
+    function renderPerformance(performanceJson) {
       const box = document.getElementById("performanceBox");
 
       if (!performanceJson || !performanceJson.ok) {
@@ -702,28 +748,18 @@
         const perf = latestRows[code] || {};
         const status = perf.status || "pending";
 
-        /*
-          Önceki 18:00 Nihai Tahmin:
-          Sapmanın baz aldığı kapanmış tahmindir.
-          Performance API v4'te finalPredictionChange olarak gelir.
-          Eski kayıt uyumu için predictedChange fallback olarak tutulur.
-        */
-        const finalPrediction =
-          perf.finalPredictionChange !== null && perf.finalPredictionChange !== undefined
-            ? perf.finalPredictionChange
-            : perf.predictedChange;
-
+        const finalPrediction = resolveFinalPrediction(perf);
         const actual = perf.actualChange;
 
         const error =
-          perf.errorChange !== null && perf.errorChange !== undefined
-            ? perf.errorChange
-            : actual !== null && actual !== undefined && finalPrediction !== null && finalPrediction !== undefined
-              ? actual - finalPrediction
-              : null;
+          actual !== null && actual !== undefined &&
+          finalPrediction !== null && finalPrediction !== undefined
+            ? actual - finalPrediction
+            : null;
 
         const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
         const statusClass = status === "completed" ? "status-completed" : "";
+        const grade = error === null || error === undefined ? "Bekliyor" : performanceGrade(error);
 
         return `
           <tr>
@@ -732,7 +768,7 @@
             <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
             <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
             <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
-            <td>${escapeHtml(perf.grade || "Bekliyor")}</td>
+            <td>${escapeHtml(grade)}</td>
             <td><span class="status-pill ${statusClass}">${statusText}</span></td>
           </tr>
         `;
@@ -742,10 +778,30 @@
       const pendingRows = summary.pendingRows ?? 0;
       const completedRows = summary.completedRows ?? 0;
 
+      const displayErrors = FUND_ORDER.map(function(code) {
+        const perf = latestRows[code] || {};
+        const finalPrediction = resolveFinalPrediction(perf);
+        const actual = perf.actualChange;
+        if (
+          actual === null || actual === undefined ||
+          finalPrediction === null || finalPrediction === undefined
+        ) {
+          return null;
+        }
+        return Math.abs(actual - finalPrediction);
+      }).filter(function(value) {
+        return value !== null && value !== undefined;
+      });
+
+      const avgDisplayError =
+        displayErrors.length > 0
+          ? displayErrors.reduce(function(sum, value) { return sum + value; }, 0) / displayErrors.length
+          : null;
+
       const avgError =
-        summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
+        avgDisplayError === null || avgDisplayError === undefined
           ? "Bekliyor"
-          : formatPercent(summary.averageAbsoluteError, 2);
+          : formatPercent(avgDisplayError, 2);
 
       const directionRate =
         summary.directionHitRate === null || summary.directionHitRate === undefined
@@ -754,7 +810,9 @@
 
       const deviationFormula =
         summary.deviationFormula ||
-        "Sapma = gerçekleşen TEFAS değişimi - 18:00 sonrası nihai tahmin";
+        "Sapma = gerçekleşen TEFAS değişimi - önceki 18:00 nihai tahmin";
+
+      const apiVersion = performanceJson.version || "Performance API";
 
       box.innerHTML = `
         <div class="performance-grid">
@@ -779,7 +837,7 @@
         <div class="summary-line">
           Yön isabet oranı: <b>${directionRate}</b>.
           Bu tablo kapanmış performans kayıtlarını gösterir; güncel canlı tahmin Tahmin Özeti bölümünde izlenir.
-          <b>Önceki 18:00 Nihai Tahmin</b>, sapmanın baz aldığı kapanmış tahmindir.
+          <b>Önceki 18:00 Nihai Tahmin</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange/calibratedChange alanından okunur.
           ${escapeHtml(deviationFormula)}.
         </div>
 
@@ -837,7 +895,7 @@
         renderMarketCards(marketJson, fundsJson, predictJson);
         renderPredictionSummary(predictJson);
         renderAiAnalyst(predictJson);
-        renderPerformance(performanceJson, predictJson);
+        renderPerformance(performanceJson);
 
         const now = new Date();
         lastUpdate.textContent = "Son güncelleme: " + now.toLocaleString("tr-TR");
