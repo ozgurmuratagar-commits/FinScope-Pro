@@ -1,6 +1,6 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const API_VERSION = "FinScope Read-Only Predictions API v1";
+const API_VERSION = "FinScope Read-Only Predictions API v2";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
 const ACTIVE_MODEL_NAME = "FinScope Prediction Engine v7.1 - Accuracy Layer";
 
@@ -27,6 +27,7 @@ function confidenceText(value) {
   const n = num(value, null);
 
   if (n === null) return "—";
+  if (n >= 90) return "Çok yüksek";
   if (n >= 80) return "Yüksek";
   if (n >= 60) return "Orta";
   if (n >= 40) return "Düşük";
@@ -50,11 +51,11 @@ function getPredictionValue(row) {
   const calibrated = num(row.calibrated_change, null);
   if (calibrated !== null) return calibrated;
 
-  const raw = num(row.raw_predicted_change, null);
-  if (raw !== null) return raw;
-
   const predicted = num(row.predicted_change, null);
   if (predicted !== null) return predicted;
+
+  const raw = num(row.raw_predicted_change, null);
+  if (raw !== null) return raw;
 
   return null;
 }
@@ -82,6 +83,9 @@ function normalizePrediction(row) {
     model: ACTIVE_MODEL_NAME,
     modelKey: ACTIVE_MODEL,
 
+    status: "pending_prediction",
+    readOnly: true,
+
     predictedChange: round(predictedChange, 4),
     rawPredictedChange: round(rawPredictedChange, 4),
     unsmoothedChange: round(rawPredictedChange, 4),
@@ -95,28 +99,75 @@ function normalizePrediction(row) {
     confidence: round(confidence, 2),
     confidenceText: confidenceText(confidence),
 
-    actualChange: round(row.actual_change, 4),
-    errorChange: round(row.error_change, 4),
+    actualChange: null,
+    errorChange: null,
 
     residualWeight: round(row.residual_weight, 4),
     sampleSize: row.sample_size ?? null,
 
-    source: "prediction_history.read_only",
-    readOnly: true,
+    source: "prediction_history.pending_only",
+    selectionRule: "actual_change IS NULL only",
 
     accuracyLayer: {
-      status: "read_only_history",
+      status: "read_only_pending_prediction",
       source: "prediction_history",
       modelKey: ACTIVE_MODEL
     },
 
     calibration: {
-      status: "read_only_history",
+      status: "read_only_pending_prediction",
       source: "prediction_history.calibrated_change"
     },
 
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null
+  };
+}
+
+function emptyPrediction(code) {
+  return {
+    fundCode: code,
+    model: ACTIVE_MODEL_NAME,
+    modelKey: ACTIVE_MODEL,
+
+    status: "no_pending_prediction",
+    readOnly: true,
+
+    predictedChange: null,
+    rawPredictedChange: null,
+    unsmoothedChange: null,
+
+    smoothingImpact: 0,
+    calibrationOffset: 0,
+    accuracyDamping: 1,
+
+    direction: "flat",
+    coverage: null,
+    confidence: null,
+    confidenceText: "—",
+
+    actualChange: null,
+    errorChange: null,
+
+    residualWeight: null,
+    sampleSize: null,
+
+    source: "prediction_history.pending_only",
+    selectionRule: "actual_change IS NULL only",
+
+    accuracyLayer: {
+      status: "no_pending_prediction",
+      source: "prediction_history",
+      modelKey: ACTIVE_MODEL
+    },
+
+    calibration: {
+      status: "no_pending_prediction",
+      source: "prediction_history.calibrated_change"
+    },
+
+    note:
+      "Bu fon için bekleyen güncel tahmin bulunamadı. Completed performans kayıtları güncel tahmin olarak kullanılmaz."
   };
 }
 
@@ -162,73 +213,49 @@ async function supabaseRequest(path, options = {}) {
   return JSON.parse(text);
 }
 
-async function getPredictionHistory() {
+async function getPendingPredictionHistory() {
   const path =
     "prediction_history" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY)" +
     "&model=eq.v7_1_accuracy_layer" +
+    "&actual_change=is.null" +
     "&order=prediction_date.desc,created_at.desc" +
-    "&limit=500";
+    "&limit=200";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-function pickLatestPredictionForFund(rows, code) {
+function pickLatestPendingPredictionForFund(rows, code) {
   const fundRows = rows
     .filter(row => row.fund_code === code)
+    .filter(row => row.actual_change === null || row.actual_change === undefined)
     .sort(sortNewest);
 
-  if (fundRows.length === 0) return null;
-
-  /*
-    Öncelik:
-    1. Henüz gerçekleşmesi beklenen, yani actual_change boş olan son tahmin.
-    2. Eğer pending kayıt yoksa, en son kayıt.
-  */
-  const pendingRows = fundRows.filter(row => {
-    return row.actual_change === null || row.actual_change === undefined;
-  });
-
-  if (pendingRows.length > 0) {
-    return pendingRows[0];
-  }
-
-  return fundRows[0];
+  return fundRows[0] || null;
 }
 
 function buildPredictions(rows) {
   const predictions = {};
+  const missingFunds = [];
 
   for (const code of FUNDS) {
-    const row = pickLatestPredictionForFund(rows, code);
+    const row = pickLatestPendingPredictionForFund(rows, code);
 
     if (!row) {
-      predictions[code] = {
-        fundCode: code,
-        model: ACTIVE_MODEL_NAME,
-        modelKey: ACTIVE_MODEL,
-        predictedChange: null,
-        rawPredictedChange: null,
-        unsmoothedChange: null,
-        smoothingImpact: 0,
-        calibrationOffset: 0,
-        accuracyDamping: 1,
-        coverage: null,
-        confidence: null,
-        confidenceText: "—",
-        source: "prediction_history.read_only",
-        readOnly: true,
-        status: "missing"
-      };
+      predictions[code] = emptyPrediction(code);
+      missingFunds.push(code);
       continue;
     }
 
     predictions[code] = normalizePrediction(row);
   }
 
-  return predictions;
+  return {
+    predictions,
+    missingFunds
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -239,22 +266,25 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   try {
-    const rows = await getPredictionHistory();
-    const predictions = buildPredictions(rows);
+    const rows = await getPendingPredictionHistory();
+    const built = buildPredictions(rows);
 
     return res.status(200).json({
       ok: true,
       readOnly: true,
       generatedAt: new Date().toISOString(),
       version: API_VERSION,
-      source: "supabase.prediction_history.read_only",
+      source: "supabase.prediction_history.pending_only",
       model: ACTIVE_MODEL_NAME,
       modelKey: ACTIVE_MODEL,
+      selectionRule: "Only rows where actual_change IS NULL are used as current predictions.",
       funds: FUNDS,
-      predictions,
+      predictions: built.predictions,
+      pendingCount: rows.length,
+      missingFunds: built.missingFunds,
       rowCount: rows.length,
       note:
-        "Bu endpoint tahmin üretmez. Sadece prediction_history tablosundaki son kayıtlı tahminleri dashboard için okur."
+        "Bu endpoint tahmin üretmez. Completed performans kayıtlarını güncel tahmin olarak kullanmaz."
     });
   } catch (err) {
     return res.status(500).json({
