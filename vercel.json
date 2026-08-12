@@ -87,35 +87,59 @@
   "crons": [
     {
       "path": "/api/sync-funds",
-      "schedule": "30 7 * * 1-5"
+      "schedule": "0 6 * * 1-5"
     },
     {
       "path": "/api/predict",
-      "schedule": "40 7 * * 1-5"
+      "schedule": "10 6 * * 1-5"
     },
     {
       "path": "/api/sync-funds",
-      "schedule": "30 10 * * 1-5"
+      "schedule": "30 6 * * 1-5"
     },
     {
       "path": "/api/predict",
-      "schedule": "40 10 * * 1-5"
+      "schedule": "40 6 * * 1-5"
     },
     {
       "path": "/api/sync-funds",
-      "schedule": "30 13 * * 1-5"
+      "schedule": "0 7 * * 1-5"
     },
     {
       "path": "/api/predict",
-      "schedule": "40 13 * * 1-5"
+      "schedule": "10 7 * * 1-5"
     },
     {
       "path": "/api/sync-funds",
-      "schedule": "30 15 * * 1-5"
+      "schedule": "0 10 * * 1-5"
     },
     {
       "path": "/api/predict",
-      "schedule": "40 15 * * 1-5"
+      "schedule": "10 10 * * 1-5"
+    },
+    {
+      "path": "/api/sync-funds",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "10 12 * * 1-5"
+    },
+    {
+      "path": "/api/sync-funds",
+      "schedule": "0 14 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "10 14 * * 1-5"
+    },
+    {
+      "path": "/api/sync-funds",
+      "schedule": "0 15 * * 1-5"
+    },
+    {
+      "path": "/api/predict",
+      "schedule": "10 15 * * 1-5"
     }
   ]
 }
