@@ -1,6 +1,6 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const API_VERSION = "FinScope Performance API v6";
+const API_VERSION = "FinScope Performance API v7";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
 const FINAL_LABEL = "Önceki 18:00 Nihai Tahmin";
 
@@ -39,8 +39,12 @@ function getGrade(errorAbs) {
 
 function parseYmd(value) {
   if (!value || typeof value !== "string") return null;
+
   const parts = value.slice(0, 10).split("-").map(Number);
-  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return null;
+
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) {
+    return null;
+  }
 
   return {
     year: parts[0],
@@ -53,6 +57,7 @@ function toYmdString(date) {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, "0");
   const d = String(date.getUTCDate()).padStart(2, "0");
+
   return `${y}-${m}-${d}`;
 }
 
@@ -74,11 +79,25 @@ function turkeyPartsFromIso(isoValue) {
 
   const turkey = new Date(d.getTime() + 3 * 60 * 60 * 1000);
 
+  const hour = turkey.getUTCHours();
+  const minute = turkey.getUTCMinutes();
+  const second = turkey.getUTCSeconds();
+
   return {
     ymd: toYmdString(turkey),
-    hour: turkey.getUTCHours(),
-    minute: turkey.getUTCMinutes(),
-    decimalHour: turkey.getUTCHours() + turkey.getUTCMinutes() / 60
+    hour,
+    minute,
+    second,
+    decimalHour: hour + minute / 60 + second / 3600,
+    display:
+      toYmdString(turkey) +
+      " " +
+      String(hour).padStart(2, "0") +
+      ":" +
+      String(minute).padStart(2, "0") +
+      ":" +
+      String(second).padStart(2, "0") +
+      " TR"
   };
 }
 
@@ -92,6 +111,11 @@ function isPreviousDayFinalWindow(row) {
   return turkey.ymd === prevDate && turkey.decimalHour >= 18;
 }
 
+function rowCreatedTime(row) {
+  const t = new Date(row.created_at || row.updated_at || "1970-01-01").getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 function sortNewest(a, b) {
   const dateCompare = String(b.prediction_date || "").localeCompare(
     String(a.prediction_date || "")
@@ -99,25 +123,25 @@ function sortNewest(a, b) {
 
   if (dateCompare !== 0) return dateCompare;
 
-  const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
-  const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
-
-  return timeB - timeA;
+  return rowCreatedTime(b) - rowCreatedTime(a);
 }
 
 function sortByCreatedNewest(a, b) {
-  const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
-  const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
-
-  return timeB - timeA;
+  return rowCreatedTime(b) - rowCreatedTime(a);
 }
 
-function normalizeRow(row) {
+function sortByCreatedOldest(a, b) {
+  return rowCreatedTime(a) - rowCreatedTime(b);
+}
+
+function normalizeRow(row, selection = {}) {
   const finalPrediction = getFinalPrediction(row);
   const actual = num(row.actual_change);
 
   const completed = actual !== null && finalPrediction !== null;
   const error = completed ? actual - finalPrediction : null;
+
+  const turkey = turkeyPartsFromIso(row.created_at || row.updated_at);
 
   return {
     id: row.id,
@@ -133,8 +157,13 @@ function normalizeRow(row) {
     finalPredictionChange: finalPrediction === null ? null : round(finalPrediction, 4),
     finalPredictionLabel: FINAL_LABEL,
     finalPredictionSource: "prediction_history.calibrated_change",
-    finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
+
+    finalWindowRule:
+      "prediction_date bir önceki gün 18:00 sonrası Türkiye saati içindeki ilk kayıt",
     isPreviousDayFinalWindow: isPreviousDayFinalWindow(row),
+    selectedRule: selection.selectedRule || null,
+    finalWindowCandidateCount: selection.finalWindowCandidateCount ?? null,
+    selectedTurkeyTime: turkey ? turkey.display : null,
 
     rawPredictedChange: round(row.raw_predicted_change, 4),
     calibratedChange: round(row.calibrated_change, 4),
@@ -219,7 +248,7 @@ async function getPredictionHistory() {
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY)" +
     "&model=eq.v7_1_accuracy_layer" +
-    "&order=prediction_date.desc,created_at.desc" +
+    "&order=prediction_date.desc,created_at.asc" +
     "&limit=1000";
 
   const rows = await supabaseRequest(path);
@@ -235,30 +264,46 @@ function uniquePredictionDatesForFund(rawRows, code) {
   return [...new Set(dates)].sort((a, b) => String(b).localeCompare(String(a)));
 }
 
+function completedRowsForFundAndDate(rawRows, code, predictionDate) {
+  return rawRows
+    .filter(row => row.fund_code === code)
+    .filter(row => row.prediction_date === predictionDate)
+    .filter(row => row.actual_change !== null && row.actual_change !== undefined)
+    .filter(row => row.calibrated_change !== null && row.calibrated_change !== undefined);
+}
+
 function pickCompletedRowForFund(rawRows, code) {
   const dates = uniquePredictionDatesForFund(rawRows, code);
 
   for (const predictionDate of dates) {
-    const completedForDate = rawRows
-      .filter(row => row.fund_code === code)
-      .filter(row => row.prediction_date === predictionDate)
-      .filter(row => row.actual_change !== null && row.actual_change !== undefined)
-      .filter(row => row.calibrated_change !== null && row.calibrated_change !== undefined);
+    const completedForDate = completedRowsForFundAndDate(rawRows, code, predictionDate);
 
     if (completedForDate.length === 0) continue;
 
     const finalWindowRows = completedForDate
       .filter(row => isPreviousDayFinalWindow(row))
-      .sort(sortByCreatedNewest);
+      .sort(sortByCreatedOldest);
 
     if (finalWindowRows.length > 0) {
-      return finalWindowRows[0];
+      return {
+        row: finalWindowRows[0],
+        selectedRule: "earliest_previous_day_after_18_tr",
+        finalWindowCandidateCount: finalWindowRows.length
+      };
     }
 
-    return completedForDate.sort(sortByCreatedNewest)[0];
+    return {
+      row: completedForDate.sort(sortByCreatedNewest)[0],
+      selectedRule: "fallback_latest_completed_no_final_window",
+      finalWindowCandidateCount: 0
+    };
   }
 
-  return null;
+  return {
+    row: null,
+    selectedRule: "no_completed_row",
+    finalWindowCandidateCount: 0
+  };
 }
 
 function pickPendingRowForFund(rawRows, code) {
@@ -272,11 +317,20 @@ function pickPendingRowForFund(rawRows, code) {
 
 function buildDisplayRows(rawRows) {
   return FUNDS.map(code => {
-    const completed = pickCompletedRowForFund(rawRows, code);
+    const completedSelection = pickCompletedRowForFund(rawRows, code);
+    const completed = completedSelection.row;
     const pending = pickPendingRowForFund(rawRows, code);
 
-    if (completed) return normalizeRow(completed);
-    if (pending) return normalizeRow(pending);
+    if (completed) {
+      return normalizeRow(completed, completedSelection);
+    }
+
+    if (pending) {
+      return normalizeRow(pending, {
+        selectedRule: "latest_pending_row",
+        finalWindowCandidateCount: 0
+      });
+    }
 
     return {
       fundCode: code,
@@ -287,8 +341,11 @@ function buildDisplayRows(rawRows) {
       finalPredictionChange: null,
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_history.calibrated_change",
-      finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
+      finalWindowRule:
+        "prediction_date bir önceki gün 18:00 sonrası Türkiye saati içindeki ilk kayıt",
       isPreviousDayFinalWindow: false,
+      selectedRule: "missing",
+      finalWindowCandidateCount: 0,
       actualChange: null,
       errorChange: null,
       absoluteError: null,
@@ -296,6 +353,53 @@ function buildDisplayRows(rawRows) {
       note: "Kayıt bulunamadı."
     };
   });
+}
+
+function buildSelectionDebug(rawRows, displayRows) {
+  const debug = {};
+
+  for (const code of FUNDS) {
+    const selected = displayRows.find(row => row.fundCode === code);
+    const predictionDate = selected ? selected.predictionDate : null;
+
+    const candidates = predictionDate
+      ? completedRowsForFundAndDate(rawRows, code, predictionDate)
+          .filter(row => isPreviousDayFinalWindow(row))
+          .sort(sortByCreatedOldest)
+          .map(row => {
+            const finalPrediction = getFinalPrediction(row);
+            const actual = num(row.actual_change);
+            const turkey = turkeyPartsFromIso(row.created_at || row.updated_at);
+
+            return {
+              id: row.id,
+              fundCode: row.fund_code,
+              predictionDate: row.prediction_date,
+              finalPredictionChange: round(finalPrediction, 4),
+              actualChange: round(actual, 4),
+              errorChange:
+                finalPrediction !== null && actual !== null
+                  ? round(actual - finalPrediction, 4)
+                  : null,
+              createdAt: row.created_at || null,
+              updatedAt: row.updated_at || null,
+              turkeyTime: turkey ? turkey.display : null,
+              isPreviousDayFinalWindow: true
+            };
+          })
+      : [];
+
+    debug[code] = {
+      selectedRule: selected ? selected.selectedRule : null,
+      selectedFinalPredictionChange: selected ? selected.finalPredictionChange : null,
+      selectedCreatedAt: selected ? selected.createdAt : null,
+      selectedTurkeyTime: selected ? selected.selectedTurkeyTime : null,
+      candidateCount: candidates.length,
+      candidates
+    };
+  }
+
+  return debug;
 }
 
 function buildHistories(rawRows) {
@@ -381,7 +485,8 @@ function buildSummary(displayRows, allRows) {
       directionHitRate === null ? null : round(directionHitRate, 2),
     finalPredictionLabel: FINAL_LABEL,
     finalPredictionSource: "prediction_history.calibrated_change",
-    finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
+    finalWindowRule:
+      "prediction_date bir önceki gün 18:00 sonrası Türkiye saati içindeki ilk kayıt",
     deviationFormula:
       "Sapma = gerçekleşen TEFAS değişimi - önceki 18:00 nihai tahmin",
     byFund
@@ -401,6 +506,7 @@ module.exports = async function handler(req, res) {
     const displayRows = buildDisplayRows(rawRows);
     const histories = buildHistories(rawRows);
     const summary = buildSummary(displayRows, histories.normalized);
+    const selectionDebug = buildSelectionDebug(rawRows, displayRows);
 
     return res.status(200).json({
       ok: true,
@@ -409,17 +515,19 @@ module.exports = async function handler(req, res) {
       source: "supabase.prediction_history",
       model: ACTIVE_MODEL,
       logic:
-        "Performance v6: Aynı prediction_date için birden çok completed kayıt varsa, önce prediction_date bir önceki gün 18:00 sonrası Türkiye saatiyle oluşturulmuş kayıt seçilir. Sapma actual_change - calibrated_change olarak hesaplanır.",
+        "Performance v7: Aynı prediction_date için birden çok 18:00 sonrası final-window kaydı varsa, en yeni kayıt değil en eski/ilk kayıt seçilir. Sapma actual_change - calibrated_change olarak hesaplanır.",
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_history.calibrated_change",
-      finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
+      finalWindowRule:
+        "prediction_date bir önceki gün 18:00 sonrası Türkiye saati içindeki ilk kayıt",
       rows: displayRows,
       summary,
       byFund: summary.byFund,
+      selectionDebug,
       completedHistory: histories.completedHistory,
       pendingHistory: histories.pendingHistory,
       note:
-        "Bu API sadece v7_1_accuracy_layer model kayıtlarını kullanır. Önceki 18:00 nihai tahmin için final window kaydı önceliklidir."
+        "Bu API sadece v7_1_accuracy_layer model kayıtlarını kullanır. Önceki 18:00 nihai tahmin için final-window içindeki ilk kayıt önceliklidir."
     });
   } catch (err) {
     return res.status(500).json({
