@@ -1,6 +1,6 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const API_VERSION = "FinScope Performance API v5";
+const API_VERSION = "FinScope Performance API v6";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
 const FINAL_LABEL = "Önceki 18:00 Nihai Tahmin";
 
@@ -24,12 +24,6 @@ function direction(value) {
 }
 
 function getFinalPrediction(row) {
-  /*
-    Bu API'de performans sapmasının tek doğru kaynağı:
-    prediction_history.calibrated_change
-
-    raw_predicted_change sadece teknik referans olarak döner.
-  */
   return num(row.calibrated_change);
 }
 
@@ -43,6 +37,61 @@ function getGrade(errorAbs) {
   return "Çok zayıf";
 }
 
+function parseYmd(value) {
+  if (!value || typeof value !== "string") return null;
+  const parts = value.slice(0, 10).split("-").map(Number);
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return null;
+
+  return {
+    year: parts[0],
+    month: parts[1],
+    day: parts[2]
+  };
+}
+
+function toYmdString(date) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function previousDateString(ymd) {
+  const parsed = parseYmd(ymd);
+  if (!parsed) return null;
+
+  const d = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+  d.setUTCDate(d.getUTCDate() - 1);
+
+  return toYmdString(d);
+}
+
+function turkeyPartsFromIso(isoValue) {
+  if (!isoValue) return null;
+
+  const d = new Date(isoValue);
+  if (Number.isNaN(d.getTime())) return null;
+
+  const turkey = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+
+  return {
+    ymd: toYmdString(turkey),
+    hour: turkey.getUTCHours(),
+    minute: turkey.getUTCMinutes(),
+    decimalHour: turkey.getUTCHours() + turkey.getUTCMinutes() / 60
+  };
+}
+
+function isPreviousDayFinalWindow(row) {
+  const predictionDate = row.prediction_date;
+  const prevDate = previousDateString(predictionDate);
+  const turkey = turkeyPartsFromIso(row.created_at || row.updated_at);
+
+  if (!prevDate || !turkey) return false;
+
+  return turkey.ymd === prevDate && turkey.decimalHour >= 18;
+}
+
 function sortNewest(a, b) {
   const dateCompare = String(b.prediction_date || "").localeCompare(
     String(a.prediction_date || "")
@@ -50,6 +99,13 @@ function sortNewest(a, b) {
 
   if (dateCompare !== 0) return dateCompare;
 
+  const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
+  const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
+
+  return timeB - timeA;
+}
+
+function sortByCreatedNewest(a, b) {
   const timeA = new Date(a.created_at || a.updated_at || "1970-01-01").getTime();
   const timeB = new Date(b.created_at || b.updated_at || "1970-01-01").getTime();
 
@@ -72,19 +128,13 @@ function normalizeRow(row) {
 
     status: completed ? "completed" : "pending",
 
-    /*
-      Dashboard geriye dönük uyumluluk için predictedChange alanını okuyabilir.
-      Bu yüzden predictedChange de finalPredictionChange ile aynı kaynaktan gelir.
-    */
     predictedChange: finalPrediction === null ? null : round(finalPrediction, 4),
 
-    /*
-      Yeni ve net alan:
-      Performans tablosundaki "Önceki 18:00 Nihai Tahmin" sütunu bunu göstermeli.
-    */
     finalPredictionChange: finalPrediction === null ? null : round(finalPrediction, 4),
     finalPredictionLabel: FINAL_LABEL,
     finalPredictionSource: "prediction_history.calibrated_change",
+    finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
+    isPreviousDayFinalWindow: isPreviousDayFinalWindow(row),
 
     rawPredictedChange: round(row.raw_predicted_change, 4),
     calibratedChange: round(row.calibrated_change, 4),
@@ -170,50 +220,60 @@ async function getPredictionHistory() {
     "&fund_code=in.(PBR,PHE,TLY)" +
     "&model=eq.v7_1_accuracy_layer" +
     "&order=prediction_date.desc,created_at.desc" +
-    "&limit=500";
+    "&limit=1000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-function latestCompletedByFund(rawRows) {
-  const result = {};
+function uniquePredictionDatesForFund(rawRows, code) {
+  const dates = rawRows
+    .filter(row => row.fund_code === code)
+    .map(row => row.prediction_date)
+    .filter(Boolean);
 
-  for (const code of FUNDS) {
-    const completed = rawRows
-      .filter(row => row.fund_code === code)
-      .filter(row => row.actual_change !== null && row.actual_change !== undefined)
-      .filter(row => row.calibrated_change !== null && row.calibrated_change !== undefined)
-      .sort(sortNewest);
-
-    result[code] = completed[0] || null;
-  }
-
-  return result;
+  return [...new Set(dates)].sort((a, b) => String(b).localeCompare(String(a)));
 }
 
-function latestPendingByFund(rawRows) {
-  const result = {};
+function pickCompletedRowForFund(rawRows, code) {
+  const dates = uniquePredictionDatesForFund(rawRows, code);
 
-  for (const code of FUNDS) {
-    const pending = rawRows
+  for (const predictionDate of dates) {
+    const completedForDate = rawRows
       .filter(row => row.fund_code === code)
-      .filter(row => row.actual_change === null || row.actual_change === undefined)
-      .sort(sortNewest);
+      .filter(row => row.prediction_date === predictionDate)
+      .filter(row => row.actual_change !== null && row.actual_change !== undefined)
+      .filter(row => row.calibrated_change !== null && row.calibrated_change !== undefined);
 
-    result[code] = pending[0] || null;
+    if (completedForDate.length === 0) continue;
+
+    const finalWindowRows = completedForDate
+      .filter(row => isPreviousDayFinalWindow(row))
+      .sort(sortByCreatedNewest);
+
+    if (finalWindowRows.length > 0) {
+      return finalWindowRows[0];
+    }
+
+    return completedForDate.sort(sortByCreatedNewest)[0];
   }
 
-  return result;
+  return null;
+}
+
+function pickPendingRowForFund(rawRows, code) {
+  const pending = rawRows
+    .filter(row => row.fund_code === code)
+    .filter(row => row.actual_change === null || row.actual_change === undefined)
+    .sort(sortNewest);
+
+  return pending[0] || null;
 }
 
 function buildDisplayRows(rawRows) {
-  const completedMap = latestCompletedByFund(rawRows);
-  const pendingMap = latestPendingByFund(rawRows);
-
   return FUNDS.map(code => {
-    const completed = completedMap[code];
-    const pending = pendingMap[code];
+    const completed = pickCompletedRowForFund(rawRows, code);
+    const pending = pickPendingRowForFund(rawRows, code);
 
     if (completed) return normalizeRow(completed);
     if (pending) return normalizeRow(pending);
@@ -227,6 +287,8 @@ function buildDisplayRows(rawRows) {
       finalPredictionChange: null,
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_history.calibrated_change",
+      finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
+      isPreviousDayFinalWindow: false,
       actualChange: null,
       errorChange: null,
       absoluteError: null,
@@ -284,6 +346,7 @@ function buildSummary(displayRows, allRows) {
       totalRows: fundRows.length,
       completedRows: completed.length,
       pendingRows: pending.length,
+      latestDisplayRow: displayRows.find(row => row.fundCode === code) || null,
       latestCompleted: completed[0] || null,
       latestPending: pending[0] || null,
       averageAbsoluteError:
@@ -318,6 +381,7 @@ function buildSummary(displayRows, allRows) {
       directionHitRate === null ? null : round(directionHitRate, 2),
     finalPredictionLabel: FINAL_LABEL,
     finalPredictionSource: "prediction_history.calibrated_change",
+    finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
     deviationFormula:
       "Sapma = gerçekleşen TEFAS değişimi - önceki 18:00 nihai tahmin",
     byFund
@@ -345,16 +409,17 @@ module.exports = async function handler(req, res) {
       source: "supabase.prediction_history",
       model: ACTIVE_MODEL,
       logic:
-        "Performance v5: finalPredictionChange doğrudan prediction_history.calibrated_change alanından alınır. Sapma actual_change - calibrated_change olarak hesaplanır.",
+        "Performance v6: Aynı prediction_date için birden çok completed kayıt varsa, önce prediction_date bir önceki gün 18:00 sonrası Türkiye saatiyle oluşturulmuş kayıt seçilir. Sapma actual_change - calibrated_change olarak hesaplanır.",
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_history.calibrated_change",
+      finalWindowRule: "prediction_date bir önceki gün 18:00 sonrası Türkiye saati",
       rows: displayRows,
       summary,
       byFund: summary.byFund,
       completedHistory: histories.completedHistory,
       pendingHistory: histories.pendingHistory,
       note:
-        "Bu API sadece v7_1_accuracy_layer model kayıtlarını kullanır. Önceki 18:00 nihai tahmin alanı calibrated_change değeridir."
+        "Bu API sadece v7_1_accuracy_layer model kayıtlarını kullanır. Önceki 18:00 nihai tahmin için final window kaydı önceliklidir."
     });
   } catch (err) {
     return res.status(500).json({
