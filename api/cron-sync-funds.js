@@ -4,6 +4,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const manualOk = req.query && req.query.manual === "finscope";
+
     const cronSecret = process.env.CRON_SECRET || "";
     const authHeader = req.headers.authorization || "";
     const cronOk = cronSecret && authHeader === `Bearer ${cronSecret}`;
@@ -11,8 +12,9 @@ module.exports = async function handler(req, res) {
     if (!manualOk && !cronOk) {
       return res.status(401).json({
         ok: false,
+        endpoint: "cron-sync-funds",
         error: "Yetkisiz cron istegi.",
-        hint: "CRON_SECRET tanimli olmali veya test icin ?manual=finscope kullanilmali."
+        hint: "Vercel Cron icin CRON_SECRET gerekir. Manuel test icin ?manual=finscope kullan."
       });
     }
 
@@ -22,6 +24,7 @@ module.exports = async function handler(req, res) {
     if (!host) {
       return res.status(500).json({
         ok: false,
+        endpoint: "cron-sync-funds",
         error: "Host bilgisi bulunamadi."
       });
     }
@@ -37,24 +40,26 @@ module.exports = async function handler(req, res) {
 
     const text = await response.text();
 
-    let payload;
+    let result;
     try {
-      payload = JSON.parse(text);
+      result = JSON.parse(text);
     } catch {
-      payload = { raw: text };
+      result = { raw: text };
     }
 
     return res.status(response.status).json({
       ok: response.ok,
+      endpoint: "cron-sync-funds",
       cronBridge: true,
       target: "/api/sync-funds?manual=finscope",
       status: response.status,
       generatedAt: new Date().toISOString(),
-      result: payload
+      result
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
+      endpoint: "cron-sync-funds",
       cronBridge: true,
       error: String(err.message || err)
     });
