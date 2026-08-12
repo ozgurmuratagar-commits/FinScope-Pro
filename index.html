@@ -327,7 +327,7 @@
         Accuracy Layer<br />
         Actual error learning<br />
         Performance tracking<br />
-        UI Final Prediction Sync v7.1
+        UI Final Prediction Sync v7.2
       </div>
 
       <nav>
@@ -344,14 +344,14 @@
         <div>
           <h1>Dashboard</h1>
           <div class="subtitle">
-            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Final Prediction Sync v7.1 aktif.
+            FinScope Professional v7.0: TEFAS fiyatları, Supabase holdings verisi, gün içi piyasa hareketleri, Prediction Engine v7 Accuracy Layer tahmin motoru ve performans takibi. UI Final Prediction Sync v7.2 aktif.
           </div>
           <div class="chips">
             <span class="chip">v7.1 Dashboard</span>
             <span class="chip">Prediction Engine v7.1</span>
             <span class="chip">Accuracy Layer</span>
             <span class="chip">Performance API v4</span>
-            <span class="chip">UI Final Prediction Sync v7.1</span>
+            <span class="chip">UI Final Prediction Sync v7.2</span>
             <span class="chip">PBR / PHE / TLY</span>
             <span class="chip">Yatırım tavsiyesi değildir</span>
           </div>
@@ -697,30 +697,16 @@
 
       const summary = performanceJson.summary || {};
       const latestRows = getLatestPerformanceRows(performanceJson);
-      const predictions = getPredictions(predictJson);
 
       const tableRows = FUND_ORDER.map(function(code) {
         const perf = latestRows[code] || {};
-        const livePrediction = predictions[code] || {};
-
         const status = perf.status || "pending";
 
         /*
-          Güncel Tahmin:
-          - Önce Performance API v4'ün currentPredictionChange alanı kullanılır.
-          - Yoksa canlı /api/predict çıktısı kullanılır.
-          Bu değer bir sonraki TEFAS beklentisini temsil eder.
-        */
-        const currentPrediction =
-          perf.currentPredictionChange !== null && perf.currentPredictionChange !== undefined
-            ? perf.currentPredictionChange
-            : livePrediction.predictedChange;
-
-        /*
           Önceki 18:00 Nihai Tahmin:
-          - Sapmanın baz aldığı tahmindir.
-          - Performance API v4'te finalPredictionChange olarak gelir.
-          - Eski kayıtlarla uyum için predictedChange fallback olarak korunur.
+          Sapmanın baz aldığı kapanmış tahmindir.
+          Performance API v4'te finalPredictionChange olarak gelir.
+          Eski kayıt uyumu için predictedChange fallback olarak tutulur.
         */
         const finalPrediction =
           perf.finalPredictionChange !== null && perf.finalPredictionChange !== undefined
@@ -743,7 +729,6 @@
           <tr>
             <td><b>${escapeHtml(code)}</b></td>
             <td>${escapeHtml(perf.predictionDate || performanceJson.predictionDate || "—")}</td>
-            <td class="${directionClass(currentPrediction)}">${formatPercent(currentPrediction, 2)}</td>
             <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
             <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
             <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
@@ -793,8 +778,8 @@
 
         <div class="summary-line">
           Yön isabet oranı: <b>${directionRate}</b>.
-          Güncel tahmin sütunu canlı Prediction Engine v7.1 çıktısını gösterir.
-          <b>Önceki 18:00 Nihai Tahmin</b> sütunu ise sapmanın baz aldığı kapanmış tahmindir.
+          Bu tablo kapanmış performans kayıtlarını gösterir; güncel canlı tahmin Tahmin Özeti bölümünde izlenir.
+          <b>Önceki 18:00 Nihai Tahmin</b>, sapmanın baz aldığı kapanmış tahmindir.
           ${escapeHtml(deviationFormula)}.
         </div>
 
@@ -803,7 +788,6 @@
             <tr>
               <th>Fon</th>
               <th>Tahmin Tarihi</th>
-              <th>Güncel Tahmin</th>
               <th>Gerçekleşen</th>
               <th>Önceki 18:00 Nihai Tahmin</th>
               <th>Sapma</th>
