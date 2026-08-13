@@ -1,8 +1,8 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const API_VERSION = "FinScope Performance API v8 - Final Tables";
+const API_VERSION = "FinScope Performance API v8.2 - All Closed Rows";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const FINAL_LABEL = "Önceki 18:00 Nihai Tahmin";
+const FINAL_LABEL = "T-1 18:00 Nihai Tahmin";
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -21,6 +21,13 @@ function dateText(value) {
   return String(value).slice(0, 10);
 }
 
+function boolOrNull(value) {
+  if (value === null || value === undefined) return null;
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return Boolean(value);
+}
+
 function direction(value) {
   const n = num(value, 0);
   if (n > 0) return "up";
@@ -36,6 +43,21 @@ function gradeFromError(errorAbs) {
   if (e <= 0.85) return "Makul";
   if (e <= 1.25) return "Zayıf";
   return "Çok zayıf";
+}
+
+function fundOrder(code) {
+  const index = FUNDS.indexOf(code);
+  return index === -1 ? 999 : index;
+}
+
+function sortDisplayRows(a, b) {
+  const dateCompare = String(b.predictionDate || "").localeCompare(
+    String(a.predictionDate || "")
+  );
+
+  if (dateCompare !== 0) return dateCompare;
+
+  return fundOrder(a.fundCode) - fundOrder(b.fundCode);
 }
 
 function getSupabaseConfig() {
@@ -88,7 +110,7 @@ async function getPerformanceRows() {
     "&fund_code=in.(PBR,PHE,TLY)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,closed_at.desc,updated_at.desc" +
-    "&limit=500";
+    "&limit=1000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -101,7 +123,7 @@ async function getFinalRows() {
     "&fund_code=in.(PBR,PHE,TLY)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,finalized_at.desc,updated_at.desc" +
-    "&limit=500";
+    "&limit=1000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -119,6 +141,10 @@ async function getLearningRows() {
   return Array.isArray(rows) ? rows : [];
 }
 
+function makeKey(row) {
+  return `${row.fund_code}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+}
+
 function latestDate(rows, fieldName) {
   const dates = rows
     .map(row => dateText(row[fieldName]))
@@ -126,64 +152,6 @@ function latestDate(rows, fieldName) {
     .sort();
 
   return dates.length ? dates[dates.length - 1] : null;
-}
-
-function pickLatestCompletedRows(performanceRows) {
-  const latestCompletedDate = latestDate(performanceRows, "prediction_date");
-
-  if (!latestCompletedDate) return [];
-
-  const picked = [];
-
-  for (const code of FUNDS) {
-    const row = performanceRows
-      .filter(item => item.fund_code === code)
-      .filter(item => dateText(item.prediction_date) === latestCompletedDate)
-      .sort((a, b) =>
-        String(b.closed_at || b.updated_at || "").localeCompare(
-          String(a.closed_at || a.updated_at || "")
-        )
-      )[0];
-
-    if (row) picked.push(row);
-  }
-
-  return picked;
-}
-
-function pickPendingFinalRows(finalRows, performanceRows) {
-  const closedKeys = new Set(
-    performanceRows.map(
-      row =>
-        `${row.fund_code}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`
-    )
-  );
-
-  const pendingFinals = finalRows.filter(row => {
-    const key = `${row.fund_code}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
-    return !closedKeys.has(key);
-  });
-
-  const latestPendingDate = latestDate(pendingFinals, "prediction_date");
-
-  if (!latestPendingDate) return [];
-
-  const picked = [];
-
-  for (const code of FUNDS) {
-    const row = pendingFinals
-      .filter(item => item.fund_code === code)
-      .filter(item => dateText(item.prediction_date) === latestPendingDate)
-      .sort((a, b) =>
-        String(b.finalized_at || b.updated_at || "").localeCompare(
-          String(a.finalized_at || a.updated_at || "")
-        )
-      )[0];
-
-    if (row) picked.push(row);
-  }
-
-  return picked;
 }
 
 function normalizeCompletedRow(row) {
@@ -212,6 +180,7 @@ function normalizeCompletedRow(row) {
 
     status: "completed",
     completed: true,
+
     source: "prediction_performance",
     finalPredictionSource: "prediction_finals.final_prediction_change",
 
@@ -231,15 +200,13 @@ function normalizeCompletedRow(row) {
     actualDirection:
       row.actual_direction || direction(actualChange),
 
-    directionHit:
-      row.direction_hit === null || row.direction_hit === undefined
-        ? null
-        : Boolean(row.direction_hit),
+    directionHit: boolOrNull(row.direction_hit),
 
     grade: row.grade || gradeFromError(absoluteError),
+
     note:
       row.note ||
-      "Sapma, gerçekleşen TEFAS değişimi ile kilitli final tahmin arasındaki farktır.",
+      "Sapma = gerçekleşen TEFAS değişimi - tahmin tarihinden önceki gün 18:00 sonrası kilitlenen nihai tahmin.",
 
     actualPrice: round(row.actual_price, 8),
     actualPriceDate: dateText(row.actual_price_date),
@@ -265,6 +232,7 @@ function normalizePendingFinalRow(row) {
 
     status: "waiting_actual",
     completed: false,
+
     source: "prediction_finals",
     finalPredictionSource: "prediction_finals.final_prediction_change",
 
@@ -285,6 +253,7 @@ function normalizePendingFinalRow(row) {
     directionHit: null,
 
     grade: "Bekliyor",
+
     note:
       "Final tahmin kilitlendi; gerçekleşen TEFAS fiyatı geldiğinde performans kapanacak.",
 
@@ -295,6 +264,15 @@ function normalizePendingFinalRow(row) {
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null
   };
+}
+
+function getPendingFinalRows(finalRows, performanceRows) {
+  const closedKeys = new Set(performanceRows.map(makeKey));
+
+  return finalRows.filter(row => {
+    const key = makeKey(row);
+    return !closedKeys.has(key);
+  });
 }
 
 function buildLearningMap(learningRows) {
@@ -349,80 +327,117 @@ function buildLearningMap(learningRows) {
   return map;
 }
 
-function buildSummary(completedRows, pendingRows, learningMap) {
-  const completed = completedRows.map(normalizeCompletedRow);
-  const pending = pendingRows.map(normalizePendingFinalRow);
-
-  const absoluteErrors = completed
-    .map(row => num(row.absoluteError, null))
+function averageNumber(rows, fieldName) {
+  const values = rows
+    .map(row => num(row[fieldName], null))
     .filter(value => value !== null);
 
-  const directionRows = completed.filter(row => row.directionHit !== null);
-  const directionHitCount = directionRows.filter(row => row.directionHit === true).length;
+  if (!values.length) return null;
 
-  const averageAbsoluteError =
-    absoluteErrors.length > 0
-      ? absoluteErrors.reduce((sum, value) => sum + value, 0) / absoluteErrors.length
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function directionRate(rows) {
+  const directionRows = rows.filter(row => row.directionHit !== null);
+  const hits = directionRows.filter(row => row.directionHit === true).length;
+
+  if (!directionRows.length) {
+    return {
+      hitCount: 0,
+      totalCount: 0,
+      rate: null
+    };
+  }
+
+  return {
+    hitCount: hits,
+    totalCount: directionRows.length,
+    rate: (hits / directionRows.length) * 100
+  };
+}
+
+function buildSummary(completedRows, pendingRows, learningMap) {
+  const latestCompletedDate =
+    completedRows.length > 0
+      ? latestDate(
+          completedRows.map(row => ({ prediction_date: row.predictionDate })),
+          "prediction_date"
+        )
       : null;
 
-  const directionHitRate =
-    directionRows.length > 0
-      ? (directionHitCount / directionRows.length) * 100
-      : null;
+  const latestCompletedRows = completedRows.filter(
+    row => row.predictionDate === latestCompletedDate
+  );
+
+  const allDirection = directionRate(completedRows);
+  const latestDirection = directionRate(latestCompletedRows);
 
   const byFund = {};
 
   for (const code of FUNDS) {
-    const fundRows = completed.filter(row => row.fundCode === code);
-    const fundAbs = fundRows
-      .map(row => num(row.absoluteError, null))
-      .filter(value => value !== null);
-
-    const fundDirectionRows = fundRows.filter(row => row.directionHit !== null);
-    const fundDirectionHits = fundDirectionRows.filter(row => row.directionHit === true).length;
+    const fundRows = completedRows.filter(row => row.fundCode === code);
+    const fundPendingRows = pendingRows.filter(row => row.fundCode === code);
+    const fundDirection = directionRate(fundRows);
 
     byFund[code] = {
       fundCode: code,
+
       completedRows: fundRows.length,
-      pendingRows: pending.filter(row => row.fundCode === code).length,
+      pendingRows: fundPendingRows.length,
 
-      averageAbsoluteError:
-        fundAbs.length > 0
-          ? round(fundAbs.reduce((sum, value) => sum + value, 0) / fundAbs.length, 4)
-          : null,
+      averageAbsoluteError: round(averageNumber(fundRows, "absoluteError"), 4),
+      averageError: round(averageNumber(fundRows, "errorChange"), 4),
 
-      directionHitRate:
-        fundDirectionRows.length > 0
-          ? round((fundDirectionHits / fundDirectionRows.length) * 100, 2)
-          : null,
+      directionHitCount: fundDirection.hitCount,
+      directionTotalCount: fundDirection.totalCount,
+      directionHitRate: round(fundDirection.rate, 2),
 
       learning: learningMap[code] || null
     };
   }
 
   return {
-    totalRows: completed.length + pending.length,
-    completedRows: completed.length,
-    pendingRows: pending.length,
+    totalRows: completedRows.length + pendingRows.length,
+    completedRows: completedRows.length,
+    pendingRows: pendingRows.length,
 
-    averageAbsoluteError: round(averageAbsoluteError, 4),
-    directionHitRate: round(directionHitRate, 2),
+    averageAbsoluteError: round(averageNumber(completedRows, "absoluteError"), 4),
+    averageError: round(averageNumber(completedRows, "errorChange"), 4),
 
-    directionHitCount,
-    directionTotalCount: directionRows.length,
+    latestDateAverageAbsoluteError: round(
+      averageNumber(latestCompletedRows, "absoluteError"),
+      4
+    ),
+    latestDateAverageError: round(
+      averageNumber(latestCompletedRows, "errorChange"),
+      4
+    ),
 
-    latestCompletedDate:
-      completed.length > 0
-        ? latestDate(completed.map(row => ({ prediction_date: row.predictionDate })), "prediction_date")
-        : null,
+    directionHitCount: allDirection.hitCount,
+    directionTotalCount: allDirection.totalCount,
+    directionHitRate: round(allDirection.rate, 2),
+
+    latestDateDirectionHitCount: latestDirection.hitCount,
+    latestDateDirectionTotalCount: latestDirection.totalCount,
+    latestDateDirectionHitRate: round(latestDirection.rate, 2),
+
+    latestCompletedDate,
 
     latestPendingFinalDate:
-      pending.length > 0
-        ? latestDate(pending.map(row => ({ prediction_date: row.predictionDate })), "prediction_date")
+      pendingRows.length > 0
+        ? latestDate(
+            pendingRows.map(row => ({ prediction_date: row.predictionDate })),
+            "prediction_date"
+          )
         : null,
 
     finalPredictionLabel: FINAL_LABEL,
-    formula: "Sapma = gerçekleşen TEFAS değişimi - kilitli 18:00 nihai tahmin",
+
+    formula:
+      "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 sonrası kilitlenen nihai tahmin",
+
+    metricPolicy:
+      "averageAbsoluteError ve directionHitRate tüm kapanmış performans kayıtlarından hesaplanır. latestDateAverageAbsoluteError sadece son tamamlanan tahmin tarihinin ortalamasıdır.",
 
     byFund
   };
@@ -437,23 +452,18 @@ module.exports = async function handler(req, res) {
     const finalRows = await getFinalRows();
     const learningRows = await getLearningRows();
 
-    const latestCompletedRows = pickLatestCompletedRows(performanceRows);
-    const latestPendingFinalRows = pickPendingFinalRows(finalRows, performanceRows);
+    const completedRows = performanceRows
+      .map(normalizeCompletedRow)
+      .sort(sortDisplayRows);
 
-    const completedDisplayRows = latestCompletedRows.map(normalizeCompletedRow);
-    const pendingDisplayRows = latestPendingFinalRows.map(normalizePendingFinalRow);
+    const pendingRows = getPendingFinalRows(finalRows, performanceRows)
+      .map(normalizePendingFinalRow)
+      .sort(sortDisplayRows);
 
     const learningMap = buildLearningMap(learningRows);
-    const summary = buildSummary(
-      performanceRows,
-      latestPendingFinalRows,
-      learningMap
-    );
+    const summary = buildSummary(completedRows, pendingRows, learningMap);
 
-    const displayRows =
-      completedDisplayRows.length > 0
-        ? completedDisplayRows
-        : pendingDisplayRows;
+    const rows = [...completedRows, ...pendingRows];
 
     return res.status(200).json({
       ok: true,
@@ -464,16 +474,16 @@ module.exports = async function handler(req, res) {
       model: ACTIVE_MODEL,
 
       selectionRule:
-        "Dashboard performans tablosu prediction_history kullanmaz. Tamamlanan performans prediction_performance tablosundan, bekleyen final tahminler prediction_finals tablosundan okunur.",
+        "Dashboard rows artık sadece son günü değil, tüm kapanmış performans kayıtlarını döndürür. Böylece Toplam Kayıt, Tamamlanan Tahmin ve Ortalama Sapma aynı kapsamı kullanır.",
 
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_finals.final_prediction_change",
 
       summary,
 
-      rows: displayRows,
-      completedRows: completedDisplayRows,
-      pendingFinalRows: pendingDisplayRows,
+      rows,
+      completedRows,
+      pendingFinalRows: pendingRows,
 
       learningStats: learningMap,
 
@@ -484,7 +494,7 @@ module.exports = async function handler(req, res) {
       },
 
       note:
-        "Bu API artık eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır."
+        "Bu API eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli T-1 final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır."
     });
   } catch (error) {
     return res.status(500).json({
