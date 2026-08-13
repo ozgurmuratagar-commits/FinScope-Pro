@@ -39,6 +39,15 @@ function num(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function firstNumber(values, fallback = null) {
+  for (const value of values) {
+    const n = num(value, null);
+    if (n !== null) return n;
+  }
+
+  return fallback;
+}
+
 function formatNumber(value, digits = 4) {
   const n = num(value);
   if (n === null) return "—";
@@ -272,7 +281,7 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      Read-Only Frontend v8.2 ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+      Read-Only Frontend v8.3 ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
     </div>
   `;
 }
@@ -322,6 +331,195 @@ function resolveFinalPrediction(perf) {
   }
 
   return null;
+}
+
+function average(values) {
+  const clean = values
+    .map(function(value) {
+      return num(value, null);
+    })
+    .filter(function(value) {
+      return value !== null;
+    });
+
+  if (!clean.length) return null;
+
+  return clean.reduce(function(sum, value) {
+    return sum + value;
+  }, 0) / clean.length;
+}
+
+function derivedDirectionRate(rows) {
+  const usable = rows.filter(function(row) {
+    return row && row.directionHit !== null && row.directionHit !== undefined;
+  });
+
+  if (!usable.length) return null;
+
+  const hits = usable.filter(function(row) {
+    return row.directionHit === true || row.directionHit === "true";
+  }).length;
+
+  return (hits / usable.length) * 100;
+}
+
+function biasLabelFromAverageError(avgError) {
+  const e = num(avgError, null);
+
+  if (e === null) return "Veri yok";
+  if (e > 0.15) return "Tahmin düşük kalıyor";
+  if (e < -0.15) return "Tahmin yüksek kalıyor";
+  return "Dengeli";
+}
+
+function learningStatusFromMetrics(completedRows, avgAbsError, directionHitRate) {
+  const completed = Number(completedRows || 0);
+  const absError = num(avgAbsError, null);
+  const directionRate = num(directionHitRate, null);
+
+  if (completed === 0) return "Henüz kapanmış veri yok";
+  if (completed < 5) return "Örnek sayısı düşük";
+
+  if (absError !== null && absError <= 0.35 && directionRate !== null && directionRate >= 70) {
+    return "İyi çalışıyor";
+  }
+
+  if (absError !== null && absError > 0.85) {
+    return "Model yaklaşımı gözden geçirilmeli";
+  }
+
+  if (directionRate !== null && directionRate < 50) {
+    return "Yön tahmini zayıf";
+  }
+
+  return "İzlenmeli";
+}
+
+function buildFundLearningPanel(performanceJson, performanceRows) {
+  const summary = performanceJson.summary || {};
+  const byFund = summary.byFund || performanceJson.byFund || {};
+  const learningStats = performanceJson.learningStats || {};
+
+  const rows = FUND_ORDER.map(function(code) {
+    const fundRows = performanceRows.filter(function(row) {
+      return row && row.fundCode === code && row.status === "completed";
+    });
+
+    const stat = byFund[code] || {};
+    const learning = stat.learning || learningStats[code] || {};
+
+    const completedRows = firstNumber(
+      [
+        stat.completedRows,
+        learning.completedPredictionCount,
+        learning.sampleSize
+      ],
+      fundRows.length
+    );
+
+    const averageAbsError = firstNumber(
+      [
+        stat.averageAbsoluteError,
+        learning.averageAbsoluteError,
+        average(fundRows.map(function(row) { return row.absoluteError; }))
+      ],
+      null
+    );
+
+    const averageError = firstNumber(
+      [
+        stat.averageError,
+        learning.averageError,
+        average(fundRows.map(function(row) { return row.errorChange; }))
+      ],
+      null
+    );
+
+    const directionHitRate = firstNumber(
+      [
+        stat.directionHitRate,
+        learning.directionHitRate,
+        derivedDirectionRate(fundRows)
+      ],
+      null
+    );
+
+    const suggestedOffset = firstNumber(
+      [
+        learning.suggestedOffset,
+        stat.suggestedOffset
+      ],
+      null
+    );
+
+    const confidenceAdjustment = firstNumber(
+      [
+        learning.confidenceAdjustment,
+        stat.confidenceAdjustment
+      ],
+      null
+    );
+
+    const biasLabel =
+      learning.biasLabel ||
+      stat.biasLabel ||
+      biasLabelFromAverageError(averageError);
+
+    const learningStatus =
+      learning.learningStatus ||
+      stat.learningStatus ||
+      learningStatusFromMetrics(completedRows, averageAbsError, directionHitRate);
+
+    const avgErrorClass = directionClass(averageError);
+    const offsetClass = directionClass(suggestedOffset);
+
+    const confidenceText =
+      confidenceAdjustment === null
+        ? ""
+        : `<br /><span class="small">Güven ayarı: ${formatNumber(confidenceAdjustment, 2)}</span>`;
+
+    return `
+      <tr>
+        <td><b>${escapeHtml(code)}</b></td>
+        <td>${formatNumber(completedRows, 0)}</td>
+        <td><b>${formatPercent(averageAbsError, 2)}</b></td>
+        <td>${formatPercent(directionHitRate, 2)}</td>
+        <td class="${avgErrorClass}">${averageError === null ? "—" : formatPercent(averageError, 2)}</td>
+        <td>${escapeHtml(biasLabel)}</td>
+        <td class="${offsetClass}">
+          ${suggestedOffset === null ? "—" : formatPercent(suggestedOffset, 2)}
+          ${confidenceText}
+        </td>
+        <td>${escapeHtml(learningStatus)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <div class="summary-line">
+      <b>Fon Bazlı Öğrenme ve Sapma</b><br />
+      Genel ortalama sadece sistemin genel sağlık göstergesidir. Asıl karar metrikleri fon bazında izlenir:
+      her fonun ortalama sapması, yön isabeti, bias durumu ve önerilen düzeltmesi ayrı değerlendirilir.
+    </div>
+
+    <table class="perf-table">
+      <thead>
+        <tr>
+          <th>Fon</th>
+          <th>Kapanan</th>
+          <th>Fon Ortalama Sapma</th>
+          <th>Yön İsabeti</th>
+          <th>Ortalama Hata</th>
+          <th>Bias</th>
+          <th>Önerilen Düzeltme</th>
+          <th>Öğrenme Durumu</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
 }
 
 function renderPerformance(performanceJson) {
@@ -375,6 +573,7 @@ function renderPerformance(performanceJson) {
     "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 sonrası kilitlenen nihai tahmin";
 
   const apiVersion = performanceJson.version || "Performance API";
+  const fundLearningPanel = buildFundLearningPanel(performanceJson, performanceRows);
 
   const tableRows = performanceRows.length
     ? performanceRows.map(function(perf) {
@@ -434,18 +633,24 @@ function renderPerformance(performanceJson) {
         <div class="metric-value up">${formatNumber(completedRows, 0)}</div>
       </div>
       <div class="metric">
-        <div class="metric-label">Ortalama Sapma</div>
+        <div class="metric-label">Genel Ortalama Sapma</div>
         <div class="metric-value">${avgError}</div>
       </div>
     </div>
 
     <div class="summary-line">
-      Yön isabet oranı: <b>${directionRate}</b>.
-      Bu tablo API'den gelen tüm kapanmış performans kayıtlarını gösterir.
+      Genel yön isabet oranı: <b>${directionRate}</b>.
+      Genel ortalama sapma, tüm fonların toplam performansını gösterir; fon bazlı karar için aşağıdaki öğrenme tablosu kullanılmalıdır.
       ${latestDateAvgError ? `Son tamamlanan gün ortalaması: <b>${latestDateAvgError}</b>.` : ""}
       <br />
       <b>${escapeHtml(finalLabel)}</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange alanından okunur.
       ${escapeHtml(deviationFormula)}.
+    </div>
+
+    ${fundLearningPanel}
+
+    <div class="summary-line">
+      <b>Kapanmış Tahmin Performans Kayıtları</b>
     </div>
 
     <table class="perf-table">
