@@ -272,7 +272,7 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      Read-Only Frontend v8.0 ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+      Read-Only Frontend v8.2 ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
     </div>
   `;
 }
@@ -286,31 +286,28 @@ function performanceGrade(errorAbs) {
   return "Çok zayıf";
 }
 
+function fundOrderIndex(code) {
+  const index = FUND_ORDER.indexOf(code);
+  return index === -1 ? 999 : index;
+}
+
+function sortPerformanceRows(a, b) {
+  const dateCompare = String(b.predictionDate || "").localeCompare(
+    String(a.predictionDate || "")
+  );
+
+  if (dateCompare !== 0) return dateCompare;
+
+  return fundOrderIndex(a.fundCode) - fundOrderIndex(b.fundCode);
+}
+
 function getLatestPerformanceRows(performanceJson) {
-  const rows = performanceJson && Array.isArray(performanceJson.rows)
-    ? performanceJson.rows
-    : [];
+  const rows =
+    performanceJson && Array.isArray(performanceJson.rows)
+      ? performanceJson.rows
+      : [];
 
-  const byFund = performanceJson && performanceJson.byFund
-    ? performanceJson.byFund
-    : {};
-
-  const out = {};
-
-  FUND_ORDER.forEach(function(code) {
-    const directRow = rows.find(function(row) {
-      return row && row.fundCode === code;
-    });
-
-    const displayRow =
-      byFund[code] && byFund[code].latestDisplayRow
-        ? byFund[code].latestDisplayRow
-        : null;
-
-    out[code] = directRow || displayRow || null;
-  });
-
-  return out;
+  return rows.slice().sort(sortPerformanceRows);
 }
 
 function resolveFinalPrediction(perf) {
@@ -336,79 +333,91 @@ function renderPerformance(performanceJson) {
   }
 
   const summary = performanceJson.summary || {};
-  const latestRows = getLatestPerformanceRows(performanceJson);
+  const performanceRows = getLatestPerformanceRows(performanceJson);
 
-  const tableRows = FUND_ORDER.map(function(code) {
-    const perf = latestRows[code] || {};
-    const status = perf.status || "pending";
+  const totalRows = summary.totalRows ?? performanceRows.length;
+  const pendingRows =
+    summary.pendingRows ??
+    performanceRows.filter(function(row) {
+      return row && row.status !== "completed";
+    }).length;
 
-    const finalPrediction = resolveFinalPrediction(perf);
-    const actual = perf.actualChange;
-
-    const error =
-      actual !== null && actual !== undefined &&
-      finalPrediction !== null && finalPrediction !== undefined
-        ? actual - finalPrediction
-        : null;
-
-    const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
-    const statusClass = status === "completed" ? "status-completed" : "";
-    const grade = error === null || error === undefined ? "Bekliyor" : performanceGrade(error);
-
-    return `
-      <tr>
-        <td><b>${escapeHtml(code)}</b></td>
-        <td>${escapeHtml(perf.predictionDate || performanceJson.predictionDate || "—")}</td>
-        <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
-        <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
-        <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
-        <td>${escapeHtml(grade)}</td>
-        <td><span class="status-pill ${statusClass}">${statusText}</span></td>
-      </tr>
-    `;
-  }).join("");
-
-  const totalRows = summary.totalRows ?? 0;
-  const pendingRows = summary.pendingRows ?? 0;
-  const completedRows = summary.completedRows ?? 0;
-
-  const displayErrors = FUND_ORDER.map(function(code) {
-    const perf = latestRows[code] || {};
-    const finalPrediction = resolveFinalPrediction(perf);
-    const actual = perf.actualChange;
-
-    if (
-      actual === null || actual === undefined ||
-      finalPrediction === null || finalPrediction === undefined
-    ) {
-      return null;
-    }
-
-    return Math.abs(actual - finalPrediction);
-  }).filter(function(value) {
-    return value !== null && value !== undefined;
-  });
-
-  const avgDisplayError =
-    displayErrors.length > 0
-      ? displayErrors.reduce(function(sum, value) { return sum + value; }, 0) / displayErrors.length
-      : null;
+  const completedRows =
+    summary.completedRows ??
+    performanceRows.filter(function(row) {
+      return row && row.status === "completed";
+    }).length;
 
   const avgError =
-    avgDisplayError === null || avgDisplayError === undefined
+    summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
       ? "Bekliyor"
-      : formatPercent(avgDisplayError, 2);
+      : formatPercent(summary.averageAbsoluteError, 2);
+
+  const latestDateAvgError =
+    summary.latestDateAverageAbsoluteError === null ||
+    summary.latestDateAverageAbsoluteError === undefined
+      ? null
+      : formatPercent(summary.latestDateAverageAbsoluteError, 2);
 
   const directionRate =
     summary.directionHitRate === null || summary.directionHitRate === undefined
       ? "Bekliyor"
       : formatPercent(summary.directionHitRate, 2);
 
+  const finalLabel =
+    performanceJson.finalPredictionLabel ||
+    summary.finalPredictionLabel ||
+    "T-1 18:00 Nihai Tahmin";
+
   const deviationFormula =
+    summary.formula ||
     summary.deviationFormula ||
-    "Sapma = gerçekleşen TEFAS değişimi - önceki 18:00 nihai tahmin";
+    "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 sonrası kilitlenen nihai tahmin";
 
   const apiVersion = performanceJson.version || "Performance API";
+
+  const tableRows = performanceRows.length
+    ? performanceRows.map(function(perf) {
+        const status = perf.status || "pending";
+
+        const finalPrediction = resolveFinalPrediction(perf);
+        const actual = num(perf.actualChange, null);
+
+        const apiError = num(perf.errorChange, null);
+        const calculatedError =
+          actual !== null &&
+          actual !== undefined &&
+          finalPrediction !== null &&
+          finalPrediction !== undefined
+            ? actual - finalPrediction
+            : null;
+
+        const error = apiError !== null ? apiError : calculatedError;
+
+        const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
+        const statusClass = status === "completed" ? "status-completed" : "";
+        const grade =
+          error === null || error === undefined
+            ? "Bekliyor"
+            : (perf.grade || performanceGrade(error));
+
+        return `
+          <tr>
+            <td><b>${escapeHtml(perf.fundCode || "—")}</b></td>
+            <td>${escapeHtml(perf.predictionDate || performanceJson.predictionDate || "—")}</td>
+            <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
+            <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
+            <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
+            <td>${escapeHtml(grade)}</td>
+            <td><span class="status-pill ${statusClass}">${statusText}</span></td>
+          </tr>
+        `;
+      }).join("")
+    : `
+      <tr>
+        <td colspan="7">Performans kaydı yok.</td>
+      </tr>
+    `;
 
   box.innerHTML = `
     <div class="performance-grid">
@@ -432,8 +441,10 @@ function renderPerformance(performanceJson) {
 
     <div class="summary-line">
       Yön isabet oranı: <b>${directionRate}</b>.
-      Bu tablo kapanmış performans kayıtlarını gösterir.
-      <b>Önceki 18:00 Nihai Tahmin</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange/calibratedChange alanından okunur.
+      Bu tablo API'den gelen tüm kapanmış performans kayıtlarını gösterir.
+      ${latestDateAvgError ? `Son tamamlanan gün ortalaması: <b>${latestDateAvgError}</b>.` : ""}
+      <br />
+      <b>${escapeHtml(finalLabel)}</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange alanından okunur.
       ${escapeHtml(deviationFormula)}.
     </div>
 
@@ -443,7 +454,7 @@ function renderPerformance(performanceJson) {
           <th>Fon</th>
           <th>Tahmin Tarihi</th>
           <th>Gerçekleşen</th>
-          <th>Önceki 18:00 Nihai Tahmin</th>
+          <th>${escapeHtml(finalLabel)}</th>
           <th>Sapma</th>
           <th>Not</th>
           <th>Durum</th>
