@@ -400,6 +400,74 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
   const byFund = summary.byFund || performanceJson.byFund || {};
   const learningStats = performanceJson.learningStats || {};
 
+  function trendLabel(completedRows, averageAbsError, averageError) {
+    const completed = Number(completedRows || 0);
+    const absError = num(averageAbsError, null);
+    const avgError = num(averageError, null);
+    const prefix = completed < 5 ? "Erken sinyal: " : "";
+
+    if (avgError === null) return `${prefix}veri yok`;
+
+    if (absError !== null && absError >= 0.85 && Math.abs(avgError) <= 0.25) {
+      return `${prefix}hata yönü kararsız`;
+    }
+
+    if (avgError > 0.15) return `${prefix}tahmin düşük kalıyor`;
+    if (avgError < -0.15) return `${prefix}tahmin yüksek kalıyor`;
+
+    return `${prefix}dengeli`;
+  }
+
+  function readableStatus(completedRows, averageAbsError, directionHitRate) {
+    const completed = Number(completedRows || 0);
+    const absError = num(averageAbsError, null);
+    const hitRate = num(directionHitRate, null);
+
+    if (completed === 0) return "Kapanmış veri yok";
+    if (completed < 5) return "Örnek sayısı düşük — karar için erken";
+
+    if (absError !== null && absError <= 0.35 && hitRate !== null && hitRate >= 70) {
+      return "İyi çalışıyor";
+    }
+
+    if (absError !== null && absError > 0.85) {
+      return "Model yaklaşımı gözden geçirilmeli";
+    }
+
+    if (hitRate !== null && hitRate < 50) {
+      return "Yön tahmini zayıf";
+    }
+
+    return "İzlenmeli";
+  }
+
+  function offsetLabel(value) {
+    const offset = num(value, null);
+    if (offset === null) return "—";
+
+    if (Math.abs(offset) < 0.005) {
+      return `Düzeltme gerekmiyor (${formatPercent(offset, 2)})`;
+    }
+
+    if (offset > 0) {
+      return `Tahmine ekle: ${formatPercent(offset, 2)} puan`;
+    }
+
+    return `Tahminden düş: ${formatPercent(Math.abs(offset), 2)} puan`;
+  }
+
+  function confidenceLabel(value) {
+    const adjustment = num(value, null);
+    if (adjustment === null) return "—";
+
+    if (adjustment > 3) return `Güven artırıldı (+${formatNumber(adjustment, 0)})`;
+    if (adjustment > 0) return `Güven hafif artırıldı (+${formatNumber(adjustment, 0)})`;
+    if (adjustment < -3) return `Güven düşürüldü (${formatNumber(adjustment, 0)})`;
+    if (adjustment < 0) return `Güven hafif düşürüldü (${formatNumber(adjustment, 0)})`;
+
+    return "Güven nötr (0)";
+  }
+
   const rows = FUND_ORDER.map(function(code) {
     const fundRows = performanceRows.filter(function(row) {
       return row && row.fundCode === code && row.status === "completed";
@@ -460,37 +528,27 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
       null
     );
 
-    const biasLabel =
-      learning.biasLabel ||
-      stat.biasLabel ||
-      biasLabelFromAverageError(averageError);
-
-    const learningStatus =
-      learning.learningStatus ||
-      stat.learningStatus ||
-      learningStatusFromMetrics(completedRows, averageAbsError, directionHitRate);
+    const trend = trendLabel(completedRows, averageAbsError, averageError);
+    const status = readableStatus(completedRows, averageAbsError, directionHitRate);
 
     const avgErrorClass = directionClass(averageError);
     const offsetClass = directionClass(suggestedOffset);
-
-    const confidenceText =
-      confidenceAdjustment === null
-        ? ""
-        : `<br /><span class="small">Güven ayarı: ${formatNumber(confidenceAdjustment, 2)}</span>`;
 
     return `
       <tr>
         <td><b>${escapeHtml(code)}</b></td>
         <td>${formatNumber(completedRows, 0)}</td>
         <td><b>${formatPercent(averageAbsError, 2)}</b></td>
-        <td>${formatPercent(directionHitRate, 2)}</td>
-        <td class="${avgErrorClass}">${averageError === null ? "—" : formatPercent(averageError, 2)}</td>
-        <td>${escapeHtml(biasLabel)}</td>
-        <td class="${offsetClass}">
-          ${suggestedOffset === null ? "—" : formatPercent(suggestedOffset, 2)}
-          ${confidenceText}
+        <td class="${avgErrorClass}">
+          ${averageError === null ? "—" : formatPercent(averageError, 2)}
         </td>
-        <td>${escapeHtml(learningStatus)}</td>
+        <td>${escapeHtml(trend)}</td>
+        <td>${formatPercent(directionHitRate, 2)}</td>
+        <td class="${offsetClass}">
+          ${escapeHtml(offsetLabel(suggestedOffset))}
+        </td>
+        <td>${escapeHtml(confidenceLabel(confidenceAdjustment))}</td>
+        <td>${escapeHtml(status)}</td>
       </tr>
     `;
   }).join("");
@@ -498,8 +556,15 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
   return `
     <div class="summary-line">
       <b>Fon Bazlı Öğrenme ve Sapma</b><br />
-      Genel ortalama sadece sistemin genel sağlık göstergesidir. Asıl karar metrikleri fon bazında izlenir:
-      her fonun ortalama sapması, yön isabeti, bias durumu ve önerilen düzeltmesi ayrı değerlendirilir.
+      Bu bölümde her fon ayrı değerlendirilir. Genel ortalama sadece sistem özeti olarak kalır.
+      <br />
+      <b>Ortalama Mutlak Sapma</b>: |Gerçekleşen - Nihai Tahmin| ortalamasıdır; tahminin büyüklük hatasını gösterir.
+      <br />
+      <b>Ortalama Yönlü Hata</b>: Gerçekleşen - Nihai Tahmin ortalamasıdır. Pozitifse tahmin düşük kalmış, negatifse tahmin yüksek kalmıştır.
+      <br />
+      <b>Tahmin Düzeltmesi</b>: gelecek tahmine eklenmesi veya tahminden düşülmesi önerilen temkinli düzeltmedir.
+      <br />
+      <b>Güven Etkisi</b>: modelin bu fondaki güven skoruna yapılan artırma/azaltma etkisidir; pozitif güveni artırır, negatif güveni düşürür.
     </div>
 
     <table class="perf-table">
@@ -507,12 +572,13 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
         <tr>
           <th>Fon</th>
           <th>Kapanan</th>
-          <th>Fon Ortalama Sapma</th>
+          <th>Ortalama Mutlak Sapma</th>
+          <th>Ortalama Yönlü Hata</th>
+          <th>Tahmin Eğilimi</th>
           <th>Yön İsabeti</th>
-          <th>Ortalama Hata</th>
-          <th>Bias</th>
-          <th>Önerilen Düzeltme</th>
-          <th>Öğrenme Durumu</th>
+          <th>Tahmin Düzeltmesi</th>
+          <th>Güven Etkisi</th>
+          <th>Veri Durumu</th>
         </tr>
       </thead>
       <tbody>
