@@ -24,6 +24,9 @@ const MARKET_LABELS = {
 
 const FUND_ORDER = ["PBR", "PHE", "TLY"];
 
+const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.1 - Data Quality + Fund Bias Correction";
+const DISPLAY_MODEL_SHORT = "v8.1";
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -112,9 +115,18 @@ function getPredictions(predictionsJson) {
 }
 
 function getModelLabel(predictionsJson) {
-  return predictionsJson && predictionsJson.model
-    ? predictionsJson.model
-    : "FinScope Prediction Engine v7.1 - Accuracy Layer";
+  const model =
+    predictionsJson && predictionsJson.model
+      ? String(predictionsJson.model)
+      : "";
+
+  if (model.includes("v8.1")) return model;
+
+  /*
+    MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalır.
+    Kullanıcıya gösterilen aktif motor adı ise v8.1 olmalıdır.
+  */
+  return DISPLAY_MODEL_NAME;
 }
 
 function renderMarketCards(marketJson, fundsJson, predictionsJson) {
@@ -209,7 +221,7 @@ function renderPredictionSummary(predictionsJson) {
     lines.push(`
       <div class="summary-line">
         <b>${escapeHtml(code)}</b>:
-        <span class="${cls}">${directionIcon(pred)} v7.1 Tahmin ${formatPercent(pred, 2)}</span>
+        <span class="${cls}">${directionIcon(pred)} ${DISPLAY_MODEL_SHORT} Tahmin ${formatPercent(pred, 2)}</span>
         <br />
         Yumuşatılmamış: ${formatPercent(unsmoothed, 2)}
         • TEFAS yumuşatma sonrası: ${formatPercent(raw, 2)}
@@ -281,7 +293,7 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      Read-Only Frontend v8.3 ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+      Read-Only Frontend v8.4 - Model Label Sync ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
     </div>
   `;
 }
