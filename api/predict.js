@@ -1,8 +1,13 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_NAME = "FinScope Prediction Engine v8.0 - Portfolio Freshness Accuracy";
+const MODEL_NAME = "FinScope Prediction Engine v8.1 - Data Quality + Fund Bias Correction";
 const MODEL_KEY = "v7_1_accuracy_layer";
 const TARGET_ABSOLUTE_ERROR = 0.10;
+const MIN_VALID_FUND_PRICE = 0;
+const MAX_ABSOLUTE_ACTUAL_CHANGE = 20;
+const MAX_ABSOLUTE_LEARNING_ERROR = 20;
+const MAX_ABSOLUTE_PREDICTION_CHANGE = 20;
+const MIN_DIRECTION_SIGNAL = 0.01;
 
 const STOCK_SYMBOL_MAP = {
   XU100: "XU100.IS",
@@ -113,6 +118,97 @@ function confidenceText(score) {
   return "Düşük";
 }
 
+function isValidFundPrice(row) {
+  const price = num(row && row.price, null);
+  return price !== null && price > MIN_VALID_FUND_PRICE;
+}
+
+function isValidActualChange(value) {
+  const actual = num(value, null);
+  return actual !== null && Math.abs(actual) <= MAX_ABSOLUTE_ACTUAL_CHANGE;
+}
+
+function fundPriceQuality(row, expectedDate = null) {
+  const issues = [];
+
+  if (!row) {
+    return {
+      ok: false,
+      issues: ["fund_price_missing"],
+      price: null,
+      dailyChange: null,
+      priceDate: null
+    };
+  }
+
+  const price = num(row.price, null);
+  const dailyChange = num(row.daily_change, null);
+  const priceDate = row.price_date || row.date || null;
+
+  if (expectedDate && String(priceDate || "").slice(0, 10) !== String(expectedDate).slice(0, 10)) {
+    issues.push("price_date_mismatch");
+  }
+
+  if (price === null || price <= MIN_VALID_FUND_PRICE) {
+    issues.push("price_invalid_or_zero");
+  }
+
+  if (dailyChange === null) {
+    issues.push("daily_change_missing");
+  } else if (Math.abs(dailyChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
+    issues.push("daily_change_out_of_range");
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    price,
+    dailyChange,
+    priceDate: priceDate ? String(priceDate).slice(0, 10) : null
+  };
+}
+
+function isReliablePerformanceRow(row) {
+  if (!row) return false;
+
+  const actualChange = num(row.actual_change, null);
+  const absoluteError = num(row.absolute_error, null);
+  const errorChange = getPerformanceError(row);
+  const predicted = getPerformancePrediction(row);
+  const actualPrice = num(row.actual_price, null);
+  const predictionDate = row.prediction_date ? String(row.prediction_date).slice(0, 10) : null;
+  const actualPriceDate = row.actual_price_date ? String(row.actual_price_date).slice(0, 10) : null;
+
+  if (row.status && row.status !== "closed") return false;
+  if (actualChange === null || Math.abs(actualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) return false;
+  if (predicted === null || Math.abs(predicted) > MAX_ABSOLUTE_PREDICTION_CHANGE) return false;
+  if (errorChange === null || Math.abs(errorChange) > MAX_ABSOLUTE_LEARNING_ERROR) return false;
+  if (absoluteError !== null && Math.abs(absoluteError) > MAX_ABSOLUTE_LEARNING_ERROR) return false;
+  if (actualPrice !== null && actualPrice <= MIN_VALID_FUND_PRICE) return false;
+  if (predictionDate && actualPriceDate && predictionDate !== actualPriceDate) return false;
+
+  return true;
+}
+
+function isReliablePredictionHistoryRow(row) {
+  if (!row) return false;
+
+  const actualChange = num(row.actual_change, null);
+  const predicted = getPerformancePrediction(row);
+  const errorChange = getPerformanceError(row);
+
+  if (actualChange === null || Math.abs(actualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) return false;
+  if (predicted === null || Math.abs(predicted) > MAX_ABSOLUTE_PREDICTION_CHANGE) return false;
+  if (errorChange === null || Math.abs(errorChange) > MAX_ABSOLUTE_LEARNING_ERROR) return false;
+
+  return true;
+}
+
+function qualityNoteFromIssues(issues) {
+  if (!issues || !issues.length) return "Veri kalite kontrolünden geçti.";
+  return "Veri kalite kontrolü engelledi: " + issues.join(", ");
+}
+
 function normalizeSymbol(symbol) {
   if (!symbol) return "";
 
@@ -185,16 +281,56 @@ async function optionalSupabaseRequest(path, fallback = []) {
 
 async function getLatestFundPrices() {
   const rows = await supabaseRequest(
-    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc,created_at.desc&limit=80"
+    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc,created_at.desc&limit=120"
   );
 
   const latest = {};
+  const quality = {};
+
+  for (const code of FUNDS) {
+    quality[code] = {
+      selected: null,
+      selectedQuality: null,
+      firstRawDate: null,
+      firstRawQuality: null,
+      skippedInvalidRows: 0,
+      selectionRule: "latest_reliable_fund_price"
+    };
+  }
 
   for (const row of rows || []) {
-    if (!latest[row.fund_code]) {
-      latest[row.fund_code] = row;
+    const code = row.fund_code;
+    if (!FUNDS.includes(code)) continue;
+
+    const q = fundPriceQuality(row);
+
+    if (!quality[code].firstRawDate) {
+      quality[code].firstRawDate = row.price_date || row.date || null;
+      quality[code].firstRawQuality = q;
+    }
+
+    if (!q.ok) {
+      quality[code].skippedInvalidRows += 1;
+      continue;
+    }
+
+    if (!latest[code]) {
+      latest[code] = row;
+      quality[code].selected = {
+        priceDate: row.price_date || row.date || null,
+        price: row.price ?? null,
+        dailyChange: row.daily_change ?? null,
+        updatedAt: row.updated_at || row.created_at || null
+      };
+      quality[code].selectedQuality = q;
     }
   }
+
+  Object.defineProperty(latest, "__quality", {
+    value: quality,
+    enumerable: false,
+    configurable: true
+  });
 
   return latest;
 }
@@ -484,12 +620,22 @@ function getHoldingMarketChange(holding, marketChanges) {
 }
 
 async function getPerformanceRows() {
-  return await optionalSupabaseRequest(
+  const rows = await optionalSupabaseRequest(
     "prediction_performance?select=*&fund_code=in.(PBR,PHE,TLY)&model=eq." +
       encodeURIComponent(MODEL_KEY) +
       "&status=eq.closed&order=closed_at.desc,created_at.desc&limit=300",
     []
   );
+
+  const reliable = (rows || []).filter(isReliablePerformanceRow);
+
+  Object.defineProperty(reliable, "__rawCount", {
+    value: Array.isArray(rows) ? rows.length : 0,
+    enumerable: false,
+    configurable: true
+  });
+
+  return reliable;
 }
 
 async function getModelLearningStats() {
@@ -519,10 +665,11 @@ async function getFallbackCalibrationRows() {
     []
   );
 
+  const reliableRows = (rows || []).filter(isReliablePredictionHistoryRow);
   const byFund = {};
 
   for (const code of FUNDS) {
-    byFund[code] = rows.filter(r => r.fund_code === code);
+    byFund[code] = reliableRows.filter(r => r.fund_code === code);
   }
 
   return byFund;
@@ -530,7 +677,7 @@ async function getFallbackCalibrationRows() {
 
 function calculateDirectionHitFromValues(predicted, actual) {
   if (predicted === null || actual === null) return null;
-  if (Math.abs(predicted) < 0.01 || Math.abs(actual) < 0.01) return null;
+  if (Math.abs(predicted) < MIN_DIRECTION_SIGNAL || Math.abs(actual) < MIN_DIRECTION_SIGNAL) return null;
   return direction(predicted) === direction(actual);
 }
 
@@ -557,6 +704,7 @@ function getPerformanceError(row) {
 function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackRowsByFund) {
   const closedRows = (performanceRows || [])
     .filter(row => row.fund_code === code)
+    .filter(isReliablePerformanceRow)
     .filter(row => getPerformanceError(row) !== null)
     .sort((a, b) => {
       const aTime = new Date(a.closed_at || a.updated_at || a.created_at || "1970-01-01").getTime();
@@ -565,6 +713,7 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     });
 
   const fallbackRows = (fallbackRowsByFund[code] || [])
+    .filter(isReliablePredictionHistoryRow)
     .filter(row => getPerformanceError(row) !== null)
     .sort((a, b) => {
       const aTime = new Date(a.updated_at || a.created_at || "1970-01-01").getTime();
@@ -573,7 +722,7 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     });
 
   const sourceRows = closedRows.length ? closedRows : fallbackRows;
-  const source = closedRows.length ? "prediction_performance" : "prediction_history_fallback";
+  const source = closedRows.length ? "prediction_performance_quality_checked" : "prediction_history_quality_checked_fallback";
   const learning = learningStats[code] || {};
 
   if (!sourceRows.length) {
@@ -592,7 +741,9 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
       confidencePenalty: 10,
       confidenceAdjustment: num(learning.confidence_adjustment, 0),
       suggestedOffsetFromStats: num(learning.suggested_offset, null),
-      note: "Kapanmış performans verisi yok; v8 öğrenme düzeltmesi temkinli nötr bırakıldı."
+      biasCorrectionStrength: 0,
+      errorConsistency: 0,
+      note: "Güvenilir kapanmış performans verisi yok; v8.1 öğrenme düzeltmesi temkinli nötr bırakıldı."
     };
   }
 
@@ -614,6 +765,14 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
   const recentAbsoluteError =
     shortErrors.reduce((sum, value) => sum + Math.abs(value), 0) / Math.max(1, shortErrors.length);
 
+  const positiveErrors = errors.filter(value => value > MIN_DIRECTION_SIGNAL).length;
+  const negativeErrors = errors.filter(value => value < -MIN_DIRECTION_SIGNAL).length;
+  const directionalErrors = positiveErrors + negativeErrors;
+
+  const dominantErrorCount = Math.max(positiveErrors, negativeErrors);
+  const errorConsistency =
+    directionalErrors > 0 ? dominantErrorCount / directionalErrors : 0;
+
   const directionHits = recent
     .map(row => {
       if (row.direction_hit !== null && row.direction_hit !== undefined) {
@@ -633,33 +792,55 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
       : null;
 
   const sampleSize = errors.length;
-  const learningStrength = sampleSize === 0 ? 0 : clamp(sampleSize / 12, 0.15, 1);
-  const blendedError = averageError * 0.55 + recentError * 0.45;
+
+  const learningStrength =
+    sampleSize === 0
+      ? 0
+      : sampleSize < 3
+        ? 0.22
+        : sampleSize < 5
+          ? 0.38
+          : sampleSize < 8
+            ? 0.62
+            : sampleSize < 12
+              ? 0.82
+              : 1;
+
+  const blendedError = averageError * 0.42 + recentError * 0.58;
   const targetGap = Math.max(0, averageAbsoluteError - TARGET_ABSOLUTE_ERROR);
-  const errorPressure = clamp(targetGap / 0.9, 0, 1);
-  const correctionPower = 0.35 + errorPressure * 0.65;
+  const errorPressure = clamp(targetGap / 0.75, 0, 1);
+
+  const consistencyBoost =
+    errorConsistency >= 0.75
+      ? 1.08
+      : errorConsistency >= 0.60
+        ? 1
+        : 0.78;
+
+  const correctionPower = (0.45 + errorPressure * 0.45) * consistencyBoost;
 
   let offset = blendedError * learningStrength * correctionPower;
 
-  if (Math.abs(averageError) < 0.04 && Math.abs(recentError) < 0.04) {
+  if (Math.abs(averageError) < 0.035 && Math.abs(recentError) < 0.035) {
     offset = 0;
   }
 
   const maxOffset =
     sampleSize < 3
-      ? 0.10
+      ? 0.08
       : sampleSize < 5
-        ? 0.18
-        : sampleSize < 10
-          ? 0.35
-          : 0.55;
+        ? 0.16
+        : sampleSize < 8
+          ? 0.32
+          : sampleSize < 12
+            ? 0.48
+            : 0.65;
 
   offset = clamp(offset, -maxOffset, maxOffset);
 
   /*
-    model_learning_stats varsa onu doğrudan ezici kaynak yapmıyoruz.
-    Çünkü oradaki değerler de kapanmış performanstan türetilmiş özetlerdir.
-    Burada sadece aynı yönde destek varsa hafif harmanlıyoruz.
+    model_learning_stats sadece destek sinyali olarak kullanılır.
+    Asıl düzeltme her fonun güvenilir kapanmış final performans kayıtlarından hesaplanır.
   */
   const statsOffset = num(learning.suggested_offset, null);
 
@@ -668,37 +849,40 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     Math.sign(statsOffset) === Math.sign(offset) &&
     Math.abs(statsOffset) > 0.005
   ) {
-    offset = clamp(offset * 0.7 + statsOffset * 0.3, -maxOffset, maxOffset);
+    offset = clamp(offset * 0.78 + statsOffset * 0.22, -maxOffset, maxOffset);
   }
 
   let dampingFactor = 1;
 
-  if (averageAbsoluteError > 1.25) dampingFactor = 0.78;
-  else if (averageAbsoluteError > 0.85) dampingFactor = 0.84;
-  else if (averageAbsoluteError > 0.50) dampingFactor = 0.90;
-  else if (averageAbsoluteError > 0.25) dampingFactor = 0.95;
+  if (averageAbsoluteError > 1.25) dampingFactor = 0.76;
+  else if (averageAbsoluteError > 0.85) dampingFactor = 0.82;
+  else if (averageAbsoluteError > 0.50) dampingFactor = 0.89;
+  else if (averageAbsoluteError > 0.25) dampingFactor = 0.94;
   else if (averageAbsoluteError <= TARGET_ABSOLUTE_ERROR) dampingFactor = 1;
 
   if (directionHitRate !== null && directionHitRate < 50) {
-    dampingFactor = Math.min(dampingFactor, 0.88);
+    dampingFactor = Math.min(dampingFactor, 0.86);
+  } else if (directionHitRate !== null && directionHitRate >= 80) {
+    dampingFactor = Math.max(dampingFactor, 0.93);
   }
 
   let confidencePenalty = 0;
 
-  if (averageAbsoluteError > 1.25) confidencePenalty += 20;
-  else if (averageAbsoluteError > 0.85) confidencePenalty += 15;
-  else if (averageAbsoluteError > 0.50) confidencePenalty += 9;
+  if (averageAbsoluteError > 1.25) confidencePenalty += 22;
+  else if (averageAbsoluteError > 0.85) confidencePenalty += 16;
+  else if (averageAbsoluteError > 0.50) confidencePenalty += 10;
   else if (averageAbsoluteError > 0.25) confidencePenalty += 5;
 
   if (sampleSize < 5) confidencePenalty += 7;
-  if (directionHitRate !== null && directionHitRate < 50) confidencePenalty += 8;
+  if (directionHitRate !== null && directionHitRate < 50) confidencePenalty += 9;
+  if (errorConsistency < 0.55 && sampleSize >= 5) confidencePenalty += 4;
 
   const status =
     averageAbsoluteError <= TARGET_ABSOLUTE_ERROR && sampleSize >= 5
       ? "target_zone"
       : sampleSize < 5
         ? "early_learning"
-        : "learned";
+        : "fund_bias_corrected";
 
   return {
     status,
@@ -716,8 +900,12 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     confidencePenalty: round(confidencePenalty, 2),
     confidenceAdjustment: num(learning.confidence_adjustment, 0),
     suggestedOffsetFromStats: statsOffset,
+    biasCorrectionStrength: round(learningStrength * correctionPower, 4),
+    errorConsistency: round(errorConsistency, 4),
+    positiveErrorCount: positiveErrors,
+    negativeErrorCount: negativeErrors,
     note:
-      "v8: öğrenme sadece kapanmış final performanslarından hesaplanır; hedef mutlak sapma 0.10 yüzde puandır."
+      "v8.1: öğrenme sadece veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; fon bazlı sistematik hata ayrı düzeltilir."
   };
 }
 
@@ -937,7 +1125,7 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
   );
 
   return {
-    status: "v8_0_portfolio_freshness_accuracy",
+    status: "v8_1_data_quality_fund_bias_correction",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(freshnessAdjustedSignal, 4),
@@ -973,7 +1161,7 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
     holdingMeta,
     observations: details.length,
     methodology:
-      "v8.0: yalnızca son portföy rapor tarihindeki holdingler kullanılır; portföy eskiliği tahmin ağırlığını ve güveni düşürür; öğrenme kapanmış final performanslarından yapılır.",
+      "v8.1: son portföy rapor tarihi kullanılır; geçersiz TEFAS verileri öğrenmeden çıkarılır; her fon için ayrı sistematik hata düzeltmesi uygulanır.",
     details
   };
 }
@@ -1122,7 +1310,22 @@ async function updatePendingActuals(latestFundPrices) {
       skipped.push({
         id: row.id,
         fundCode: code,
-        reason: "no_latest_fund_price"
+        reason: "no_reliable_latest_fund_price"
+      });
+      continue;
+    }
+
+    const latestQuality = fundPriceQuality(latest);
+
+    if (!latestQuality.ok) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "invalid_latest_fund_price",
+        issues: latestQuality.issues,
+        price: latestQuality.price,
+        dailyChange: latestQuality.dailyChange,
+        priceDate: latestQuality.priceDate
       });
       continue;
     }
@@ -1167,6 +1370,32 @@ async function updatePendingActuals(latestFundPrices) {
       continue;
     }
 
+    if (Math.abs(actual) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "actual_change_out_of_range_blocked",
+        actual,
+        maxAllowed: MAX_ABSOLUTE_ACTUAL_CHANGE,
+        predictionDate,
+        latestDate
+      });
+      continue;
+    }
+
+    if (Math.abs(predicted) > MAX_ABSOLUTE_PREDICTION_CHANGE) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "prediction_out_of_range_blocked",
+        predicted,
+        maxAllowed: MAX_ABSOLUTE_PREDICTION_CHANGE,
+        predictionDate,
+        latestDate
+      });
+      continue;
+    }
+
     const latestIsAfterPredictionDate = latestDate > predictionDate;
 
     const latestUpdatedAt = latest.updated_at || latest.created_at || null;
@@ -1196,6 +1425,21 @@ async function updatePendingActuals(latestFundPrices) {
 
     const error = actual - predicted;
 
+    if (Math.abs(error) > MAX_ABSOLUTE_LEARNING_ERROR) {
+      skipped.push({
+        id: row.id,
+        fundCode: code,
+        reason: "learning_error_out_of_range_blocked",
+        actual,
+        predicted,
+        error,
+        maxAllowed: MAX_ABSOLUTE_LEARNING_ERROR,
+        predictionDate,
+        latestDate
+      });
+      continue;
+    }
+
     const patched = await supabaseRequest(
       `prediction_history?id=eq.${encodeURIComponent(row.id)}`,
       {
@@ -1217,6 +1461,7 @@ async function updatePendingActuals(latestFundPrices) {
       predicted: round(predicted, 4),
       actual: round(actual, 4),
       error: round(error, 4),
+      dataQuality: latestQuality,
       patched
     });
   }
@@ -1235,6 +1480,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const latestFundPrices = await getLatestFundPrices();
+    const latestFundPriceQuality = latestFundPrices.__quality || {};
 
     const actualUpdate = await updatePendingActuals(latestFundPrices);
 
@@ -1296,14 +1542,22 @@ module.exports = async function handler(req, res) {
       model: MODEL_NAME,
       modelKey: MODEL_KEY,
       targetAbsoluteError: TARGET_ABSOLUTE_ERROR,
+      dataQualityGuard: {
+        enabled: true,
+        minValidFundPrice: MIN_VALID_FUND_PRICE,
+        maxAbsoluteActualChange: MAX_ABSOLUTE_ACTUAL_CHANGE,
+        maxAbsoluteLearningError: MAX_ABSOLUTE_LEARNING_ERROR,
+        latestFundPriceQuality
+      },
       closeLogic:
-        "v8.0 portfolio freshness accuracy; final/performance rows are not overwritten",
+        "v8.1 data quality + fund bias correction; invalid actual prices are ignored and final/performance rows are not overwritten",
       latestFundDate,
       predictionDate,
       actualUpdate,
       latestByFund,
       holdingMeta,
       closedPerformanceRows: Array.isArray(performanceRows) ? performanceRows.length : 0,
+      closedPerformanceRowsRaw: performanceRows.__rawCount || (Array.isArray(performanceRows) ? performanceRows.length : 0),
       learningStatsFound: Object.keys(learningStats || {}).length,
       savedToday: savedRows.length,
       saveActions: savedRows,
