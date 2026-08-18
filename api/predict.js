@@ -1,6 +1,6 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_NAME = "FinScope Prediction Engine v8.1 - Data Quality + Fund Bias Correction";
+const MODEL_NAME = "FinScope Prediction Engine v8.2 - Fund Specific Error Control";
 const MODEL_KEY = "v7_1_accuracy_layer";
 const TARGET_ABSOLUTE_ERROR = 0.10;
 const MIN_VALID_FUND_PRICE = 0;
@@ -905,7 +905,129 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     positiveErrorCount: positiveErrors,
     negativeErrorCount: negativeErrors,
     note:
-      "v8.1: öğrenme sadece veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; fon bazlı sistematik hata ayrı düzeltilir."
+      "v8.2: öğrenme veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; fon bazlı yön, büyüklük ve hata tutarlılığı ayrı kontrol edilir."
+  };
+}
+
+
+function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange) {
+  const sampleSize = num(accuracyLayer.sampleSize, 0);
+  const averageError = num(accuracyLayer.averageError, 0);
+  const averageAbsoluteError = num(accuracyLayer.averageAbsoluteError, 0);
+  const directionHitRate = num(accuracyLayer.directionHitRate, null);
+  const errorConsistency = num(accuracyLayer.errorConsistency, 0);
+
+  let multiplier = 1;
+  let secondaryOffset = 0;
+  let predictionCap = 2.15;
+  let confidencePenalty = 0;
+  const rules = [];
+
+  const enoughSample = sampleSize >= 5;
+
+  if (!enoughSample) {
+    return {
+      status: "early_learning_neutral",
+      controlledChange: round(preControlChange, 6),
+      preControlChange: round(preControlChange, 6),
+      secondaryOffset: 0,
+      multiplier: 1,
+      predictionCap,
+      confidencePenalty: 6,
+      rules: ["sample_size_below_5_no_aggressive_control"],
+      averageError: round(averageError, 4),
+      averageAbsoluteError: round(averageAbsoluteError, 4),
+      directionHitRate: directionHitRate === null ? null : round(directionHitRate, 2),
+      errorConsistency: round(errorConsistency, 4)
+    };
+  }
+
+  if (averageAbsoluteError > 0.85) {
+    multiplier *= 0.86;
+    predictionCap = Math.min(predictionCap, 1.00);
+    confidencePenalty += 8;
+    rules.push("very_high_absolute_error_magnitude_reduced");
+  } else if (averageAbsoluteError > 0.50) {
+    multiplier *= 0.92;
+    predictionCap = Math.min(predictionCap, 1.35);
+    confidencePenalty += 5;
+    rules.push("high_absolute_error_magnitude_reduced");
+  } else if (averageAbsoluteError > 0.25) {
+    multiplier *= 0.96;
+    predictionCap = Math.min(predictionCap, 1.65);
+    confidencePenalty += 2;
+    rules.push("moderate_absolute_error_soft_reduction");
+  }
+
+  if (directionHitRate !== null && directionHitRate < 65) {
+    multiplier *= 0.88;
+    predictionCap = Math.min(
+      predictionCap,
+      averageAbsoluteError > 0.85 ? 0.80 : 1.05
+    );
+    confidencePenalty += 8;
+    rules.push("direction_hit_below_65_signal_compressed");
+  } else if (directionHitRate !== null && directionHitRate >= 90) {
+    multiplier = Math.max(multiplier, 0.94);
+    rules.push("direction_hit_high_direction_preserved");
+  }
+
+  if (averageError > 0.15 && preControlChange < 0) {
+    const add = clamp(averageError * 0.40, 0, 0.18);
+    secondaryOffset += add;
+    rules.push("model_too_low_negative_prediction_softened");
+  }
+
+  if (averageError < -0.15 && preControlChange > 0) {
+    const add = clamp(averageError * 0.40, -0.18, 0);
+    secondaryOffset += add;
+    rules.push("model_too_high_positive_prediction_softened");
+  }
+
+  if (errorConsistency > 0 && errorConsistency < 0.62) {
+    multiplier *= 0.94;
+    confidencePenalty += 3;
+    rules.push("mixed_error_direction_extra_caution");
+  }
+
+  if (code === "PBR" && averageAbsoluteError > 0.85) {
+    predictionCap = Math.min(predictionCap, 0.75);
+    multiplier *= 0.92;
+    confidencePenalty += 6;
+    rules.push("pbr_high_error_special_cap");
+  }
+
+  if (code === "PHE" && averageError > 0.15 && preControlChange < 0) {
+    predictionCap = Math.min(predictionCap, 0.85);
+    secondaryOffset += 0.05;
+    confidencePenalty += 3;
+    rules.push("phe_low_prediction_bias_negative_cap");
+  }
+
+  if (code === "TLY" && averageError < -0.15 && directionHitRate !== null && directionHitRate >= 80) {
+    multiplier *= 0.96;
+    secondaryOffset += clamp(averageError * 0.20, -0.08, 0);
+    predictionCap = Math.min(predictionCap, 1.10);
+    rules.push("tly_direction_good_magnitude_only_correction");
+  }
+
+  const shifted = preControlChange + secondaryOffset;
+  const controlledChange = clamp(shifted * multiplier, -predictionCap, predictionCap);
+
+  return {
+    status: "fund_specific_error_control",
+    controlledChange: round(controlledChange, 6),
+    preControlChange: round(preControlChange, 6),
+    shiftedChange: round(shifted, 6),
+    secondaryOffset: round(secondaryOffset, 6),
+    multiplier: round(multiplier, 6),
+    predictionCap: round(predictionCap, 6),
+    confidencePenalty: round(confidencePenalty, 4),
+    rules,
+    averageError: round(averageError, 4),
+    averageAbsoluteError: round(averageAbsoluteError, 4),
+    directionHitRate: directionHitRate === null ? null : round(directionHitRate, 2),
+    errorConsistency: round(errorConsistency, 4)
   };
 }
 
@@ -1082,7 +1204,13 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
   const afterLearningOffset = smoothedChange + accuracyLayer.offset;
   const afterDamping = afterLearningOffset * accuracyLayer.dampingFactor;
 
-  const calibratedChange = clamp(afterDamping, -2.15, 2.15);
+  const fundErrorControl = determineFundSpecificErrorControl(
+    code,
+    accuracyLayer,
+    afterDamping
+  );
+
+  const calibratedChange = clamp(fundErrorControl.controlledChange, -2.15, 2.15);
   const coverage = clamp(totalWeight, 0, 100);
 
   const directRatio =
@@ -1110,7 +1238,8 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
         sampleBonus +
         directionBonus -
         freshnessPenalty -
-        accuracyLayer.confidencePenalty,
+        accuracyLayer.confidencePenalty -
+        fundErrorControl.confidencePenalty,
       45,
       96
     );
@@ -1125,7 +1254,7 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
   );
 
   return {
-    status: "v8_1_data_quality_fund_bias_correction",
+    status: "v8_2_fund_specific_error_control",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(freshnessAdjustedSignal, 4),
@@ -1155,13 +1284,19 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
     smoothingImpact: round(smoothingImpact, 4),
     calibrationOffset: round(accuracyLayer.offset, 4),
     accuracyDamping: round(accuracyLayer.dampingFactor, 4),
+    preFundControlChange: round(fundErrorControl.preControlChange, 4),
+    fundControlOffset: round(fundErrorControl.secondaryOffset, 4),
+    fundControlMultiplier: round(fundErrorControl.multiplier, 4),
+    fundPredictionCap: round(fundErrorControl.predictionCap, 4),
+    fundControlConfidencePenalty: round(fundErrorControl.confidencePenalty, 2),
+    fundErrorControl,
     calibration: accuracyLayer,
     accuracyLayer,
     portfolioFreshness,
     holdingMeta,
     observations: details.length,
     methodology:
-      "v8.1: son portföy rapor tarihi kullanılır; geçersiz TEFAS verileri öğrenmeden çıkarılır; her fon için ayrı sistematik hata düzeltmesi uygulanır.",
+      "v8.2: veri kalite koruması korunur; her fon için mutlak sapma, yön isabeti ve yönlü hata ayrı kontrol edilerek tahmin büyüklüğü fon bazında sınırlandırılır.",
     details
   };
 }
@@ -1550,7 +1685,7 @@ module.exports = async function handler(req, res) {
         latestFundPriceQuality
       },
       closeLogic:
-        "v8.1 data quality + fund bias correction; invalid actual prices are ignored and final/performance rows are not overwritten",
+        "v8.2 fund specific error control; invalid actual prices are ignored and prediction magnitude is controlled per fund",
       latestFundDate,
       predictionDate,
       actualUpdate,
