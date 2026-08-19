@@ -1,6 +1,6 @@
 const FUNDS = ["PBR", "PHE", "TLY"];
 
-const MODEL_NAME = "FinScope Prediction Engine v8.2 - Fund Specific Error Control";
+const MODEL_NAME = "FinScope Prediction Engine v8.3 - PBR Risk Control Layer";
 const MODEL_KEY = "v7_1_accuracy_layer";
 const TARGET_ABSOLUTE_ERROR = 0.10;
 const MIN_VALID_FUND_PRICE = 0;
@@ -905,7 +905,7 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     positiveErrorCount: positiveErrors,
     negativeErrorCount: negativeErrors,
     note:
-      "v8.2: öğrenme veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; fon bazlı yön, büyüklük ve hata tutarlılığı ayrı kontrol edilir."
+      "v8.3: öğrenme veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; PBR için ek risk kontrol katmanı, diğer fonlar için fon bazlı hata kontrolü uygulanır."
   };
 }
 
@@ -913,7 +913,9 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
 function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange) {
   const sampleSize = num(accuracyLayer.sampleSize, 0);
   const averageError = num(accuracyLayer.averageError, 0);
+  const recentError = num(accuracyLayer.recentError, averageError);
   const averageAbsoluteError = num(accuracyLayer.averageAbsoluteError, 0);
+  const recentAbsoluteError = num(accuracyLayer.recentAbsoluteError, averageAbsoluteError);
   const directionHitRate = num(accuracyLayer.directionHitRate, null);
   const errorConsistency = num(accuracyLayer.errorConsistency, 0);
 
@@ -930,81 +932,149 @@ function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange
       status: "early_learning_neutral",
       controlledChange: round(preControlChange, 6),
       preControlChange: round(preControlChange, 6),
+      shiftedChange: round(preControlChange, 6),
       secondaryOffset: 0,
       multiplier: 1,
       predictionCap,
       confidencePenalty: 6,
       rules: ["sample_size_below_5_no_aggressive_control"],
       averageError: round(averageError, 4),
+      recentError: round(recentError, 4),
       averageAbsoluteError: round(averageAbsoluteError, 4),
+      recentAbsoluteError: round(recentAbsoluteError, 4),
       directionHitRate: directionHitRate === null ? null : round(directionHitRate, 2),
       errorConsistency: round(errorConsistency, 4)
     };
   }
 
-  if (averageAbsoluteError > 0.85) {
-    multiplier *= 0.86;
-    predictionCap = Math.min(predictionCap, 1.00);
-    confidencePenalty += 8;
-    rules.push("very_high_absolute_error_magnitude_reduced");
-  } else if (averageAbsoluteError > 0.50) {
-    multiplier *= 0.92;
-    predictionCap = Math.min(predictionCap, 1.35);
-    confidencePenalty += 5;
-    rules.push("high_absolute_error_magnitude_reduced");
+  /*
+    v8.3 ana revizyon:
+    PBR, PHE ve TLY ile aynı hata karakterine sahip değil.
+    PBR'de ortalama mutlak sapma yüksek ve yön isabeti zayıf olduğunda
+    model tahmininin büyüklüğü agresif biçimde değil, savunmacı biçimde yönetilir.
+  */
+  const isPbr = code === "PBR";
+  const isPhe = code === "PHE";
+  const isTly = code === "TLY";
+  const weakDirection = directionHitRate !== null && directionHitRate < 65;
+  const veryWeakDirection = directionHitRate !== null && directionHitRate < 60;
+  const highError = averageAbsoluteError > 0.50;
+  const veryHighError = averageAbsoluteError > 0.85;
+  const recentHighError = recentAbsoluteError > 0.75;
+  const mixedErrorDirection = errorConsistency > 0 && errorConsistency < 0.62;
+
+  if (veryHighError) {
+    multiplier *= isPbr ? 0.78 : 0.86;
+    predictionCap = Math.min(predictionCap, isPbr ? 0.55 : 1.00);
+    confidencePenalty += isPbr ? 14 : 8;
+    rules.push(isPbr ? "pbr_very_high_absolute_error_strong_magnitude_cut" : "very_high_absolute_error_magnitude_reduced");
+  } else if (highError) {
+    multiplier *= isPbr ? 0.84 : 0.92;
+    predictionCap = Math.min(predictionCap, isPbr ? 0.70 : 1.35);
+    confidencePenalty += isPbr ? 10 : 5;
+    rules.push(isPbr ? "pbr_high_absolute_error_defensive_magnitude_cut" : "high_absolute_error_magnitude_reduced");
   } else if (averageAbsoluteError > 0.25) {
-    multiplier *= 0.96;
-    predictionCap = Math.min(predictionCap, 1.65);
-    confidencePenalty += 2;
-    rules.push("moderate_absolute_error_soft_reduction");
+    multiplier *= isPbr ? 0.90 : 0.96;
+    predictionCap = Math.min(predictionCap, isPbr ? 0.85 : 1.65);
+    confidencePenalty += isPbr ? 5 : 2;
+    rules.push(isPbr ? "pbr_moderate_error_soft_defensive_cut" : "moderate_absolute_error_soft_reduction");
   }
 
-  if (directionHitRate !== null && directionHitRate < 65) {
-    multiplier *= 0.88;
+  if (weakDirection) {
+    multiplier *= isPbr ? 0.76 : 0.88;
     predictionCap = Math.min(
       predictionCap,
-      averageAbsoluteError > 0.85 ? 0.80 : 1.05
+      isPbr
+        ? veryHighError
+          ? 0.45
+          : 0.60
+        : averageAbsoluteError > 0.85
+          ? 0.80
+          : 1.05
     );
-    confidencePenalty += 8;
-    rules.push("direction_hit_below_65_signal_compressed");
+    confidencePenalty += isPbr ? 14 : 8;
+    rules.push(isPbr ? "pbr_direction_hit_below_65_strong_signal_compression" : "direction_hit_below_65_signal_compressed");
   } else if (directionHitRate !== null && directionHitRate >= 90) {
-    multiplier = Math.max(multiplier, 0.94);
+    multiplier = Math.max(multiplier, isPbr ? 0.90 : 0.94);
     rules.push("direction_hit_high_direction_preserved");
   }
 
+  if (isPbr && veryWeakDirection && veryHighError) {
+    multiplier *= 0.84;
+    predictionCap = Math.min(predictionCap, 0.38);
+    confidencePenalty += 8;
+    rules.push("pbr_risk_off_zone_direction_and_error_both_weak");
+  }
+
+  if (isPbr && recentHighError) {
+    multiplier *= 0.88;
+    predictionCap = Math.min(predictionCap, 0.50);
+    confidencePenalty += 6;
+    rules.push("pbr_recent_error_high_extra_cap");
+  }
+
   if (averageError > 0.15 && preControlChange < 0) {
-    const add = clamp(averageError * 0.40, 0, 0.18);
+    const add = clamp(averageError * (isPbr ? 0.18 : 0.40), 0, isPbr ? 0.08 : 0.18);
     secondaryOffset += add;
-    rules.push("model_too_low_negative_prediction_softened");
+    rules.push(isPbr ? "pbr_too_low_negative_prediction_only_lightly_softened" : "model_too_low_negative_prediction_softened");
   }
 
   if (averageError < -0.15 && preControlChange > 0) {
-    const add = clamp(averageError * 0.40, -0.18, 0);
+    const add = clamp(averageError * (isPbr ? 0.18 : 0.40), isPbr ? -0.08 : -0.18, 0);
     secondaryOffset += add;
-    rules.push("model_too_high_positive_prediction_softened");
+    rules.push(isPbr ? "pbr_too_high_positive_prediction_only_lightly_softened" : "model_too_high_positive_prediction_softened");
   }
 
-  if (errorConsistency > 0 && errorConsistency < 0.62) {
+  /*
+    PBR'de hata yönü karışıksa offset'i büyütmek tehlikelidir.
+    Bu durumda tahmini bir tarafa itmek yerine sıfıra yaklaştırırız.
+  */
+  if (isPbr && mixedErrorDirection) {
+    multiplier *= 0.86;
+    secondaryOffset *= 0.50;
+    predictionCap = Math.min(predictionCap, 0.42);
+    confidencePenalty += 8;
+    rules.push("pbr_mixed_error_direction_neutral_zone_preferred");
+  } else if (mixedErrorDirection) {
     multiplier *= 0.94;
     confidencePenalty += 3;
     rules.push("mixed_error_direction_extra_caution");
   }
 
-  if (code === "PBR" && averageAbsoluteError > 0.85) {
-    predictionCap = Math.min(predictionCap, 0.75);
-    multiplier *= 0.92;
-    confidencePenalty += 6;
-    rules.push("pbr_high_error_special_cap");
+  if (isPbr) {
+    /*
+      PBR için nihai güvenlik bandı:
+      Ortalama sapma 0.85 üstündeyse modelin ürettiği iddialı tahmin,
+      yön doğru görünse bile tam taşınmaz. PBR önce istikrar göstermek zorunda.
+    */
+    if (averageAbsoluteError > 0.85) {
+      predictionCap = Math.min(predictionCap, 0.45);
+      multiplier *= 0.88;
+      confidencePenalty += 8;
+      rules.push("pbr_final_max_cap_until_error_improves");
+    }
+
+    if (Math.abs(preControlChange) > 0.75 && averageAbsoluteError > 0.50) {
+      multiplier *= 0.82;
+      predictionCap = Math.min(predictionCap, 0.40);
+      confidencePenalty += 6;
+      rules.push("pbr_large_raw_signal_cut_until_stable");
+    }
+
+    if (directionHitRate !== null && directionHitRate < 70) {
+      confidencePenalty += 5;
+      rules.push("pbr_confidence_reduced_until_direction_hit_recovers");
+    }
   }
 
-  if (code === "PHE" && averageError > 0.15 && preControlChange < 0) {
+  if (isPhe && averageError > 0.15 && preControlChange < 0) {
     predictionCap = Math.min(predictionCap, 0.85);
     secondaryOffset += 0.05;
     confidencePenalty += 3;
     rules.push("phe_low_prediction_bias_negative_cap");
   }
 
-  if (code === "TLY" && averageError < -0.15 && directionHitRate !== null && directionHitRate >= 80) {
+  if (isTly && averageError < -0.15 && directionHitRate !== null && directionHitRate >= 80) {
     multiplier *= 0.96;
     secondaryOffset += clamp(averageError * 0.20, -0.08, 0);
     predictionCap = Math.min(predictionCap, 1.10);
@@ -1012,10 +1082,15 @@ function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange
   }
 
   const shifted = preControlChange + secondaryOffset;
-  const controlledChange = clamp(shifted * multiplier, -predictionCap, predictionCap);
+  let controlledChange = clamp(shifted * multiplier, -predictionCap, predictionCap);
+
+  if (isPbr && Math.abs(controlledChange) < MIN_DIRECTION_SIGNAL && Math.abs(preControlChange) >= MIN_DIRECTION_SIGNAL) {
+    controlledChange = 0;
+    rules.push("pbr_near_zero_signal_set_to_neutral");
+  }
 
   return {
-    status: "fund_specific_error_control",
+    status: isPbr ? "pbr_risk_control_layer" : "fund_specific_error_control",
     controlledChange: round(controlledChange, 6),
     preControlChange: round(preControlChange, 6),
     shiftedChange: round(shifted, 6),
@@ -1025,7 +1100,9 @@ function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange
     confidencePenalty: round(confidencePenalty, 4),
     rules,
     averageError: round(averageError, 4),
+    recentError: round(recentError, 4),
     averageAbsoluteError: round(averageAbsoluteError, 4),
+    recentAbsoluteError: round(recentAbsoluteError, 4),
     directionHitRate: directionHitRate === null ? null : round(directionHitRate, 2),
     errorConsistency: round(errorConsistency, 4)
   };
@@ -1254,7 +1331,7 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
   );
 
   return {
-    status: "v8_2_fund_specific_error_control",
+    status: code === "PBR" ? "v8_3_pbr_risk_control_layer" : "v8_3_fund_specific_error_control",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(freshnessAdjustedSignal, 4),
@@ -1296,7 +1373,7 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
     holdingMeta,
     observations: details.length,
     methodology:
-      "v8.2: veri kalite koruması korunur; her fon için mutlak sapma, yön isabeti ve yönlü hata ayrı kontrol edilerek tahmin büyüklüğü fon bazında sınırlandırılır.",
+      "v8.3: veri kalite koruması korunur; PBR için özel risk kontrol katmanı uygulanır, diğer fonlarda v8.2 fon bazlı hata kontrolü sürdürülür.",
     details
   };
 }
@@ -1685,7 +1762,7 @@ module.exports = async function handler(req, res) {
         latestFundPriceQuality
       },
       closeLogic:
-        "v8.2 fund specific error control; invalid actual prices are ignored and prediction magnitude is controlled per fund",
+        "v8.3 PBR risk control layer; invalid actual prices are ignored, PBR prediction magnitude is defensively capped, other funds keep fund-specific control",
       latestFundDate,
       predictionDate,
       actualUpdate,
