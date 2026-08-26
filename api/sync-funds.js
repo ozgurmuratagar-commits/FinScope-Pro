@@ -1,6 +1,6 @@
-const FUNDS = ["PBR", "PHE", "TLY"];
+const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope TEFAS Sync API v3 - Retry";
+const API_VERSION = "FinScope TEFAS Sync API v4 - THF Price Sync";
 const TEFAS_ENDPOINT = "https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir";
 
 const MAX_FUND_ATTEMPTS = 4;
@@ -287,7 +287,7 @@ async function processFund(fundCode, supabaseUrl, secretKey) {
       price_date: latest.date,
       portfolio_size: null,
       investor_count: null,
-      source: "TEFAS v3 retry"
+      source: "TEFAS v4 THF price sync"
     };
 
     const saved = await saveFundRow(supabaseUrl, secretKey, row);
