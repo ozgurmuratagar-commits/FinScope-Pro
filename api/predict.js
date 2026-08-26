@@ -1,6 +1,6 @@
-const FUNDS = ["PBR", "PHE", "TLY"];
+const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const MODEL_NAME = "FinScope Prediction Engine v8.3 - PBR Risk Control Layer";
+const MODEL_NAME = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
 const MODEL_KEY = "v7_1_accuracy_layer";
 const TARGET_ABSOLUTE_ERROR = 0.10;
 const MIN_VALID_FUND_PRICE = 0;
@@ -281,7 +281,7 @@ async function optionalSupabaseRequest(path, fallback = []) {
 
 async function getLatestFundPrices() {
   const rows = await supabaseRequest(
-    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY)&order=price_date.desc,created_at.desc&limit=120"
+    "fund_prices?select=*&fund_code=in.(PBR,PHE,TLY,THF)&order=price_date.desc,created_at.desc&limit=120"
   );
 
   const latest = {};
@@ -368,7 +368,7 @@ function normalizeHoldingRows(rows) {
 
 async function getHoldings() {
   const rows = await supabaseRequest(
-    "fund_holdings?select=*&fund_code=in.(PBR,PHE,TLY)&order=fund_code.asc,report_date.desc,weight.desc"
+    "fund_holdings?select=*&fund_code=in.(PBR,PHE,TLY,THF)&order=fund_code.asc,report_date.desc,weight.desc"
   );
 
   const grouped = {};
@@ -621,7 +621,7 @@ function getHoldingMarketChange(holding, marketChanges) {
 
 async function getPerformanceRows() {
   const rows = await optionalSupabaseRequest(
-    "prediction_performance?select=*&fund_code=in.(PBR,PHE,TLY)&model=eq." +
+    "prediction_performance?select=*&fund_code=in.(PBR,PHE,TLY,THF)&model=eq." +
       encodeURIComponent(MODEL_KEY) +
       "&status=eq.closed&order=closed_at.desc,created_at.desc&limit=300",
     []
@@ -640,7 +640,7 @@ async function getPerformanceRows() {
 
 async function getModelLearningStats() {
   const rows = await optionalSupabaseRequest(
-    "model_learning_stats?select=*&fund_code=in.(PBR,PHE,TLY)&model=eq." +
+    "model_learning_stats?select=*&fund_code=in.(PBR,PHE,TLY,THF)&model=eq." +
       encodeURIComponent(MODEL_KEY) +
       "&order=calculated_at.desc,updated_at.desc&limit=120",
     []
@@ -659,7 +659,7 @@ async function getModelLearningStats() {
 
 async function getFallbackCalibrationRows() {
   const rows = await optionalSupabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&model=eq." +
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY,THF)&model=eq." +
       encodeURIComponent(MODEL_KEY) +
       "&actual_change=not.is.null&error_change=not.is.null&order=updated_at.desc,created_at.desc&limit=240",
     []
@@ -743,7 +743,7 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
       suggestedOffsetFromStats: num(learning.suggested_offset, null),
       biasCorrectionStrength: 0,
       errorConsistency: 0,
-      note: "Güvenilir kapanmış performans verisi yok; v8.1 öğrenme düzeltmesi temkinli nötr bırakıldı."
+      note: "Güvenilir kapanmış performans verisi yok; v8.4 öğrenme düzeltmesi temkinli nötr bırakıldı."
     };
   }
 
@@ -905,7 +905,7 @@ function getAccuracyLayerForFund(code, performanceRows, learningStats, fallbackR
     positiveErrorCount: positiveErrors,
     negativeErrorCount: negativeErrors,
     note:
-      "v8.3: öğrenme veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; PBR için ek risk kontrol katmanı, diğer fonlar için fon bazlı hata kontrolü uygulanır."
+      "v8.4: öğrenme veri kalite filtresinden geçen kapanmış final performanslarından hesaplanır; PBR için risk kontrol, THF için başlangıç düşük güven katmanı, diğer fonlar için fon bazlı hata kontrolü uygulanır."
   };
 }
 
@@ -919,6 +919,11 @@ function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange
   const directionHitRate = num(accuracyLayer.directionHitRate, null);
   const errorConsistency = num(accuracyLayer.errorConsistency, 0);
 
+  const isPbr = code === "PBR";
+  const isPhe = code === "PHE";
+  const isTly = code === "TLY";
+  const isThf = code === "THF";
+
   let multiplier = 1;
   let secondaryOffset = 0;
   let predictionCap = 2.15;
@@ -928,16 +933,27 @@ function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange
   const enoughSample = sampleSize >= 5;
 
   if (!enoughSample) {
+    const initialMultiplier = isThf ? 0.72 : 1;
+    const initialCap = isThf ? 0.75 : predictionCap;
+    const controlledChange = clamp(preControlChange * initialMultiplier, -initialCap, initialCap);
+
     return {
-      status: "early_learning_neutral",
-      controlledChange: round(preControlChange, 6),
+      status: isThf ? "thf_initial_learning_low_confidence" : "early_learning_neutral",
+      controlledChange: round(controlledChange, 6),
       preControlChange: round(preControlChange, 6),
       shiftedChange: round(preControlChange, 6),
       secondaryOffset: 0,
-      multiplier: 1,
-      predictionCap,
-      confidencePenalty: 6,
-      rules: ["sample_size_below_5_no_aggressive_control"],
+      multiplier: round(initialMultiplier, 6),
+      predictionCap: round(initialCap, 6),
+      confidencePenalty: isThf ? 18 : 6,
+      rules: isThf
+        ? [
+            "thf_new_fund_no_performance_history",
+            "thf_initial_prediction_cap_0_75",
+            "thf_initial_multiplier_0_72",
+            "sample_size_below_5_no_aggressive_control"
+          ]
+        : ["sample_size_below_5_no_aggressive_control"],
       averageError: round(averageError, 4),
       recentError: round(recentError, 4),
       averageAbsoluteError: round(averageAbsoluteError, 4),
@@ -948,14 +964,11 @@ function determineFundSpecificErrorControl(code, accuracyLayer, preControlChange
   }
 
   /*
-    v8.3 ana revizyon:
-    PBR, PHE ve TLY ile aynı hata karakterine sahip değil.
-    PBR'de ortalama mutlak sapma yüksek ve yön isabeti zayıf olduğunda
-    model tahmininin büyüklüğü agresif biçimde değil, savunmacı biçimde yönetilir.
+    v8.4 ana revizyon:
+    PBR, PHE, TLY ve THF aynı öğrenme olgunluğunda değildir.
+    PBR'de savunmacı risk kontrolü sürer.
+    THF yeterli kapanmış performans üretinceye kadar düşük güvenli başlangıç bandında tutulur.
   */
-  const isPbr = code === "PBR";
-  const isPhe = code === "PHE";
-  const isTly = code === "TLY";
   const weakDirection = directionHitRate !== null && directionHitRate < 65;
   const veryWeakDirection = directionHitRate !== null && directionHitRate < 60;
   const highError = averageAbsoluteError > 0.50;
@@ -1308,6 +1321,9 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
         ? 78
         : 68;
 
+  const isThfInitialLearning = code === "THF" && num(accuracyLayer.sampleSize, 0) < 5;
+  const confidenceUpperBound = isThfInitialLearning ? 72 : 96;
+
   const confidence =
     clamp(
       baseConfidence +
@@ -1318,20 +1334,26 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
         accuracyLayer.confidencePenalty -
         fundErrorControl.confidencePenalty,
       45,
-      96
+      confidenceUpperBound
     );
 
   const expectedErrorBand = clamp(
     Math.max(
       TARGET_ABSOLUTE_ERROR,
-      num(accuracyLayer.averageAbsoluteError, 0) * 0.55 + TARGET_ABSOLUTE_ERROR
+      num(accuracyLayer.averageAbsoluteError, 0) * 0.55 + TARGET_ABSOLUTE_ERROR,
+      isThfInitialLearning ? 0.45 : TARGET_ABSOLUTE_ERROR
     ),
     TARGET_ABSOLUTE_ERROR,
-    0.75
+    isThfInitialLearning ? 0.95 : 0.75
   );
 
   return {
-    status: code === "PBR" ? "v8_3_pbr_risk_control_layer" : "v8_3_fund_specific_error_control",
+    status:
+      code === "PBR"
+        ? "v8_4_pbr_risk_control_layer"
+        : code === "THF"
+          ? "v8_4_thf_initial_learning_layer"
+          : "v8_4_fund_specific_error_control",
     predictedChange: round(calibratedChange, 4),
     rawPredictedChange: round(smoothedChange, 4),
     unsmoothedChange: round(freshnessAdjustedSignal, 4),
@@ -1373,7 +1395,7 @@ function buildPredictionForFund(code, holdings, holdingMeta, marketChanges, late
     holdingMeta,
     observations: details.length,
     methodology:
-      "v8.3: veri kalite koruması korunur; PBR için özel risk kontrol katmanı uygulanır, diğer fonlarda v8.2 fon bazlı hata kontrolü sürdürülür.",
+      "v8.4: veri kalite koruması korunur; PBR için özel risk kontrol katmanı uygulanır, THF düşük güvenli başlangıç bandında izlenir, diğer fonlarda fon bazlı hata kontrolü sürdürülür.",
     details
   };
 }
@@ -1505,7 +1527,7 @@ async function savePredictionHistory(predictionDate, predictions) {
 
 async function updatePendingActuals(latestFundPrices) {
   const rows = await optionalSupabaseRequest(
-    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY)&model=eq." +
+    "prediction_history?select=*&fund_code=in.(PBR,PHE,TLY,THF)&model=eq." +
       encodeURIComponent(MODEL_KEY) +
       "&order=created_at.asc&limit=500",
     []
@@ -1762,7 +1784,7 @@ module.exports = async function handler(req, res) {
         latestFundPriceQuality
       },
       closeLogic:
-        "v8.3 PBR risk control layer; invalid actual prices are ignored, PBR prediction magnitude is defensively capped, other funds keep fund-specific control",
+        "v8.4 THF initial learning layer; invalid actual prices are ignored, PBR prediction magnitude is defensively capped, THF starts with low-confidence capped prediction until enough history exists",
       latestFundDate,
       predictionDate,
       actualUpdate,
