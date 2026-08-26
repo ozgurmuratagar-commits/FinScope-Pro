@@ -23,9 +23,10 @@ const MARKET_LABELS = {
 };
 
 const FUND_ORDER = ["PBR", "PHE", "TLY"];
+const FUND_CARD_ORDER = ["PBR", "PHE", "TLY", "THF"];
 
-const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.1 - Data Quality + Fund Bias Correction";
-const DISPLAY_MODEL_SHORT = "v8.1";
+const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.3 - PBR Risk Control Layer";
+const DISPLAY_MODEL_SHORT = "v8.3";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -120,11 +121,12 @@ function getModelLabel(predictionsJson) {
       ? String(predictionsJson.model)
       : "";
 
-  if (model.includes("v8.1")) return model;
+  if (model.includes("v8.3")) return model;
+  if (model.includes("v8.2")) return model;
 
   /*
     MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalır.
-    Kullanıcıya gösterilen aktif motor adı ise v8.1 olmalıdır.
+    Kullanıcıya gösterilen aktif motor adı ise v8.3 olmalıdır.
   */
   return DISPLAY_MODEL_NAME;
 }
@@ -162,7 +164,7 @@ function renderMarketCards(marketJson, fundsJson, predictionsJson) {
     `);
   });
 
-  FUND_ORDER.forEach(function(code) {
+  FUND_CARD_ORDER.forEach(function(code) {
     const fund = fundData[code] || {};
     const pred = predictions[code] || {};
 
@@ -171,17 +173,37 @@ function renderMarketCards(marketJson, fundsJson, predictionsJson) {
     const cls = directionClass(fundChange);
     const predCls = directionClass(predChange);
 
-    html.push(`
-      <div class="card">
-        <h3>${escapeHtml(code)}</h3>
-        <div class="value">${formatNumber(fund.price, 4)}</div>
-        <div class="${cls}">${directionIcon(fundChange)} ${formatPercent(fundChange, 2)}</div>
+    const holdingsReady =
+      fund.holdingsReady === true ||
+      Number(fund.holdingsCount || 0) > 0 ||
+      (Array.isArray(fund.holdings) && fund.holdings.length > 0);
+
+    const hasPrediction =
+      predChange !== null &&
+      predChange !== undefined &&
+      Number.isFinite(Number(String(predChange).replace(",", ".")));
+
+    const predictionHtml = hasPrediction
+      ? `
         <div class="${predCls}">Tahmin: ${directionIcon(predChange)} ${formatPercent(predChange, 2)}</div>
         <div class="small">Kapsam: %${formatNumber(pred.coverage, 2)} • Güven: ${escapeHtml(pred.confidenceText || "—")}</div>
         <div class="small">Yumuşatma etkisi: ${formatPercent(pred.smoothingImpact || 0, 2)}</div>
         <div class="small">Sapma düzeltmesi: ${formatPercent(pred.calibrationOffset || 0, 2)}</div>
         <div class="small">Accuracy damping: ${formatNumber(pred.accuracyDamping || 1, 4)}</div>
-        <div class="small">TEFAS v2 • ${escapeHtml(fund.date || fund.priceDate || fund.price_date || "tarih yok")}</div>
+      `
+      : `
+        <div class="yellow">Tahmin: Portföy bekleniyor</div>
+        <div class="small">THF fiyatı alındı; tahmin için fund_holdings portföy ağırlığı gerekli.</div>
+        <div class="small">Holdings: ${formatNumber(fund.holdingsCount || 0, 0)} • Hazır: ${holdingsReady ? "Evet" : "Hayır"}</div>
+      `;
+
+    html.push(`
+      <div class="card">
+        <h3>${escapeHtml(code)}</h3>
+        <div class="value">${formatNumber(fund.price, 4)}</div>
+        <div class="${cls}">${directionIcon(fundChange)} ${formatPercent(fundChange, 2)}</div>
+        ${predictionHtml}
+        <div class="small">TEFAS v4 • ${escapeHtml(fund.date || fund.priceDate || fund.price_date || "tarih yok")}</div>
       </div>
     `);
   });
@@ -293,7 +315,7 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      Read-Only Frontend v8.4 - Model Label Sync ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+      Read-Only Frontend v8.5 - THF Fund Card ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
     </div>
   `;
 }
