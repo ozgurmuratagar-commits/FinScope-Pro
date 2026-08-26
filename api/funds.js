@@ -1,4 +1,4 @@
-const FUNDS = ["PBR", "PHE", "TLY"];
+const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
 function num(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -61,9 +61,9 @@ module.exports = async function handler(req, res) {
   try {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_ANON_KEY;
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SUPABASE_ANON_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
       return res.status(500).json({
@@ -72,13 +72,15 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    const fundFilter = "PBR,PHE,TLY,THF";
+
     const priceRows = await supabaseGet(
-      "fund_prices?select=*&order=price_date.desc&limit=200",
+      `fund_prices?select=*&fund_code=in.(${fundFilter})&order=price_date.desc&limit=500`,
       supabaseKey
     );
 
     const holdingRows = await supabaseGet(
-      "fund_holdings?select=*&order=fund_code.asc,weight.desc",
+      `fund_holdings?select=*&fund_code=in.(${fundFilter})&order=fund_code.asc,report_date.desc,weight.desc`,
       supabaseKey
     );
 
@@ -108,30 +110,37 @@ module.exports = async function handler(req, res) {
       const p = latest[code] || {};
 
       funds[code] = {
+        code,
         price: num(p.price),
         dailyChange: num(p.daily_change),
         date: p.price_date || p.date || "",
         source: p.source || "Supabase",
         portfolioSize: num(p.portfolio_size),
         investorCount: num(p.investor_count),
-        holdings: holdingsByFund[code] || []
+        holdings: holdingsByFund[code] || [],
+        holdingsCount: (holdingsByFund[code] || []).length,
+        holdingsReady: (holdingsByFund[code] || []).length > 0
       };
     }
 
     res.status(200).json({
-      version: "FinScope Supabase Data + Holdings",
+      ok: true,
+      version: "FinScope Supabase Data + Holdings v4 - THF Fund Card",
       lastUpdated: new Date().toISOString(),
       source: "supabase",
+      fundOrder: FUNDS,
       holdingsStatus: {
         PBR: (holdingsByFund.PBR || []).length,
         PHE: (holdingsByFund.PHE || []).length,
-        TLY: (holdingsByFund.TLY || []).length
+        TLY: (holdingsByFund.TLY || []).length,
+        THF: (holdingsByFund.THF || []).length
       },
       funds
     });
   } catch (err) {
     res.status(500).json({
       ok: false,
+      version: "FinScope Supabase Data + Holdings v4 - THF Fund Card",
       error: String(err.message || err)
     });
   }
