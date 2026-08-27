@@ -1,8 +1,8 @@
-const FUNDS = ["PBR", "PHE", "TLY"];
+const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Finalize Predictions API v2 - 18:00 Guard";
+const API_VERSION = "FinScope Finalize Predictions API v8.4 - THF Final Lock";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const DEFAULT_MODEL_VERSION = "FinScope Prediction Engine v7.2 - Safe Current Prediction";
+const DEFAULT_MODEL_VERSION = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
 
 const TURKEY_TIME_ZONE = "Europe/Istanbul";
 const FINAL_START_HOUR = 18;
@@ -177,7 +177,7 @@ async function getPendingPredictionRows() {
   const path =
     "prediction_history" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&actual_change=is.null" +
     "&order=prediction_date.desc,updated_at.desc,created_at.desc" +
@@ -225,7 +225,7 @@ async function getExistingPerformanceRows(targetDate) {
   const path =
     "prediction_performance" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&prediction_date=eq.${encodeURIComponent(targetDate)}` +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}`;
 
@@ -239,7 +239,7 @@ async function getExistingFinalRows(targetDate) {
   const path =
     "prediction_finals" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&prediction_date=eq.${encodeURIComponent(targetDate)}` +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}`;
 
@@ -358,6 +358,9 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       generatedAt: new Date().toISOString(),
       model: ACTIVE_MODEL,
+      modelVersion: DEFAULT_MODEL_VERSION,
+      fundOrder: FUNDS,
+      thfIncluded: FUNDS.includes("THF"),
       finalized: 0,
       total: FUNDS.length,
       turkeyNow,
@@ -481,10 +484,12 @@ module.exports = async function handler(req, res) {
         sourceUpdatedAt: row.updated_at || null,
         sourceTurkeyDate: rowTurkey ? rowTurkey.dateText : null,
         sourceTurkeyTime: rowTurkey ? rowTurkey.timeText : null,
+        modelVersion: payload.model_version,
         finalPredictionChange: payload.final_prediction_change,
         predictedDirection: payload.predicted_direction,
         confidence: payload.confidence,
-        coverage: payload.coverage
+        coverage: payload.coverage,
+        thfInitialLayer: fundCode === "THF"
       });
     }
 
@@ -501,6 +506,9 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       generatedAt: new Date().toISOString(),
       model: ACTIVE_MODEL,
+      modelVersion: DEFAULT_MODEL_VERSION,
+      fundOrder: FUNDS,
+      thfIncluded: FUNDS.includes("THF"),
       targetDate,
       turkeyNow,
       finalized: payloads.length,
@@ -511,9 +519,9 @@ module.exports = async function handler(req, res) {
       validFinalWindowRows: validFinalWindowRows.length,
       savedRows: Array.isArray(savedRows) ? savedRows.length : 0,
       rule:
-        "Final tahmin yalnızca Türkiye saati 18:00 sonrası, aynı gün oluşturulmuş/güncellenmiş actual_change IS NULL tahminlerden seçilir.",
+        "Final tahmin yalnızca Türkiye saati 18:00 sonrası, aynı gün oluşturulmuş/güncellenmiş actual_change IS NULL tahminlerden seçilir. THF dahil 4 fon desteklenir.",
       protection:
-        "18:00 öncesi çağrılar veri yazmaz. Performance kapanmışsa veya kilitli final zaten varsa final tahmin güncellenmez.",
+        "18:00 öncesi çağrılar veri yazmaz. Performance kapanmışsa veya kilitli final zaten varsa final tahmin güncellenmez. THF yeni fon olsa bile yalnızca geçerli pending tahmin varsa kilitlenir.",
       results,
       saved: savedRows
     });
