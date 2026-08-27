@@ -1,7 +1,8 @@
-const FUNDS = ["PBR", "PHE", "TLY"];
+const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Performance API v8.2 - All Closed Rows";
+const API_VERSION = "FinScope Performance API v8.4 - THF Performance Layer";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
+const MODEL_VERSION = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
 const FINAL_LABEL = "T-1 18:00 Nihai Tahmin";
 
 function num(value, fallback = null) {
@@ -107,7 +108,7 @@ async function getPerformanceRows() {
   const path =
     "prediction_performance" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,closed_at.desc,updated_at.desc" +
     "&limit=1000";
@@ -120,7 +121,7 @@ async function getFinalRows() {
   const path =
     "prediction_finals" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,finalized_at.desc,updated_at.desc" +
     "&limit=1000";
@@ -133,7 +134,7 @@ async function getLearningRows() {
   const path =
     "model_learning_stats" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=fund_code.asc";
 
@@ -319,8 +320,14 @@ function buildLearningMap(learningRows) {
           averageAbsoluteError: null,
           directionHitRate: null,
           biasLabel: "Veri yok",
-          learningStatus: "Henüz öğrenme verisi yok",
-          note: "model_learning_stats kaydı bulunamadı."
+          learningStatus:
+            code === "THF"
+              ? "THF yeni fon; henüz kapanmış performans verisi yok"
+              : "Henüz öğrenme verisi yok",
+          note:
+            code === "THF"
+              ? "THF için öğrenme istatistiği, ilk final tahmin kapanışı tamamlandıktan sonra oluşacaktır."
+              : "model_learning_stats kaydı bulunamadı."
         };
   }
 
@@ -432,12 +439,16 @@ function buildSummary(completedRows, pendingRows, learningMap) {
         : null,
 
     finalPredictionLabel: FINAL_LABEL,
+    fundOrder: FUNDS,
+    thfIncluded: FUNDS.includes("THF"),
+    thfCompletedRows: completedRows.filter(row => row.fundCode === "THF").length,
+    thfPendingRows: pendingRows.filter(row => row.fundCode === "THF").length,
 
     formula:
       "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 sonrası kilitlenen nihai tahmin",
 
     metricPolicy:
-      "averageAbsoluteError ve directionHitRate tüm kapanmış performans kayıtlarından hesaplanır. latestDateAverageAbsoluteError sadece son tamamlanan tahmin tarihinin ortalamasıdır.",
+      "averageAbsoluteError ve directionHitRate tüm kapanmış performans kayıtlarından hesaplanır. latestDateAverageAbsoluteError sadece son tamamlanan tahmin tarihinin ortalamasıdır. THF yeterli kapanış üretince aynı metriklere dahil olur.",
 
     byFund
   };
@@ -472,9 +483,12 @@ module.exports = async function handler(req, res) {
 
       source: "prediction_performance + prediction_finals + model_learning_stats",
       model: ACTIVE_MODEL,
+      modelVersion: MODEL_VERSION,
+      fundOrder: FUNDS,
+      thfIncluded: FUNDS.includes("THF"),
 
       selectionRule:
-        "Dashboard rows artık sadece son günü değil, tüm kapanmış performans kayıtlarını döndürür. Böylece Toplam Kayıt, Tamamlanan Tahmin ve Ortalama Sapma aynı kapsamı kullanır.",
+        "Dashboard rows artık sadece son günü değil, THF dahil tüm kapanmış performans kayıtlarını döndürür. Böylece Toplam Kayıt, Tamamlanan Tahmin ve Ortalama Sapma aynı kapsamı kullanır.",
 
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_finals.final_prediction_change",
@@ -490,17 +504,21 @@ module.exports = async function handler(req, res) {
       rawCounts: {
         predictionPerformanceRows: performanceRows.length,
         predictionFinalRows: finalRows.length,
-        modelLearningRows: learningRows.length
+        modelLearningRows: learningRows.length,
+        thfPerformanceRows: performanceRows.filter(row => row.fund_code === "THF").length,
+        thfFinalRows: finalRows.filter(row => row.fund_code === "THF").length,
+        thfLearningRows: learningRows.filter(row => row.fund_code === "THF").length
       },
 
       note:
-        "Bu API eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli T-1 final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır."
+        "Bu API eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli T-1 final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır. THF yeni fon olarak kapanış performansı oluştuğunda tabloya dahil edilir."
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       version: API_VERSION,
       model: ACTIVE_MODEL,
+      modelVersion: MODEL_VERSION,
       error: String(error.message || error)
     });
   }
