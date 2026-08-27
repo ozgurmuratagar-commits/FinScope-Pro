@@ -1,7 +1,8 @@
-const FUNDS = ["PBR", "PHE", "TLY"];
+const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Close Performance API v2 - Data Quality Guard";
+const API_VERSION = "FinScope Close Performance API v8.4 - THF Close Layer";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
+const MODEL_VERSION = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
 
 const MIN_VALID_PRICE = 0;
 const MAX_ABSOLUTE_ACTUAL_CHANGE = 20;
@@ -172,7 +173,7 @@ async function getFinalRows(req) {
   let path =
     "prediction_finals" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&finalization_status=eq.finalized" +
     "&order=prediction_date.asc,finalized_at.asc" +
@@ -190,7 +191,7 @@ async function getExistingPerformanceRows() {
   const path =
     "prediction_performance" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,closed_at.desc" +
     "&limit=1000";
@@ -203,7 +204,7 @@ async function getFundPriceRows() {
   const path =
     "fund_prices" +
     "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY)" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
     "&order=price_date.asc,created_at.asc" +
     "&limit=1000";
 
@@ -461,7 +462,7 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
     grade: gradeFromError(absoluteError),
     note:
-      "Sapma = gerçekleşen TEFAS değişimi - prediction_finals tablosundaki kilitli nihai tahmin. Data Quality Guard: fiyat sıfır/şüpheli ise performans kapatılmaz.",
+      "Sapma = gerçekleşen TEFAS değişimi - prediction_finals tablosundaki kilitli nihai tahmin. Data Quality Guard: fiyat sıfır/şüpheli ise performans kapatılmaz. THF dahil 4 fon desteklenir.",
 
     actual_price: round(actualRow.price, 8),
     actual_price_date: dateText(actualRow.price_date),
@@ -574,7 +575,7 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
     note:
       sampleSize === 0
         ? "Henüz güvenilir kapanmış final performans kaydı yok."
-        : "İstatistikler sadece Data Quality Guard filtresinden geçen güvenilir prediction_performance kayıtlarından hesaplandı.",
+        : "İstatistikler sadece Data Quality Guard filtresinden geçen güvenilir prediction_performance kayıtlarından hesaplandı. THF yeni fon ise yeterli kapanış örneği oluşana kadar başlangıç öğrenme modunda kalır.",
 
     updated_at: new Date().toISOString()
   };
@@ -724,6 +725,7 @@ module.exports = async function handler(req, res) {
         ok: true,
         skipped: false,
         matchRule: actualMatch.matchRule,
+        modelVersion: payload.model_version || MODEL_VERSION,
         finalPredictionChange: payload.final_prediction_change,
         actualChange: payload.actual_change,
         errorChange: payload.error_change,
@@ -733,7 +735,8 @@ module.exports = async function handler(req, res) {
         directionHit: payload.direction_hit,
         grade: payload.grade,
         actualPrice: payload.actual_price,
-        actualPriceDate: payload.actual_price_date
+        actualPriceDate: payload.actual_price_date,
+        thfIncluded: finalRow.fund_code === "THF"
       });
     }
 
@@ -745,6 +748,9 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       generatedAt: new Date().toISOString(),
       model: ACTIVE_MODEL,
+      modelVersion: MODEL_VERSION,
+      fundOrder: FUNDS,
+      thfIncluded: FUNDS.includes("THF"),
 
       dataQualityGuard: {
         enabled: true,
@@ -762,6 +768,8 @@ module.exports = async function handler(req, res) {
       waitingActual: results.filter(row => row.reason === "actual_price_not_available_yet").length,
       invalidActual: results.filter(row => row.reason === "actual_price_invalid_or_suspicious").length,
       invalidFinal: results.filter(row => row.reason === "invalid_final_prediction").length,
+      thfClosed: results.filter(row => row.fund === "THF" && row.ok === true && row.skipped === false).length,
+      thfWaitingActual: results.filter(row => row.fund === "THF" && row.reason === "actual_price_not_available_yet").length,
 
       savedPerformanceRows: Array.isArray(savedPerformanceRows)
         ? savedPerformanceRows.length
@@ -770,7 +778,7 @@ module.exports = async function handler(req, res) {
       formula:
         "error_change = actual_change - final_prediction_change",
       source:
-        "prediction_finals + fund_prices",
+        "prediction_finals + fund_prices; PBR/PHE/TLY/THF",
       learningStatsUpdated: learningStats.savedRows,
       learningStatsReliableRows: learningStats.reliablePerformanceRows,
       learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
