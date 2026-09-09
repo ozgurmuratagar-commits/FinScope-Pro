@@ -1,13 +1,14 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Finalize Predictions API v8.4 - THF Final Lock";
+const API_VERSION = "FinScope Finalize Predictions API v8.5 - Final Repair Layer";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const DEFAULT_MODEL_VERSION = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
+const DEFAULT_MODEL_VERSION = "FinScope Prediction Engine v8.5 - Final Repair Layer";
 
 const TURKEY_TIME_ZONE = "Europe/Istanbul";
 const FINAL_START_HOUR = 18;
 const FINAL_START_MINUTE = 0;
 const FINAL_START_TOTAL_MINUTES = FINAL_START_HOUR * 60 + FINAL_START_MINUTE;
+const DEFAULT_REPAIR_FROM_DATE = "2026-08-26";
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -32,6 +33,16 @@ function isValidDateText(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function dateText(value) {
+  if (!value) return null;
+  const text = String(value).slice(0, 10);
+  return isValidDateText(text) ? text : null;
+}
+
+function compareDateText(a, b) {
+  return String(a || "").localeCompare(String(b || ""));
+}
+
 function getTurkeyTimeParts(date = new Date()) {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: TURKEY_TIME_ZONE,
@@ -46,9 +57,7 @@ function getTurkeyTimeParts(date = new Date()) {
 
   const parts = {};
   for (const part of formatter.formatToParts(date)) {
-    if (part.type !== "literal") {
-      parts[part.type] = part.value;
-    }
+    if (part.type !== "literal") parts[part.type] = part.value;
   }
 
   let hour = Number(parts.hour);
@@ -57,11 +66,11 @@ function getTurkeyTimeParts(date = new Date()) {
   const minute = Number(parts.minute);
   const second = Number(parts.second);
 
-  const dateText = `${parts.year}-${parts.month}-${parts.day}`;
+  const currentDateText = `${parts.year}-${parts.month}-${parts.day}`;
   const timeText = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
 
   return {
-    dateText,
+    dateText: currentDateText,
     timeText,
     hour,
     minute,
@@ -75,36 +84,13 @@ function isAfterFinalWindow(turkeyNow) {
   return turkeyNow.totalMinutes >= FINAL_START_TOTAL_MINUTES;
 }
 
-function rowCandidateTimestamp(row) {
-  return row.updated_at || row.created_at || null;
-}
+function latestTimeMs(row) {
+  const candidates = [row.updated_at, row.created_at, row.finalized_at]
+    .filter(Boolean)
+    .map(value => new Date(value).getTime())
+    .filter(value => Number.isFinite(value));
 
-function rowCandidateTimeMs(row) {
-  const value = rowCandidateTimestamp(row);
-  if (!value) return 0;
-
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? time : 0;
-}
-
-function rowTurkeyCandidateParts(row) {
-  const value = rowCandidateTimestamp(row);
-  if (!value) return null;
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-
-  return getTurkeyTimeParts(date);
-}
-
-function isRowInCurrentFinalWindow(row, turkeyNow) {
-  const rowTurkey = rowTurkeyCandidateParts(row);
-  if (!rowTurkey) return false;
-
-  return (
-    rowTurkey.dateText === turkeyNow.dateText &&
-    rowTurkey.totalMinutes >= FINAL_START_TOTAL_MINUTES
-  );
+  return candidates.length ? Math.max(...candidates) : 0;
 }
 
 function sortNewest(a, b) {
@@ -114,7 +100,10 @@ function sortNewest(a, b) {
 
   if (dateCompare !== 0) return dateCompare;
 
-  return rowCandidateTimeMs(b) - rowCandidateTimeMs(a);
+  const timeCompare = latestTimeMs(b) - latestTimeMs(a);
+  if (timeCompare !== 0) return timeCompare;
+
+  return num(b.id, 0) - num(a.id, 0);
 }
 
 function getPredictionValue(row) {
@@ -126,6 +115,9 @@ function getPredictionValue(row) {
 
   const raw = num(row.raw_predicted_change, null);
   if (raw !== null) return raw;
+
+  const finalPrediction = num(row.final_prediction_change, null);
+  if (finalPrediction !== null) return finalPrediction;
 
   return null;
 }
@@ -165,7 +157,7 @@ async function supabaseRequest(path, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 900)}`
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1200)}`
     );
   }
 
@@ -173,86 +165,188 @@ async function supabaseRequest(path, options = {}) {
   return JSON.parse(text);
 }
 
-async function getPendingPredictionRows() {
+function queryValue(req, key) {
+  return req && req.query ? req.query[key] : undefined;
+}
+
+function isTruthyQuery(value) {
+  return value === true || value === "1" || value === "true" || value === "yes" || value === "evet";
+}
+
+function isBackfillMode(req) {
+  return (
+    isTruthyQuery(queryValue(req, "backfill")) ||
+    isTruthyQuery(queryValue(req, "repair")) ||
+    queryValue(req, "mode") === "backfill" ||
+    queryValue(req, "mode") === "repair"
+  );
+}
+
+function resolveFromDate(req) {
+  const explicitDate = queryValue(req, "date");
+  if (isValidDateText(explicitDate)) return explicitDate;
+
+  const from = queryValue(req, "from");
+  if (isValidDateText(from)) return from;
+
+  return DEFAULT_REPAIR_FROM_DATE;
+}
+
+function resolveToDate(req, turkeyNow) {
+  const explicitDate = queryValue(req, "date");
+  if (isValidDateText(explicitDate)) return explicitDate;
+
+  const to = queryValue(req, "to");
+  if (isValidDateText(to)) return to;
+
+  return turkeyNow.dateText;
+}
+
+function shouldBlockCurrentDay(req, turkeyNow) {
+  const explicitDate = queryValue(req, "date");
+  const backfill = isBackfillMode(req);
+
+  if (isAfterFinalWindow(turkeyNow)) return false;
+
+  if (isValidDateText(explicitDate)) {
+    return explicitDate >= turkeyNow.dateText;
+  }
+
+  if (backfill) return false;
+
+  return true;
+}
+
+function allowedDateForCurrentTime(date, turkeyNow) {
+  if (isAfterFinalWindow(turkeyNow)) return date <= turkeyNow.dateText;
+  return date < turkeyNow.dateText;
+}
+
+async function getPredictionRows(fromDate, toDate) {
   const path =
     "prediction_history" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&actual_change=is.null" +
+    `&prediction_date=gte.${encodeURIComponent(fromDate)}` +
+    `&prediction_date=lte.${encodeURIComponent(toDate)}` +
     "&order=prediction_date.desc,updated_at.desc,created_at.desc" +
-    "&limit=300";
+    "&limit=4000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-function getValidFinalWindowRows(pendingRows, turkeyNow) {
-  return pendingRows
-    .filter(row => row.actual_change === null || row.actual_change === undefined)
-    .filter(row => getPredictionValue(row) !== null)
-    .filter(row => isRowInCurrentFinalWindow(row, turkeyNow));
-}
-
-function resolveTargetDate(req, validFinalWindowRows) {
-  const queryDate = req.query && req.query.date;
-
-  if (isValidDateText(queryDate)) {
-    return queryDate;
-  }
-
-  const dates = validFinalWindowRows
-    .map(row => row.prediction_date)
-    .filter(Boolean)
-    .sort((a, b) => String(b).localeCompare(String(a)));
-
-  return dates[0] || null;
-}
-
-function pickLatestPendingForFund(validFinalWindowRows, fundCode, targetDate) {
-  const rows = validFinalWindowRows
-    .filter(row => row.fund_code === fundCode)
-    .filter(row => row.prediction_date === targetDate)
-    .filter(row => getPredictionValue(row) !== null)
-    .sort(sortNewest);
-
-  return rows[0] || null;
-}
-
-async function getExistingPerformanceRows(targetDate) {
-  if (!targetDate) return [];
-
+async function getExistingPerformanceRows(fromDate, toDate) {
   const path =
     "prediction_performance" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&prediction_date=eq.${encodeURIComponent(targetDate)}` +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}`;
+    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
+    `&prediction_date=gte.${encodeURIComponent(fromDate)}` +
+    `&prediction_date=lte.${encodeURIComponent(toDate)}` +
+    "&limit=4000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-async function getExistingFinalRows(targetDate) {
-  if (!targetDate) return [];
-
+async function getExistingFinalRows(fromDate, toDate) {
   const path =
     "prediction_finals" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&prediction_date=eq.${encodeURIComponent(targetDate)}` +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}`;
+    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
+    `&prediction_date=gte.${encodeURIComponent(fromDate)}` +
+    `&prediction_date=lte.${encodeURIComponent(toDate)}` +
+    "&limit=4000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
+}
+
+function isUsablePredictionRow(row) {
+  const fundCode = String(row.fund_code || "").toUpperCase();
+  const predictionDate = dateText(row.prediction_date);
+
+  return (
+    FUNDS.includes(fundCode) &&
+    Boolean(predictionDate) &&
+    (row.actual_change === null || row.actual_change === undefined) &&
+    getPredictionValue(row) !== null
+  );
+}
+
+function uniqueTargetDates(rows, req, turkeyNow) {
+  const explicitDate = queryValue(req, "date");
+  if (isValidDateText(explicitDate)) return [explicitDate];
+
+  const backfill = isBackfillMode(req);
+
+  if (!backfill) {
+    return [turkeyNow.dateText];
+  }
+
+  const dates = new Set();
+
+  for (const row of rows || []) {
+    const d = dateText(row.prediction_date);
+    if (!d) continue;
+    if (!allowedDateForCurrentTime(d, turkeyNow)) continue;
+    dates.add(d);
+  }
+
+  return [...dates].sort((a, b) => compareDateText(a, b));
+}
+
+function keyFor(fundCode, predictionDate) {
+  return `${fundCode}|${predictionDate}`;
+}
+
+function buildRowMap(rows) {
+  const map = new Map();
+
+  for (const row of rows || []) {
+    const fundCode = String(row.fund_code || "").toUpperCase();
+    const predictionDate = dateText(row.prediction_date);
+    if (!FUNDS.includes(fundCode) || !predictionDate) continue;
+
+    const key = keyFor(fundCode, predictionDate);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+  }
+
+  return map;
+}
+
+function hasExistingFinal(rows) {
+  return (rows || []).some(row => {
+    const value = getPredictionValue(row);
+    return (
+      row.locked === true ||
+      row.locked === "true" ||
+      row.finalization_status === "finalized" ||
+      value !== null
+    );
+  });
+}
+
+function pickLatestPredictionForFundDate(rowsByKey, fundCode, predictionDate) {
+  const key = keyFor(fundCode, predictionDate);
+  const rows = (rowsByKey.get(key) || [])
+    .filter(isUsablePredictionRow)
+    .sort(sortNewest);
+
+  return rows[0] || null;
 }
 
 function buildFinalPayload(row, finalizeReason) {
   const finalPrediction = getPredictionValue(row);
 
   return {
-    fund_code: row.fund_code,
-    prediction_date: row.prediction_date,
+    fund_code: String(row.fund_code || "").toUpperCase(),
+    prediction_date: dateText(row.prediction_date),
 
     model: ACTIVE_MODEL,
     model_version: row.model_version || DEFAULT_MODEL_VERSION,
@@ -345,13 +439,21 @@ module.exports = async function handler(req, res) {
       ok: false,
       version: API_VERSION,
       model: ACTIVE_MODEL,
+      modelVersion: DEFAULT_MODEL_VERSION,
       error: auth.reason
     });
   }
 
   const turkeyNow = getTurkeyTimeParts(new Date());
+  const explicitDate = queryValue(req, "date");
+  const backfill = isBackfillMode(req);
+  const mode = isValidDateText(explicitDate)
+    ? "single_date"
+    : backfill
+      ? "backfill_repair"
+      : "normal_daily_final";
 
-  if (!isAfterFinalWindow(turkeyNow)) {
+  if (shouldBlockCurrentDay(req, turkeyNow)) {
     return res.status(200).json({
       ok: false,
       blocked: true,
@@ -361,167 +463,189 @@ module.exports = async function handler(req, res) {
       modelVersion: DEFAULT_MODEL_VERSION,
       fundOrder: FUNDS,
       thfIncluded: FUNDS.includes("THF"),
+      mode,
       finalized: 0,
       total: FUNDS.length,
       turkeyNow,
       rule:
-        "Türkiye saati 18:00 öncesi final kilitleme yapılmaz. Bu endpoint manuel testte veya erken cron çağrısında prediction_finals tablosuna yazmaz.",
-      reason:
-        "Türkiye saati 18:00 öncesi final kilitleme yapılmaz. Final tahmin yalnızca T günü 18:00 sonrası üretilen pending tahminlerden oluşturulur."
+        "Türkiye saati 18:00 öncesi yalnızca geçmiş tarih backfill çalışabilir. Bugünün finali 18:00 öncesi kilitlenmez.",
+      usage:
+        "Geçmiş kayıt onarımı için /api/finalize-predictions?manual=finscope&backfill=1&from=2026-08-26 kullanılır."
     });
   }
 
   try {
-    const pendingRows = await getPendingPredictionRows();
-    const validFinalWindowRows = getValidFinalWindowRows(pendingRows, turkeyNow);
-    const targetDate = resolveTargetDate(req, validFinalWindowRows);
+    const fromDate = resolveFromDate(req);
+    const toDate = resolveToDate(req, turkeyNow);
 
-    if (!targetDate) {
-      return res.status(200).json({
+    if (compareDateText(fromDate, toDate) > 0) {
+      return res.status(400).json({
         ok: false,
-        blocked: false,
         version: API_VERSION,
-        generatedAt: new Date().toISOString(),
         model: ACTIVE_MODEL,
-        finalized: 0,
-        total: FUNDS.length,
-        turkeyNow,
-        pendingRows: pendingRows.length,
-        validFinalWindowRows: validFinalWindowRows.length,
-        error:
-          "Final yapılacak geçerli 18:00 sonrası pending tahmin bulunamadı.",
-        rule:
-          "Final için aday kayıt, Türkiye saatine göre bugün 18:00 sonrası güncellenmiş/oluşturulmuş ve actual_change IS NULL olmalıdır."
+        modelVersion: DEFAULT_MODEL_VERSION,
+        error: "from tarihi to tarihinden büyük olamaz.",
+        fromDate,
+        toDate
       });
     }
 
-    const existingPerformanceRows = await getExistingPerformanceRows(targetDate);
-    const existingFinalRows = await getExistingFinalRows(targetDate);
+    const predictionRows = await getPredictionRows(fromDate, toDate);
+    const usablePredictionRows = predictionRows.filter(isUsablePredictionRow);
+    const targetDates = uniqueTargetDates(usablePredictionRows, req, turkeyNow);
 
-    const closedFunds = new Set(
-      existingPerformanceRows.map(row => row.fund_code)
-    );
+    const existingPerformanceRows = await getExistingPerformanceRows(fromDate, toDate);
+    const existingFinalRows = await getExistingFinalRows(fromDate, toDate);
 
-    const lockedFinalFunds = new Set(
-      existingFinalRows
-        .filter(row => row.locked === true || row.locked === "true")
-        .filter(row => row.finalization_status === "finalized")
-        .map(row => row.fund_code)
-    );
+    const predictionRowsByKey = buildRowMap(usablePredictionRows);
+    const performanceRowsByKey = buildRowMap(existingPerformanceRows);
+    const finalRowsByKey = buildRowMap(existingFinalRows);
 
     const payloads = [];
     const results = [];
 
-    for (const fundCode of FUNDS) {
-      if (closedFunds.has(fundCode)) {
+    for (const predictionDate of targetDates) {
+      if (!allowedDateForCurrentTime(predictionDate, turkeyNow)) {
         results.push({
-          fund: fundCode,
+          date: predictionDate,
           ok: false,
           skipped: true,
           reason:
-            "Bu fon ve tarih için performance kapanmış. Final tahmin artık değiştirilemez.",
-          predictionDate: targetDate
+            predictionDate === turkeyNow.dateText
+              ? "Bugünün finali Türkiye saati 18:00 öncesi kilitlenemez."
+              : "Hedef tarih geçersiz veya gelecekte.",
+          fund: null
         });
-
         continue;
       }
 
-      if (lockedFinalFunds.has(fundCode)) {
-        const existing = existingFinalRows.find(row => row.fund_code === fundCode);
+      for (const fundCode of FUNDS) {
+        const rowKey = keyFor(fundCode, predictionDate);
+        const performanceRows = performanceRowsByKey.get(rowKey) || [];
+        const finalRows = finalRowsByKey.get(rowKey) || [];
+
+        if (performanceRows.length > 0) {
+          results.push({
+            fund: fundCode,
+            predictionDate,
+            ok: true,
+            skipped: true,
+            reason: "performance_already_closed",
+            note:
+              "Bu fon ve tarih için performans zaten kapanmış. Final tahmin değiştirilmedi."
+          });
+          continue;
+        }
+
+        if (hasExistingFinal(finalRows)) {
+          const existing = finalRows[0];
+
+          results.push({
+            fund: fundCode,
+            predictionDate,
+            ok: true,
+            skipped: true,
+            alreadyFinalized: true,
+            reason: "final_already_exists",
+            existingFinalPredictionChange:
+              existing && existing.final_prediction_change !== undefined
+                ? round(existing.final_prediction_change, 6)
+                : null,
+            existingFinalizedAt: existing ? existing.finalized_at : null
+          });
+          continue;
+        }
+
+        const selected = pickLatestPredictionForFundDate(
+          predictionRowsByKey,
+          fundCode,
+          predictionDate
+        );
+
+        if (!selected) {
+          results.push({
+            fund: fundCode,
+            predictionDate,
+            ok: false,
+            skipped: true,
+            reason: "no_pending_prediction_for_date",
+            note:
+              "Bu fon ve tarih için actual_change IS NULL geçerli prediction_history satırı bulunamadı."
+          });
+          continue;
+        }
+
+        const payload = buildFinalPayload(
+          selected,
+          mode === "backfill_repair"
+            ? "v8.5 backfill repair: hedef tarihin en son pending tahmini, eksik final kaydı için kilitlendi."
+            : "v8.5 final repair: Türkiye saati 18:00 sonrası, hedef tarihin en son pending tahmini nihai tahmin olarak kilitlendi."
+        );
+
+        payloads.push(payload);
 
         results.push({
           fund: fundCode,
+          predictionDate,
           ok: true,
-          skipped: true,
-          alreadyFinalized: true,
-          reason:
-            "Bu fon ve tarih için kilitli final tahmin zaten var. Tekrar yazılmadı.",
-          predictionDate: targetDate,
-          existingFinalPredictionChange:
-            existing && existing.final_prediction_change !== undefined
-              ? round(existing.final_prediction_change, 6)
-              : null,
-          existingFinalizedAt: existing ? existing.finalized_at : null
+          skipped: false,
+          sourcePredictionId: selected.id || null,
+          sourceCreatedAt: selected.created_at || null,
+          sourceUpdatedAt: selected.updated_at || null,
+          sourceLatestTimeMs: latestTimeMs(selected),
+          modelVersion: payload.model_version,
+          finalPredictionChange: payload.final_prediction_change,
+          predictedDirection: payload.predicted_direction,
+          confidence: payload.confidence,
+          coverage: payload.coverage,
+          thfInitialLayer: fundCode === "THF"
         });
-
-        continue;
       }
-
-      const row = pickLatestPendingForFund(
-        validFinalWindowRows,
-        fundCode,
-        targetDate
-      );
-
-      if (!row) {
-        results.push({
-          fund: fundCode,
-          ok: false,
-          skipped: true,
-          reason:
-            "Bu fon için hedef tarihte Türkiye saati 18:00 sonrası geçerli pending tahmin bulunamadı.",
-          predictionDate: targetDate
-        });
-
-        continue;
-      }
-
-      const rowTurkey = rowTurkeyCandidateParts(row);
-
-      const payload = buildFinalPayload(
-        row,
-        "T günü 18:00 sonrası güncel pending tahmin, T+1/T-hedef fiyat tarihi için nihai tahmin olarak kilitlendi."
-      );
-
-      payloads.push(payload);
-
-      results.push({
-        fund: fundCode,
-        ok: true,
-        predictionDate: targetDate,
-        sourcePredictionId: row.id || null,
-        sourceCreatedAt: row.created_at || null,
-        sourceUpdatedAt: row.updated_at || null,
-        sourceTurkeyDate: rowTurkey ? rowTurkey.dateText : null,
-        sourceTurkeyTime: rowTurkey ? rowTurkey.timeText : null,
-        modelVersion: payload.model_version,
-        finalPredictionChange: payload.final_prediction_change,
-        predictedDirection: payload.predicted_direction,
-        confidence: payload.confidence,
-        coverage: payload.coverage,
-        thfInitialLayer: fundCode === "THF"
-      });
     }
 
     const savedRows = await upsertFinalRows(payloads);
 
-    const alreadyFinalizedCount = results.filter(
-      item => item.ok && item.alreadyFinalized
-    ).length;
-
-    const successfulCount = payloads.length + alreadyFinalizedCount;
+    const alreadyFinalizedCount = results.filter(row => row.reason === "final_already_exists").length;
+    const performanceClosedCount = results.filter(row => row.reason === "performance_already_closed").length;
+    const noPendingCount = results.filter(row => row.reason === "no_pending_prediction_for_date").length;
+    const finalizedCount = payloads.length;
 
     return res.status(200).json({
-      ok: successfulCount === FUNDS.length,
+      ok: true,
       version: API_VERSION,
       generatedAt: new Date().toISOString(),
       model: ACTIVE_MODEL,
       modelVersion: DEFAULT_MODEL_VERSION,
       fundOrder: FUNDS,
       thfIncluded: FUNDS.includes("THF"),
-      targetDate,
+
+      mode,
+      fromDate,
+      toDate,
+      targetDates,
       turkeyNow,
-      finalized: payloads.length,
+
+      finalized: finalizedCount,
       alreadyFinalized: alreadyFinalizedCount,
-      successful: successfulCount,
-      total: FUNDS.length,
-      pendingRows: pendingRows.length,
-      validFinalWindowRows: validFinalWindowRows.length,
+      performanceAlreadyClosed: performanceClosedCount,
+      noPendingPrediction: noPendingCount,
+      totalTargets: targetDates.length * FUNDS.length,
+
+      predictionRows: predictionRows.length,
+      usablePredictionRows: usablePredictionRows.length,
+      existingFinalRows: existingFinalRows.length,
+      existingPerformanceRows: existingPerformanceRows.length,
       savedRows: Array.isArray(savedRows) ? savedRows.length : 0,
+
       rule:
-        "Final tahmin yalnızca Türkiye saati 18:00 sonrası, aynı gün oluşturulmuş/güncellenmiş actual_change IS NULL tahminlerden seçilir. THF dahil 4 fon desteklenir.",
-      protection:
-        "18:00 öncesi çağrılar veri yazmaz. Performance kapanmışsa veya kilitli final zaten varsa final tahmin güncellenmez. THF yeni fon olsa bile yalnızca geçerli pending tahmin varsa kilitlenir.",
+        "v8.5: Final kilidi 18:00 sonrası çalışır; seçilen tahmin hedef tarihin en son actual_change IS NULL pending tahminidir. Tahmin satırının ayrıca 18:00 sonrası oluşturulmuş olması şartı kaldırıldı.",
+      repairRule:
+        "backfill=1 modunda geçmiş tarihler için eksik prediction_finals kayıtları oluşturulur. Kapanmış performance veya mevcut final varsa kayıt değiştirilmez.",
+      nextStep:
+        finalizedCount > 0
+          ? "Şimdi /api/close-performance?manual=finscope çalıştırılarak yeni finaller performansa kapatılabilir."
+          : "Yeni final yazılmadıysa sonuçlarda final_already_exists veya performance_already_closed durumlarını kontrol edin.",
+
       results,
       saved: savedRows
     });
@@ -530,6 +654,7 @@ module.exports = async function handler(req, res) {
       ok: false,
       version: API_VERSION,
       model: ACTIVE_MODEL,
+      modelVersion: DEFAULT_MODEL_VERSION,
       error: String(error.message || error)
     });
   }
