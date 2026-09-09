@@ -1,9 +1,13 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Performance API v8.4 - THF Performance Layer";
+const API_VERSION = "FinScope Performance API v8.9.3 - Quarantine Aware Performance API";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
+const MODEL_VERSION = "FinScope Prediction Engine v8.9.1 - Strict Learning Gate";
 const FINAL_LABEL = "T-1 18:00 Nihai Tahmin";
+
+const MAX_RELIABLE_ACTUAL_CHANGE = 6;
+const MAX_RELIABLE_FINAL_PREDICTION = 5;
+const MAX_RELIABLE_ABSOLUTE_ERROR = 2.5;
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -59,6 +63,83 @@ function sortDisplayRows(a, b) {
   if (dateCompare !== 0) return dateCompare;
 
   return fundOrder(a.fundCode) - fundOrder(b.fundCode);
+}
+
+function isClosedStatus(value) {
+  const status = String(value || "").toLowerCase();
+  return status === "closed" || status === "completed";
+}
+
+function isQuarantinedStatus(value) {
+  const status = String(value || "").toLowerCase();
+  return status === "quarantined" || status === "karantina";
+}
+
+function reliabilityReasons(row) {
+  const reasons = [];
+
+  const predictionDate = dateText(row.prediction_date);
+  const actualPriceDate = dateText(row.actual_price_date);
+  const actualChange = num(row.actual_change, null);
+  const finalPredictionChange = num(row.final_prediction_change, null);
+
+  const errorChange =
+    actualChange !== null && finalPredictionChange !== null
+      ? actualChange - finalPredictionChange
+      : num(row.error_change, null);
+
+  const absoluteError =
+    errorChange !== null
+      ? Math.abs(errorChange)
+      : num(row.absolute_error, null);
+
+  if (isQuarantinedStatus(row.status)) {
+    reasons.push("status_quarantined");
+  }
+
+  if (!isClosedStatus(row.status)) {
+    reasons.push("status_not_closed");
+  }
+
+  if (!predictionDate) {
+    reasons.push("prediction_date_missing");
+  }
+
+  if (!actualPriceDate) {
+    reasons.push("actual_price_date_missing");
+  }
+
+  if (predictionDate && actualPriceDate && actualPriceDate <= predictionDate) {
+    reasons.push("actual_price_date_not_after_prediction_date");
+  }
+
+  if (actualChange === null) {
+    reasons.push("actual_change_missing");
+  } else if (Math.abs(actualChange) > MAX_RELIABLE_ACTUAL_CHANGE) {
+    reasons.push(`actual_change_outlier_abs_gt_${MAX_RELIABLE_ACTUAL_CHANGE}`);
+  }
+
+  if (finalPredictionChange === null) {
+    reasons.push("final_prediction_missing");
+  } else if (Math.abs(finalPredictionChange) > MAX_RELIABLE_FINAL_PREDICTION) {
+    reasons.push(
+      `final_prediction_outlier_abs_gt_${MAX_RELIABLE_FINAL_PREDICTION}`
+    );
+  }
+
+  if (absoluteError === null) {
+    reasons.push("absolute_error_missing");
+  } else if (Math.abs(absoluteError) > MAX_RELIABLE_ABSOLUTE_ERROR) {
+    reasons.push(
+      `absolute_error_outlier_abs_gt_${MAX_RELIABLE_ABSOLUTE_ERROR}`
+    );
+  }
+
+  return reasons;
+}
+
+function isReliablePerformanceRow(row) {
+  return reliabilityReasons(row).length === 0;
 }
 
 function getSupabaseConfig() {
@@ -180,7 +261,10 @@ function normalizeCompletedRow(row) {
     modelVersion: row.model_version || null,
 
     status: "completed",
+    rawStatus: row.status || null,
     completed: true,
+    reliableForMetrics: true,
+    quarantineReasons: [],
 
     source: "prediction_performance",
     finalPredictionSource: "prediction_finals.final_prediction_change",
@@ -215,6 +299,24 @@ function normalizeCompletedRow(row) {
     closedAt: row.closed_at || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null
+  };
+}
+
+function normalizeQuarantinedRow(row) {
+  const normalized = normalizeCompletedRow(row);
+  const reasons = reliabilityReasons(row);
+
+  return {
+    ...normalized,
+    status: "quarantined",
+    rawStatus: row.status || "quarantined",
+    completed: false,
+    reliableForMetrics: false,
+    quarantineReasons: reasons,
+    grade: row.grade || "Karantina",
+    note:
+      row.note ||
+      `Strict Learning Gate: Bu kayıt genel performans ortalamasına ve öğrenme metriklerine dahil edilmedi. Nedenler: ${reasons.join(", ")}`
   };
 }
 
@@ -363,7 +465,7 @@ function directionRate(rows) {
   };
 }
 
-function buildSummary(completedRows, pendingRows, learningMap) {
+function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) {
   const latestCompletedDate =
     completedRows.length > 0
       ? latestDate(
@@ -384,13 +486,17 @@ function buildSummary(completedRows, pendingRows, learningMap) {
   for (const code of FUNDS) {
     const fundRows = completedRows.filter(row => row.fundCode === code);
     const fundPendingRows = pendingRows.filter(row => row.fundCode === code);
+    const fundQuarantinedRows = quarantinedRows.filter(row => row.fundCode === code);
     const fundDirection = directionRate(fundRows);
 
     byFund[code] = {
       fundCode: code,
 
       completedRows: fundRows.length,
+      reliableCompletedRows: fundRows.length,
       pendingRows: fundPendingRows.length,
+      quarantinedRows: fundQuarantinedRows.length,
+      rawPerformanceRows: fundRows.length + fundQuarantinedRows.length,
 
       averageAbsoluteError: round(averageNumber(fundRows, "absoluteError"), 4),
       averageError: round(averageNumber(fundRows, "errorChange"), 4),
@@ -405,8 +511,19 @@ function buildSummary(completedRows, pendingRows, learningMap) {
 
   return {
     totalRows: completedRows.length + pendingRows.length,
+    reliableTotalRows: completedRows.length + pendingRows.length,
+    rawTotalRows: completedRows.length + pendingRows.length + quarantinedRows.length,
     completedRows: completedRows.length,
+    reliableCompletedRows: completedRows.length,
     pendingRows: pendingRows.length,
+    quarantinedRows: quarantinedRows.length,
+    quarantineRate:
+      completedRows.length + quarantinedRows.length > 0
+        ? round(
+            (quarantinedRows.length / (completedRows.length + quarantinedRows.length)) * 100,
+            2
+          )
+        : null,
 
     averageAbsoluteError: round(averageNumber(completedRows, "absoluteError"), 4),
     averageError: round(averageNumber(completedRows, "errorChange"), 4),
@@ -445,10 +562,10 @@ function buildSummary(completedRows, pendingRows, learningMap) {
     thfPendingRows: pendingRows.filter(row => row.fundCode === "THF").length,
 
     formula:
-      "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 sonrası kilitlenen nihai tahmin",
+      "Sapma = prediction_date sonrasındaki ilk TEFAS gerçekleşmesi - T-1 18:00 sonrası kilitlenen nihai tahmin",
 
     metricPolicy:
-      "averageAbsoluteError ve directionHitRate tüm kapanmış performans kayıtlarından hesaplanır. latestDateAverageAbsoluteError sadece son tamamlanan tahmin tarihinin ortalamasıdır. THF yeterli kapanış üretince aynı metriklere dahil olur.",
+      "averageAbsoluteError ve directionHitRate yalnızca status=closed olan ve Strict Learning Gate filtresinden geçen güvenilir performans kayıtlarından hesaplanır. Karantina kayıtları genel ortalamaya katılmaz; summary.quarantinedRows ve byFund[].quarantinedRows içinde ayrıca raporlanır.",
 
     byFund
   };
@@ -463,8 +580,17 @@ module.exports = async function handler(req, res) {
     const finalRows = await getFinalRows();
     const learningRows = await getLearningRows();
 
-    const completedRows = performanceRows
+    const reliablePerformanceRows = performanceRows.filter(isReliablePerformanceRow);
+    const quarantinedPerformanceRows = performanceRows.filter(
+      row => !isReliablePerformanceRow(row)
+    );
+
+    const completedRows = reliablePerformanceRows
       .map(normalizeCompletedRow)
+      .sort(sortDisplayRows);
+
+    const quarantinedRows = quarantinedPerformanceRows
+      .map(normalizeQuarantinedRow)
       .sort(sortDisplayRows);
 
     const pendingRows = getPendingFinalRows(finalRows, performanceRows)
@@ -472,7 +598,7 @@ module.exports = async function handler(req, res) {
       .sort(sortDisplayRows);
 
     const learningMap = buildLearningMap(learningRows);
-    const summary = buildSummary(completedRows, pendingRows, learningMap);
+    const summary = buildSummary(completedRows, pendingRows, quarantinedRows, learningMap);
 
     const rows = [...completedRows, ...pendingRows];
 
@@ -482,13 +608,21 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
 
       source: "prediction_performance + prediction_finals + model_learning_stats",
+      quarantineAware: true,
+      strictLearningGate: {
+        maxReliableActualChange: MAX_RELIABLE_ACTUAL_CHANGE,
+        maxReliableFinalPrediction: MAX_RELIABLE_FINAL_PREDICTION,
+        maxReliableAbsoluteError: MAX_RELIABLE_ABSOLUTE_ERROR,
+        rule:
+          "Dashboard ortalamaları sadece güvenilir closed kayıtları kullanır; quarantined kayıtlar audit amaçlı ayrıca döner."
+      },
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
       fundOrder: FUNDS,
       thfIncluded: FUNDS.includes("THF"),
 
       selectionRule:
-        "Dashboard rows artık sadece son günü değil, THF dahil tüm kapanmış performans kayıtlarını döndürür. Böylece Toplam Kayıt, Tamamlanan Tahmin ve Ortalama Sapma aynı kapsamı kullanır.",
+        "Dashboard rows THF dahil yalnızca güvenilir closed performans kayıtlarını ve bekleyen final tahminleri döndürür. Karantina kayıtları genel metriklerden ayrıştırılır.",
 
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_finals.final_prediction_change",
@@ -498,20 +632,25 @@ module.exports = async function handler(req, res) {
       rows,
       completedRows,
       pendingFinalRows: pendingRows,
+      quarantinedRows,
 
       learningStats: learningMap,
 
       rawCounts: {
         predictionPerformanceRows: performanceRows.length,
+        reliablePerformanceRows: reliablePerformanceRows.length,
+        quarantinedPerformanceRows: quarantinedPerformanceRows.length,
         predictionFinalRows: finalRows.length,
         modelLearningRows: learningRows.length,
         thfPerformanceRows: performanceRows.filter(row => row.fund_code === "THF").length,
+        thfReliablePerformanceRows: reliablePerformanceRows.filter(row => row.fund_code === "THF").length,
+        thfQuarantinedPerformanceRows: quarantinedPerformanceRows.filter(row => row.fund_code === "THF").length,
         thfFinalRows: finalRows.filter(row => row.fund_code === "THF").length,
         thfLearningRows: learningRows.filter(row => row.fund_code === "THF").length
       },
 
       note:
-        "Bu API eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli T-1 final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır. THF yeni fon olarak kapanış performansı oluştuğunda tabloya dahil edilir."
+        "Bu API eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli T-1 final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır. v8.9.3 ile quarantined kayıtlar genel ortalama ve yön isabeti hesabından ayrılır."
     });
   } catch (error) {
     return res.status(500).json({
