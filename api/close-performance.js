@@ -1,8 +1,8 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Close Performance API v8.9 - Strict Learning Gate";
+const API_VERSION = "FinScope Close Performance API v8.9.1 - Strict Learning Gate Safe Repair";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v8.9 - Strict Learning Gate";
+const MODEL_VERSION = "FinScope Prediction Engine v8.9.1 - Strict Learning Gate Safe Repair";
 
 const DEFAULT_FROM_DATE = "2026-08-26";
 const MIN_VALID_PRICE = 0;
@@ -134,6 +134,60 @@ function sortNewestPerformance(a, b) {
   const dateCompare = compareDateText(dateText(b.prediction_date), dateText(a.prediction_date));
   if (dateCompare !== 0) return dateCompare;
   return rowTimeMs(b) - rowTimeMs(a);
+}
+
+function finalSelectionTimeMs(row) {
+  const value =
+    row.finalized_at ||
+    row.updated_at ||
+    row.source_created_at ||
+    row.created_at ||
+    "1970-01-01T00:00:00.000Z";
+
+  const t = new Date(value).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function makeFinalKey(row) {
+  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+}
+
+function dedupeFinalRows(rows) {
+  const map = new Map();
+
+  for (const row of rows || []) {
+    const key = makeFinalKey(row);
+    const existing = map.get(key);
+
+    if (!existing || finalSelectionTimeMs(row) >= finalSelectionTimeMs(existing)) {
+      map.set(key, row);
+    }
+  }
+
+  return [...map.values()].sort((a, b) => {
+    const dateCompare = compareDateText(dateText(a.prediction_date), dateText(b.prediction_date));
+    if (dateCompare !== 0) return dateCompare;
+
+    const fundCompare = String(a.fund_code || "").localeCompare(String(b.fund_code || ""));
+    if (fundCompare !== 0) return fundCompare;
+
+    return finalSelectionTimeMs(b) - finalSelectionTimeMs(a);
+  });
+}
+
+function dedupePerformancePayloads(payloads) {
+  const map = new Map();
+
+  for (const payload of payloads || []) {
+    const key = makePerformanceKey(payload);
+    const existing = map.get(key);
+
+    if (!existing || rowTimeMs(payload) >= rowTimeMs(existing)) {
+      map.set(key, payload);
+    }
+  }
+
+  return [...map.values()];
 }
 
 function getSupabaseConfig() {
@@ -824,7 +878,9 @@ module.exports = async function handler(req, res) {
   try {
     const forceRepair = isTruthyQuery(queryValue(req, "force")) || isTruthyQuery(queryValue(req, "repair"));
 
-    const finalRows = await getFinalRows(req);
+    const rawFinalRows = await getFinalRows(req);
+    const finalRows = dedupeFinalRows(rawFinalRows);
+
     const existingPerformanceRows = await getExistingPerformanceRows(req);
     const existingPerformanceMap = buildExistingPerformanceMap(existingPerformanceRows);
 
@@ -930,7 +986,10 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const savedPerformanceRows = await upsertPerformanceRows(payloads);
+    const dedupedPayloads = dedupePerformancePayloads(payloads);
+    const duplicatePayloadsRemoved = payloads.length - dedupedPayloads.length;
+
+    const savedPerformanceRows = await upsertPerformanceRows(dedupedPayloads);
     const learningStats = await updateLearningStats();
 
     const createdCount = results.filter(row => row.reason === "performance_created").length;
@@ -969,10 +1028,14 @@ module.exports = async function handler(req, res) {
         dailyChangeWarningTolerance: DAILY_CHANGE_WARNING_TOLERANCE
       },
 
+      rawFinalRowsFound: rawFinalRows.length,
       finalsFound: finalRows.length,
+      duplicateFinalRowsRemoved: rawFinalRows.length - finalRows.length,
       existingPerformanceRows: existingPerformanceRows.length,
 
-      closed: payloads.length,
+      closed: dedupedPayloads.length,
+      payloadsBeforeDedupe: payloads.length,
+      duplicatePayloadsRemoved,
       created: createdCount,
       corrected: correctedCount,
       alreadyClosedVerified: verifiedCount,
@@ -998,11 +1061,18 @@ module.exports = async function handler(req, res) {
       learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
 
       rule:
-        "v8.9: prediction_date tarihli final tahmin, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Abs(actual_change) > 6, abs(final_prediction) > 5 veya abs(error) > 2.5 ise satır karantinaya alınır ve öğrenme istatistiğine dahil edilmez.",
+        "v8.9.1: prediction_date tarihli final tahmin, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Abs(actual_change) > 6, abs(final_prediction) > 5 veya abs(error) > 2.5 ise satır karantinaya alınır ve öğrenme istatistiğine dahil edilmez. Bu sürüm duplicate final kayıtlarını tekilleştirir ve response çıktısını hafifletir.",
 
-      results,
-      saved: savedPerformanceRows,
-      learningStats
+      resultCount: results.length,
+      resultSample: results.slice(0, 60),
+      savedPerformanceRowsSample: Array.isArray(savedPerformanceRows)
+        ? savedPerformanceRows.slice(0, 20)
+        : [],
+      learningStatsSummary: {
+        savedRows: learningStats.savedRows,
+        reliablePerformanceRows: learningStats.reliablePerformanceRows,
+        ignoredPerformanceRows: learningStats.ignoredPerformanceRows
+      }
     });
   } catch (error) {
     return res.status(500).json({
@@ -1010,1023 +1080,7 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
-      error: String(error.message || error)
-    });
-  }
-};
-const FUNDS = ["PBR", "PHE", "TLY", "THF"];
-
-const API_VERSION = "FinScope Close Performance API v8.9 - Strict Learning Gate";
-const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v8.9 - Strict Learning Gate";
-
-const DEFAULT_FROM_DATE = "2026-08-26";
-const MIN_VALID_PRICE = 0;
-const MAX_ABSOLUTE_ACTUAL_CHANGE = 20;
-const MAX_ABSOLUTE_FINAL_PREDICTION = 20;
-
-// Öğrenme motorunu koruyan güvenilirlik eşikleri.
-// Bu eşikler performans kaydını silmez; şüpheli satırı karantinaya alır.
-const MAX_RELIABLE_ACTUAL_CHANGE = 6;
-const MAX_RELIABLE_FINAL_PREDICTION = 5;
-const MAX_RELIABLE_ABSOLUTE_ERROR = 2.5;
-const DIRECTION_EPSILON = 0.01;
-const PRICE_CHANGE_TOLERANCE = 0.0001;
-const DAILY_CHANGE_WARNING_TOLERANCE = 0.10;
-
-function num(value, fallback = null) {
-  if (value === null || value === undefined || value === "") return fallback;
-  const n = Number(String(value).replace(",", "."));
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function round(value, digits = 6) {
-  const n = num(value, null);
-  if (n === null) return null;
-  return Number(n.toFixed(digits));
-}
-
-function dateText(value) {
-  if (!value) return null;
-  const text = String(value).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
-}
-
-function isValidDateText(value) {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
-function compareDateText(a, b) {
-  return String(a || "").localeCompare(String(b || ""));
-}
-
-function direction(value) {
-  const n = num(value, 0);
-  if (n > 0) return "up";
-  if (n < 0) return "down";
-  return "flat";
-}
-
-function directionHit(predicted, actual) {
-  const p = num(predicted, null);
-  const a = num(actual, null);
-
-  if (p === null || a === null) return null;
-
-  if (Math.abs(p) < DIRECTION_EPSILON || Math.abs(a) < DIRECTION_EPSILON) {
-    return null;
-  }
-
-  return direction(p) === direction(a);
-}
-
-function gradeFromError(errorAbs) {
-  const e = Math.abs(num(errorAbs, 0));
-
-  if (e <= 0.10) return "Hedefte";
-  if (e <= 0.25) return "Çok iyi";
-  if (e <= 0.50) return "İyi";
-  if (e <= 0.85) return "Makul";
-  if (e <= 1.25) return "Zayıf";
-  return "Çok zayıf";
-}
-
-function getBiasLabel(averageError) {
-  const e = num(averageError, 0);
-
-  if (e > 0.20) return "Model temkinli kalıyor / düşük tahmin ediyor";
-  if (e < -0.20) return "Model iyimser kalıyor / yüksek tahmin ediyor";
-  return "Dengeli";
-}
-
-function getLearningStatus(sampleSize, averageAbsoluteError, directionHitRate) {
-  const n = num(sampleSize, 0);
-  const err = num(averageAbsoluteError, null);
-  const hit = num(directionHitRate, null);
-
-  if (n === 0) return "Henüz öğrenme verisi yok";
-  if (n < 5) return "Örnek sayısı düşük";
-  if (err !== null && err <= 0.10 && hit !== null && hit >= 70) return "Hedefe yakın öğreniyor";
-  if (err !== null && err <= 0.35 && hit !== null && hit >= 60) return "İyi öğreniyor";
-  if (err !== null && err <= 0.65) return "Öğreniyor";
-  if (err !== null && err > 1.25) return "Sapma yüksek";
-  return "Takip ediliyor";
-}
-
-function average(rows, field) {
-  const values = rows
-    .map(row => num(row[field], null))
-    .filter(value => value !== null);
-
-  if (!values.length) return null;
-
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function rowTimeMs(row) {
-  const value =
-    row.updated_at ||
-    row.created_at ||
-    row.closed_at ||
-    row.finalized_at ||
-    row.price_date ||
-    "1970-01-01T00:00:00.000Z";
-
-  const t = new Date(value).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-function sortPriceRows(a, b) {
-  const dateCompare = compareDateText(dateText(a.price_date), dateText(b.price_date));
-  if (dateCompare !== 0) return dateCompare;
-
-  const timeCompare = rowTimeMs(a) - rowTimeMs(b);
-  if (timeCompare !== 0) return timeCompare;
-
-  return num(a.id, 0) - num(b.id, 0);
-}
-
-function sortNewestPerformance(a, b) {
-  const dateCompare = compareDateText(dateText(b.prediction_date), dateText(a.prediction_date));
-  if (dateCompare !== 0) return dateCompare;
-  return rowTimeMs(b) - rowTimeMs(a);
-}
-
-function getSupabaseConfig() {
-  const url = process.env.SUPABASE_URL;
-
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
-    throw new Error("SUPABASE_URL veya Supabase key eksik.");
-  }
-
-  return { url, key };
-}
-
-async function supabaseRequest(path, options = {}) {
-  const { url, key } = getSupabaseConfig();
-
-  const response = await fetch(`${url}/rest/v1/${path}`, {
-    method: options.method || "GET",
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Prefer: options.prefer || "return=representation",
-      ...(options.headers || {})
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1200)}`
-    );
-  }
-
-  if (!text) return [];
-  return JSON.parse(text);
-}
-
-function authStatus(req) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.authorization;
-  const querySecret = req.query && req.query.secret;
-  const manualKey = req.query && req.query.manual;
-
-  const authorizedByHeader =
-    cronSecret && authHeader === `Bearer ${cronSecret}`;
-
-  const authorizedByQuery =
-    cronSecret && querySecret === cronSecret;
-
-  const authorizedByManual =
-    manualKey === "finscope";
-
-  if (
-    cronSecret &&
-    !authorizedByHeader &&
-    !authorizedByQuery &&
-    !authorizedByManual
-  ) {
-    return {
-      ok: false,
-      reason: "Yetkisiz istek."
-    };
-  }
-
-  return {
-    ok: true,
-    authorizedByHeader: Boolean(authorizedByHeader),
-    authorizedByQuery: Boolean(authorizedByQuery),
-    authorizedByManual: Boolean(authorizedByManual)
-  };
-}
-
-function queryValue(req, key) {
-  return req && req.query ? req.query[key] : undefined;
-}
-
-function isTruthyQuery(value) {
-  return value === true || value === "1" || value === "true" || value === "yes" || value === "evet";
-}
-
-function getFromDate(req) {
-  const exactDate = queryValue(req, "date");
-  if (isValidDateText(exactDate)) return exactDate;
-
-  const from = queryValue(req, "from");
-  if (isValidDateText(from)) return from;
-
-  return DEFAULT_FROM_DATE;
-}
-
-function getToDate(req) {
-  const exactDate = queryValue(req, "date");
-  if (isValidDateText(exactDate)) return exactDate;
-
-  const to = queryValue(req, "to");
-  if (isValidDateText(to)) return to;
-
-  return null;
-}
-
-async function getFinalRows(req) {
-  const fromDate = getFromDate(req);
-  const toDate = getToDate(req);
-
-  let path =
-    "prediction_finals" +
-    "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    "&finalization_status=eq.finalized" +
-    `&prediction_date=gte.${encodeURIComponent(fromDate)}`;
-
-  if (toDate) {
-    path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
-  }
-
-  path += "&order=prediction_date.asc,fund_code.asc,finalized_at.asc&limit=10000";
-
-  const rows = await supabaseRequest(path);
-  return Array.isArray(rows) ? rows : [];
-}
-
-async function getExistingPerformanceRows(req) {
-  const fromDate = getFromDate(req);
-  const toDate = getToDate(req);
-
-  let path =
-    "prediction_performance" +
-    "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    `&prediction_date=gte.${encodeURIComponent(fromDate)}`;
-
-  if (toDate) {
-    path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
-  }
-
-  path += "&order=prediction_date.desc,closed_at.desc&limit=10000";
-
-  const rows = await supabaseRequest(path);
-  return Array.isArray(rows) ? rows : [];
-}
-
-async function getAllPerformanceRowsForLearning() {
-  const path =
-    "prediction_performance" +
-    "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    `&prediction_date=gte.${encodeURIComponent(DEFAULT_FROM_DATE)}` +
-    "&order=prediction_date.desc,closed_at.desc&limit=10000";
-
-  const rows = await supabaseRequest(path);
-  return Array.isArray(rows) ? rows : [];
-}
-
-async function getFundPriceRows() {
-  const path =
-    "fund_prices" +
-    "?select=*" +
-    "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    "&order=fund_code.asc,price_date.asc,created_at.asc" +
-    "&limit=20000";
-
-  const rows = await supabaseRequest(path);
-  return Array.isArray(rows) ? rows : [];
-}
-
-function makePerformanceKey(row) {
-  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
-}
-
-function buildExistingPerformanceMap(rows) {
-  const map = new Map();
-
-  for (const row of rows || []) {
-    const key = makePerformanceKey(row);
-    if (!map.has(key)) {
-      map.set(key, []);
-    }
-    map.get(key).push(row);
-  }
-
-  for (const [key, value] of map.entries()) {
-    value.sort(sortNewestPerformance);
-    map.set(key, value);
-  }
-
-  return map;
-}
-
-function validateFinalRow(finalRow) {
-  const fundCode = String(finalRow.fund_code || "").toUpperCase();
-  const finalPrediction = num(finalRow.final_prediction_change, null);
-  const issues = [];
-
-  if (!FUNDS.includes(fundCode)) {
-    issues.push("fund_code_invalid");
-  }
-
-  if (!dateText(finalRow.prediction_date)) {
-    issues.push("prediction_date_missing");
-  }
-
-  if (finalPrediction === null) {
-    issues.push("final_prediction_change_missing");
-  } else if (Math.abs(finalPrediction) > MAX_ABSOLUTE_FINAL_PREDICTION) {
-    issues.push("final_prediction_change_out_of_range");
-  }
-
-  return {
-    ok: issues.length === 0,
-    issues,
-    fundCode,
-    finalPrediction
-  };
-}
-
-function buildPriceSeries(fundPriceRows) {
-  const latestByFundDate = new Map();
-
-  for (const row of fundPriceRows || []) {
-    const fundCode = String(row.fund_code || "").toUpperCase();
-    const priceDate = dateText(row.price_date);
-
-    if (!FUNDS.includes(fundCode) || !priceDate) continue;
-
-    const key = `${fundCode}|${priceDate}`;
-    const existing = latestByFundDate.get(key);
-
-    if (!existing || rowTimeMs(row) >= rowTimeMs(existing)) {
-      latestByFundDate.set(key, row);
-    }
-  }
-
-  const grouped = {};
-
-  for (const code of FUNDS) {
-    grouped[code] = [];
-  }
-
-  for (const row of latestByFundDate.values()) {
-    const code = String(row.fund_code || "").toUpperCase();
-    grouped[code].push(row);
-  }
-
-  for (const code of FUNDS) {
-    grouped[code].sort(sortPriceRows);
-  }
-
-  return grouped;
-}
-
-function findNextActualPriceForFinal(finalRow, priceSeries) {
-  const finalValidation = validateFinalRow(finalRow);
-
-  if (!finalValidation.ok) {
-    return {
-      ok: false,
-      reason: "invalid_final_prediction",
-      issues: finalValidation.issues,
-      row: null,
-      previousRow: null
-    };
-  }
-
-  const fundCode = finalValidation.fundCode;
-  const predictionDate = dateText(finalRow.prediction_date);
-  const rows = priceSeries[fundCode] || [];
-
-  const actualIndex = rows.findIndex(row => compareDateText(dateText(row.price_date), predictionDate) > 0);
-
-  if (actualIndex === -1) {
-    return {
-      ok: false,
-      reason: "next_actual_price_not_available_yet",
-      issues: ["next_actual_price_not_available_yet"],
-      row: null,
-      previousRow: rows.length ? rows[rows.length - 1] : null,
-      predictionDate
-    };
-  }
-
-  const actualRow = rows[actualIndex];
-  const previousRow = rows[actualIndex - 1] || null;
-
-  const actualPriceDate = dateText(actualRow.price_date);
-  const actualPrice = num(actualRow.price, null);
-  const previousPrice = num(previousRow && previousRow.price, null);
-  const storedDailyChange = num(actualRow.daily_change, null);
-
-  const issues = [];
-
-  if (!previousRow) {
-    issues.push("previous_price_not_available");
-  }
-
-  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
-    issues.push("actual_price_invalid_or_zero");
-  }
-
-  if (previousPrice === null || previousPrice <= MIN_VALID_PRICE) {
-    issues.push("previous_price_invalid_or_zero");
-  }
-
-  let calculatedActualChange = null;
-
-  if (actualPrice !== null && previousPrice !== null && previousPrice > 0) {
-    calculatedActualChange = ((actualPrice - previousPrice) / previousPrice) * 100;
-  }
-
-  if (calculatedActualChange === null) {
-    issues.push("actual_change_calculation_failed");
-  } else if (Math.abs(calculatedActualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
-    issues.push("actual_change_out_of_range");
-  }
-
-  const storedVsCalculatedDifference =
-    storedDailyChange !== null && calculatedActualChange !== null
-      ? storedDailyChange - calculatedActualChange
-      : null;
-
-  const dailyChangeWarning =
-    storedVsCalculatedDifference !== null &&
-    Math.abs(storedVsCalculatedDifference) > DAILY_CHANGE_WARNING_TOLERANCE;
-
-  return {
-    ok: issues.length === 0,
-    reason: issues.length ? "actual_price_invalid_or_suspicious" : "next_actual_price",
-    issues,
-    row: actualRow,
-    previousRow,
-    predictionDate,
-    actualPriceDate,
-    actualPrice,
-    previousPrice,
-    previousPriceDate: previousRow ? dateText(previousRow.price_date) : null,
-    actualChange: calculatedActualChange,
-    storedDailyChange,
-    storedVsCalculatedDifference,
-    dailyChangeWarning,
-    matchRule: "next_available_tefas_price_after_prediction_date"
-  };
-}
-
-function isReliablePerformanceRow(row) {
-  const predictionDate = dateText(row.prediction_date);
-  const actualPriceDate = dateText(row.actual_price_date);
-  const actualPrice = num(row.actual_price, null);
-  const actualChange = num(row.actual_change, null);
-  const finalPrediction = num(row.final_prediction_change, null);
-  const absoluteError = num(row.absolute_error, null);
-  const status = String(row.status || "").toLowerCase();
-  const grade = String(row.grade || "").toLowerCase();
-  const note = String(row.note || "").toLowerCase();
-
-  if (status !== "closed") {
-    return false;
-  }
-
-  if (grade.includes("karantina") || note.includes("karantina")) {
-    return false;
-  }
-
-  if (!predictionDate || !actualPriceDate) {
-    return false;
-  }
-
-  if (compareDateText(actualPriceDate, predictionDate) <= 0) {
-    return false;
-  }
-
-  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
-    return false;
-  }
-
-  if (actualChange === null || Math.abs(actualChange) > MAX_RELIABLE_ACTUAL_CHANGE) {
-    return false;
-  }
-
-  if (
-    finalPrediction === null ||
-    Math.abs(finalPrediction) > MAX_RELIABLE_FINAL_PREDICTION
-  ) {
-    return false;
-  }
-
-  if (
-    absoluteError === null ||
-    Math.abs(absoluteError) > MAX_RELIABLE_ABSOLUTE_ERROR
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
-function buildPerformancePayload(finalRow, actualMatch) {
-  const finalPrediction = num(finalRow.final_prediction_change, null);
-  const actualChange = num(actualMatch.actualChange, null);
-
-  const errorChange = actualChange - finalPrediction;
-  const absoluteError = Math.abs(errorChange);
-
-  const predictedDirection =
-    finalRow.predicted_direction || direction(finalPrediction);
-
-  const actualDirection = direction(actualChange);
-  const hit = directionHit(finalPrediction, actualChange);
-
-  return {
-    final_id: finalRow.id,
-
-    fund_code: String(finalRow.fund_code || "").toUpperCase(),
-    prediction_date: dateText(finalRow.prediction_date),
-
-    model: finalRow.model || ACTIVE_MODEL,
-    model_version: finalRow.model_version || MODEL_VERSION,
-
-    final_prediction_change: round(finalPrediction, 6),
-    actual_change: round(actualChange, 6),
-
-    error_change: round(errorChange, 6),
-    absolute_error: round(absoluteError, 6),
-
-    predicted_direction: predictedDirection,
-    actual_direction: actualDirection,
-    direction_hit: hit,
-
-    grade: gradeFromError(absoluteError),
-    note:
-      "v8.9: Sapma = sonraki TEFAS iş günü gerçekleşen fiyat değişimi - prediction_finals kilitli nihai tahmin. Gerçekleşme, fund_prices.daily_change alanından değil fiyat oranından hesaplanır.",
-
-    actual_price: round(actualMatch.actualPrice, 8),
-    actual_price_date: actualMatch.actualPriceDate,
-
-    closed_at: new Date().toISOString(),
-    status: "closed",
-
-    updated_at: new Date().toISOString()
-  };
-}
-
-function evaluatePerformanceQuality(payload, actualMatch) {
-  const reasons = [];
-
-  const fundCode = String(payload.fund_code || "").toUpperCase();
-  const actualChange = num(payload.actual_change, null);
-  const finalPrediction = num(payload.final_prediction_change, null);
-  const absoluteError = num(payload.absolute_error, null);
-
-  if (!FUNDS.includes(fundCode)) {
-    reasons.push("fund_code_invalid");
-  }
-
-  if (actualChange === null) {
-    reasons.push("actual_change_missing");
-  } else if (Math.abs(actualChange) > MAX_RELIABLE_ACTUAL_CHANGE) {
-    reasons.push(
-      `actual_change_outlier_abs_gt_${MAX_RELIABLE_ACTUAL_CHANGE}`
-    );
-  }
-
-  if (finalPrediction === null) {
-    reasons.push("final_prediction_missing");
-  } else if (Math.abs(finalPrediction) > MAX_RELIABLE_FINAL_PREDICTION) {
-    reasons.push(
-      `final_prediction_outlier_abs_gt_${MAX_RELIABLE_FINAL_PREDICTION}`
-    );
-  }
-
-  if (absoluteError === null) {
-    reasons.push("absolute_error_missing");
-  } else if (Math.abs(absoluteError) > MAX_RELIABLE_ABSOLUTE_ERROR) {
-    reasons.push(
-      `absolute_error_outlier_abs_gt_${MAX_RELIABLE_ABSOLUTE_ERROR}`
-    );
-  }
-
-  if (actualMatch && actualMatch.dailyChangeWarning) {
-    reasons.push("stored_daily_change_mismatch_warning");
-  }
-
-  const reliable = reasons.length === 0;
-
-  return {
-    reliable,
-    status: reliable ? "closed" : "quarantined",
-    grade: reliable ? payload.grade : "Karantina",
-    reasons
-  };
-}
-
-function performanceNeedsUpsert(existingRows, payload, forceRepair) {
-  if (forceRepair) return true;
-
-  if (!existingRows || !existingRows.length) return true;
-
-  const existing = existingRows[0];
-
-  const existingActualDate = dateText(existing.actual_price_date);
-  const payloadActualDate = dateText(payload.actual_price_date);
-
-  if (existingActualDate !== payloadActualDate) return true;
-
-  if (String(existing.status || "") !== String(payload.status || "")) {
-    return true;
-  }
-
-  if (String(existing.grade || "") !== String(payload.grade || "")) {
-    return true;
-  }
-
-  const fields = [
-    "actual_change",
-    "final_prediction_change",
-    "error_change",
-    "absolute_error",
-    "actual_price"
-  ];
-
-  for (const field of fields) {
-    const oldValue = num(existing[field], null);
-    const newValue = num(payload[field], null);
-
-    if (oldValue === null && newValue === null) continue;
-    if (oldValue === null || newValue === null) return true;
-    if (Math.abs(oldValue - newValue) > PRICE_CHANGE_TOLERANCE) return true;
-  }
-
-  return false;
-}
-
-async function upsertPerformanceRows(payloads) {
-  if (!payloads.length) return [];
-
-  const path =
-    "prediction_performance" +
-    "?on_conflict=fund_code,prediction_date,model";
-
-  return await supabaseRequest(path, {
-    method: "POST",
-    prefer: "resolution=merge-duplicates,return=representation",
-    body: payloads
-  });
-}
-
-function computeLearningStatsForFund(fundCode, performanceRows) {
-  const rows = performanceRows
-    .filter(row => row.fund_code === fundCode)
-    .filter(row => row.model === ACTIVE_MODEL)
-    .filter(isReliablePerformanceRow)
-    .sort((a, b) =>
-      String(b.prediction_date || "").localeCompare(String(a.prediction_date || ""))
-    );
-
-  const sampleSize = rows.length;
-  const last5 = rows.slice(0, 5);
-  const last10 = rows.slice(0, 10);
-
-  const averageError = average(rows, "error_change");
-  const averageAbsoluteError = average(rows, "absolute_error");
-
-  const last5AverageError = average(last5, "error_change");
-  const last5AverageAbsoluteError = average(last5, "absolute_error");
-
-  const last10AverageError = average(last10, "error_change");
-  const last10AverageAbsoluteError = average(last10, "absolute_error");
-
-  const directionRows = rows.filter(row => row.direction_hit !== null);
-  const directionHitCount = directionRows.filter(row => row.direction_hit === true).length;
-  const directionTotalCount = directionRows.length;
-
-  const directionHitRate =
-    directionTotalCount > 0
-      ? (directionHitCount / directionTotalCount) * 100
-      : null;
-
-  const suggestedOffset =
-    averageError === null
-      ? null
-      : round(Math.max(-0.85, Math.min(0.85, averageError * 0.45)), 6);
-
-  let confidenceAdjustment = 0;
-
-  if (averageAbsoluteError === null) {
-    confidenceAdjustment = 0;
-  } else if (averageAbsoluteError <= 0.35) {
-    confidenceAdjustment = 5;
-  } else if (averageAbsoluteError <= 0.65) {
-    confidenceAdjustment = 2;
-  } else if (averageAbsoluteError <= 1.00) {
-    confidenceAdjustment = -3;
-  } else {
-    confidenceAdjustment = -8;
-  }
-
-  return {
-    fund_code: fundCode,
-    model: ACTIVE_MODEL,
-
-    calculated_at: new Date().toISOString(),
-
-    sample_size: sampleSize,
-    completed_prediction_count: sampleSize,
-
-    average_error: round(averageError, 6),
-    average_absolute_error: round(averageAbsoluteError, 6),
-
-    last5_average_error: round(last5AverageError, 6),
-    last5_average_absolute_error: round(last5AverageAbsoluteError, 6),
-
-    last10_average_error: round(last10AverageError, 6),
-    last10_average_absolute_error: round(last10AverageAbsoluteError, 6),
-
-    direction_hit_count: directionHitCount,
-    direction_total_count: directionTotalCount,
-    direction_hit_rate: round(directionHitRate, 4),
-
-    bias_label: getBiasLabel(averageError),
-    learning_status: getLearningStatus(
-      sampleSize,
-      averageAbsoluteError,
-      directionHitRate
-    ),
-
-    suggested_offset: suggestedOffset,
-    confidence_adjustment: round(confidenceAdjustment, 6),
-
-    note:
-      sampleSize === 0
-        ? "Henüz güvenilir sonraki TEFAS günü kapanmış final performans kaydı yok."
-        : "v8.7: İstatistikler prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılan güvenilir performans kayıtlarından hesaplandı.",
-
-    updated_at: new Date().toISOString()
-  };
-}
-
-async function updateLearningStats() {
-  const allRows = await getAllPerformanceRowsForLearning();
-  const reliableRows = allRows.filter(isReliablePerformanceRow);
-
-  const payloads = FUNDS.map(fundCode =>
-    computeLearningStatsForFund(fundCode, reliableRows)
-  );
-
-  const path =
-    "model_learning_stats" +
-    "?on_conflict=fund_code,model";
-
-  const saved = await supabaseRequest(path, {
-    method: "POST",
-    prefer: "resolution=merge-duplicates,return=representation",
-    body: payloads
-  });
-
-  return {
-    savedRows: Array.isArray(saved) ? saved.length : 0,
-    reliablePerformanceRows: reliableRows.length,
-    ignoredPerformanceRows: allRows.length - reliableRows.length,
-    rows: saved
-  };
-}
-
-module.exports = async function handler(req, res) {
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-
-  const auth = authStatus(req);
-
-  if (!auth.ok) {
-    return res.status(401).json({
-      ok: false,
-      version: API_VERSION,
-      model: ACTIVE_MODEL,
-      error: auth.reason
-    });
-  }
-
-  try {
-    const forceRepair = isTruthyQuery(queryValue(req, "force")) || isTruthyQuery(queryValue(req, "repair"));
-
-    const finalRows = await getFinalRows(req);
-    const existingPerformanceRows = await getExistingPerformanceRows(req);
-    const existingPerformanceMap = buildExistingPerformanceMap(existingPerformanceRows);
-
-    const fundPriceRows = await getFundPriceRows();
-    const priceSeries = buildPriceSeries(fundPriceRows);
-
-    const payloads = [];
-    const results = [];
-
-    for (const finalRow of finalRows) {
-      const finalValidation = validateFinalRow(finalRow);
-
-      if (!finalValidation.ok) {
-        results.push({
-          fund: finalRow.fund_code || null,
-          predictionDate: dateText(finalRow.prediction_date),
-          ok: false,
-          skipped: true,
-          reason: "invalid_final_prediction",
-          issues: finalValidation.issues
-        });
-        continue;
-      }
-
-      const actualMatch = findNextActualPriceForFinal(finalRow, priceSeries);
-
-      if (!actualMatch.ok) {
-        results.push({
-          fund: finalValidation.fundCode,
-          predictionDate: dateText(finalRow.prediction_date),
-          ok: false,
-          skipped: true,
-          reason: actualMatch.reason,
-          issues: actualMatch.issues,
-          previousPriceDate: actualMatch.previousRow ? dateText(actualMatch.previousRow.price_date) : null,
-          note:
-            actualMatch.reason === "next_actual_price_not_available_yet"
-              ? "Bu final tahmin için prediction_date sonrasındaki ilk TEFAS fiyatı henüz yok."
-              : "Gerçekleşen fiyat satırı şüpheli olduğu için performans kapatılmadı."
-        });
-        continue;
-      }
-
-      const payload = buildPerformancePayload(finalRow, actualMatch);
-      const quality = evaluatePerformanceQuality(payload, actualMatch);
-
-      payload.status = quality.status;
-      payload.grade = quality.grade;
-
-      if (!quality.reliable) {
-        payload.note =
-          `v8.9 STRICT GATE: Bu satır model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
-          "Performans kaydı denetim için saklanır; model_learning_stats sadece güvenilir closed kayıtları kullanır.";
-      }
-
-      const key = makePerformanceKey(payload);
-      const existingRows = existingPerformanceMap.get(key) || [];
-      const needsUpsert = performanceNeedsUpsert(existingRows, payload, forceRepair);
-
-      if (!needsUpsert) {
-        results.push({
-          fund: payload.fund_code,
-          predictionDate: payload.prediction_date,
-          ok: true,
-          skipped: true,
-          reason: "performance_already_closed_verified",
-          matchRule: actualMatch.matchRule,
-          actualPriceDate: payload.actual_price_date,
-          actualChange: payload.actual_change,
-          finalPredictionChange: payload.final_prediction_change,
-          errorChange: payload.error_change,
-          absoluteError: payload.absolute_error
-        });
-        continue;
-      }
-
-      payloads.push(payload);
-
-      results.push({
-        fund: payload.fund_code,
-        predictionDate: payload.prediction_date,
-        ok: true,
-        skipped: false,
-        reason: existingRows.length ? "performance_corrected" : "performance_created",
-        existingActualPriceDate: existingRows[0] ? dateText(existingRows[0].actual_price_date) : null,
-        matchRule: actualMatch.matchRule,
-        previousPriceDate: actualMatch.previousPriceDate,
-        actualPriceDate: payload.actual_price_date,
-        actualPrice: payload.actual_price,
-        storedDailyChange: round(actualMatch.storedDailyChange, 6),
-        calculatedActualChange: payload.actual_change,
-        storedVsCalculatedDifference: round(actualMatch.storedVsCalculatedDifference, 6),
-        dailyChangeWarning: actualMatch.dailyChangeWarning,
-        finalPredictionChange: payload.final_prediction_change,
-        errorChange: payload.error_change,
-        absoluteError: payload.absolute_error,
-        predictedDirection: payload.predicted_direction,
-        actualDirection: payload.actual_direction,
-        directionHit: payload.direction_hit,
-        grade: payload.grade,
-        qualityStatus: quality.status,
-        qualityReasons: quality.reasons
-      });
-    }
-
-    const savedPerformanceRows = await upsertPerformanceRows(payloads);
-    const learningStats = await updateLearningStats();
-
-    const createdCount = results.filter(row => row.reason === "performance_created").length;
-    const correctedCount = results.filter(row => row.reason === "performance_corrected").length;
-    const verifiedCount = results.filter(row => row.reason === "performance_already_closed_verified").length;
-    const quarantinedCount = results.filter(row => row.qualityStatus === "quarantined").length;
-    const reliableClosedCount = results.filter(row => row.qualityStatus === "closed").length;
-
-    return res.status(200).json({
-      ok: true,
-      version: API_VERSION,
-      generatedAt: new Date().toISOString(),
-
-      model: ACTIVE_MODEL,
-      modelVersion: MODEL_VERSION,
-      fundOrder: FUNDS,
-      thfIncluded: FUNDS.includes("THF"),
-
-      fromDate: getFromDate(req),
-      toDate: getToDate(req),
-      forceRepair,
-
-      dataQualityGuard: {
-        enabled: true,
-        minValidPrice: MIN_VALID_PRICE,
-        maxAbsoluteActualChange: MAX_ABSOLUTE_ACTUAL_CHANGE,
-        maxReliableActualChange: MAX_RELIABLE_ACTUAL_CHANGE,
-        maxReliableFinalPrediction: MAX_RELIABLE_FINAL_PREDICTION,
-        maxReliableAbsoluteError: MAX_RELIABLE_ABSOLUTE_ERROR,
-        quarantineEnabled: true,
-        strictLearningGateEnabled: true,
-        nextActualPriceRequired: true,
-        actualChangeSource:
-          "calculated_from_next_tefas_price_and_previous_tefas_price",
-        storedDailyChangeUsedForPerformance: false,
-        dailyChangeWarningTolerance: DAILY_CHANGE_WARNING_TOLERANCE
-      },
-
-      finalsFound: finalRows.length,
-      existingPerformanceRows: existingPerformanceRows.length,
-
-      closed: payloads.length,
-      created: createdCount,
-      corrected: correctedCount,
-      alreadyClosedVerified: verifiedCount,
-      quarantined: quarantinedCount,
-      reliableClosed: reliableClosedCount,
-
-      waitingActual: results.filter(row => row.reason === "next_actual_price_not_available_yet").length,
-      invalidActual: results.filter(row => row.reason === "actual_price_invalid_or_suspicious").length,
-      invalidFinal: results.filter(row => row.reason === "invalid_final_prediction").length,
-
-      savedPerformanceRows: Array.isArray(savedPerformanceRows)
-        ? savedPerformanceRows.length
-        : 0,
-
-      formula:
-        "actual_change = ((next_tefas_price - previous_tefas_price) / previous_tefas_price) * 100; error_change = actual_change - final_prediction_change",
-      source:
-        "prediction_finals + fund_prices next available TEFAS price after prediction_date",
-      strictLearningGate:
-        "Learning stats use only status=closed rows with abs(actual_change)<=6, abs(final_prediction)<=5 and abs(error_change)<=2.5.",
-      learningStatsUpdated: learningStats.savedRows,
-      learningStatsReliableRows: learningStats.reliablePerformanceRows,
-      learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
-
-      rule:
-        "v8.9: prediction_date tarihli final tahmin, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Abs(actual_change) > 6, abs(final_prediction) > 5 veya abs(error) > 2.5 ise satır karantinaya alınır ve öğrenme istatistiğine dahil edilmez.",
-
-      results,
-      saved: savedPerformanceRows,
-      learningStats
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      version: API_VERSION,
-      model: ACTIVE_MODEL,
-      modelVersion: MODEL_VERSION,
-      error: String(error.message || error)
+      error: String(error.message || error).slice(0, 1500)
     });
   }
 };
