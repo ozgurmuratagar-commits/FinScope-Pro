@@ -1,8 +1,8 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Finalize Predictions API v8.5 - Final Repair Layer";
+const API_VERSION = "FinScope Finalize Predictions API v8.6 - History Backfill Layer";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const DEFAULT_MODEL_VERSION = "FinScope Prediction Engine v8.5 - Final Repair Layer";
+const DEFAULT_MODEL_VERSION = "FinScope Prediction Engine v8.6 - History Backfill Layer";
 
 const TURKEY_TIME_ZONE = "Europe/Istanbul";
 const FINAL_START_HOUR = 18;
@@ -84,24 +84,29 @@ function isAfterFinalWindow(turkeyNow) {
   return turkeyNow.totalMinutes >= FINAL_START_TOTAL_MINUTES;
 }
 
-function latestTimeMs(row) {
-  const candidates = [row.updated_at, row.created_at, row.finalized_at]
-    .filter(Boolean)
-    .map(value => new Date(value).getTime())
-    .filter(value => Number.isFinite(value));
-
-  return candidates.length ? Math.max(...candidates) : 0;
+function createdTimeMs(row) {
+  const value = row.created_at || row.updated_at || row.finalized_at;
+  const t = new Date(value || "1970-01-01T00:00:00Z").getTime();
+  return Number.isFinite(t) ? t : 0;
 }
 
-function sortNewest(a, b) {
-  const dateCompare = String(b.prediction_date || "").localeCompare(
-    String(a.prediction_date || "")
-  );
+function updatedTimeMs(row) {
+  const value = row.updated_at || row.created_at || row.finalized_at;
+  const t = new Date(value || "1970-01-01T00:00:00Z").getTime();
+  return Number.isFinite(t) ? t : 0;
+}
 
-  if (dateCompare !== 0) return dateCompare;
+function sortPredictionCandidates(a, b) {
+  const aPending = a.actual_change === null || a.actual_change === undefined;
+  const bPending = b.actual_change === null || b.actual_change === undefined;
 
-  const timeCompare = latestTimeMs(b) - latestTimeMs(a);
-  if (timeCompare !== 0) return timeCompare;
+  if (aPending !== bPending) return aPending ? -1 : 1;
+
+  const createdDiff = createdTimeMs(b) - createdTimeMs(a);
+  if (createdDiff !== 0) return createdDiff;
+
+  const updatedDiff = updatedTimeMs(b) - updatedTimeMs(a);
+  if (updatedDiff !== 0) return updatedDiff;
 
   return num(b.id, 0) - num(a.id, 0);
 }
@@ -222,17 +227,19 @@ function allowedDateForCurrentTime(date, turkeyNow) {
   return date < turkeyNow.dateText;
 }
 
-async function getPredictionRows(fromDate, toDate) {
+async function getPredictionRows(fromDate, toDate, includeCompletedHistory) {
+  const actualFilter = includeCompletedHistory ? "" : "&actual_change=is.null";
+
   const path =
     "prediction_history" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    "&actual_change=is.null" +
+    actualFilter +
     `&prediction_date=gte.${encodeURIComponent(fromDate)}` +
     `&prediction_date=lte.${encodeURIComponent(toDate)}` +
-    "&order=prediction_date.desc,updated_at.desc,created_at.desc" +
-    "&limit=4000";
+    "&order=prediction_date.desc,created_at.desc,updated_at.desc" +
+    "&limit=8000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -246,7 +253,7 @@ async function getExistingPerformanceRows(fromDate, toDate) {
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     `&prediction_date=gte.${encodeURIComponent(fromDate)}` +
     `&prediction_date=lte.${encodeURIComponent(toDate)}` +
-    "&limit=4000";
+    "&limit=8000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -260,20 +267,21 @@ async function getExistingFinalRows(fromDate, toDate) {
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     `&prediction_date=gte.${encodeURIComponent(fromDate)}` +
     `&prediction_date=lte.${encodeURIComponent(toDate)}` +
-    "&limit=4000";
+    "&limit=8000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-function isUsablePredictionRow(row) {
+function isUsablePredictionRow(row, allowCompletedActual) {
   const fundCode = String(row.fund_code || "").toUpperCase();
   const predictionDate = dateText(row.prediction_date);
+  const actualIsEmpty = row.actual_change === null || row.actual_change === undefined;
 
   return (
     FUNDS.includes(fundCode) &&
     Boolean(predictionDate) &&
-    (row.actual_change === null || row.actual_change === undefined) &&
+    (allowCompletedActual || actualIsEmpty) &&
     getPredictionValue(row) !== null
   );
 }
@@ -332,11 +340,11 @@ function hasExistingFinal(rows) {
   });
 }
 
-function pickLatestPredictionForFundDate(rowsByKey, fundCode, predictionDate) {
+function pickLatestPredictionForFundDate(rowsByKey, fundCode, predictionDate, allowCompletedActual) {
   const key = keyFor(fundCode, predictionDate);
   const rows = (rowsByKey.get(key) || [])
-    .filter(isUsablePredictionRow)
-    .sort(sortNewest);
+    .filter(row => isUsablePredictionRow(row, allowCompletedActual))
+    .sort(sortPredictionCandidates);
 
   return rows[0] || null;
 }
@@ -447,6 +455,7 @@ module.exports = async function handler(req, res) {
   const turkeyNow = getTurkeyTimeParts(new Date());
   const explicitDate = queryValue(req, "date");
   const backfill = isBackfillMode(req);
+  const includeCompletedHistory = backfill || isTruthyQuery(queryValue(req, "includeCompletedHistory"));
   const mode = isValidDateText(explicitDate)
     ? "single_date"
     : backfill
@@ -490,8 +499,10 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const predictionRows = await getPredictionRows(fromDate, toDate);
-    const usablePredictionRows = predictionRows.filter(isUsablePredictionRow);
+    const predictionRows = await getPredictionRows(fromDate, toDate, includeCompletedHistory);
+    const usablePredictionRows = predictionRows.filter(row =>
+      isUsablePredictionRow(row, includeCompletedHistory)
+    );
     const targetDates = uniqueTargetDates(usablePredictionRows, req, turkeyNow);
 
     const existingPerformanceRows = await getExistingPerformanceRows(fromDate, toDate);
@@ -559,7 +570,8 @@ module.exports = async function handler(req, res) {
         const selected = pickLatestPredictionForFundDate(
           predictionRowsByKey,
           fundCode,
-          predictionDate
+          predictionDate,
+          includeCompletedHistory
         );
 
         if (!selected) {
@@ -568,18 +580,23 @@ module.exports = async function handler(req, res) {
             predictionDate,
             ok: false,
             skipped: true,
-            reason: "no_pending_prediction_for_date",
+            reason: "no_prediction_history_for_date",
             note:
-              "Bu fon ve tarih için actual_change IS NULL geçerli prediction_history satırı bulunamadı."
+              "Bu fon ve tarih için geçerli prediction_history satırı bulunamadı."
           });
           continue;
         }
 
+        const selectedWasPending =
+          selected.actual_change === null || selected.actual_change === undefined;
+
         const payload = buildFinalPayload(
           selected,
           mode === "backfill_repair"
-            ? "v8.5 backfill repair: hedef tarihin en son pending tahmini, eksik final kaydı için kilitlendi."
-            : "v8.5 final repair: Türkiye saati 18:00 sonrası, hedef tarihin en son pending tahmini nihai tahmin olarak kilitlendi."
+            ? selectedWasPending
+              ? "v8.6 backfill repair: hedef tarihin en son pending tahmini eksik final kaydı için kilitlendi."
+              : "v8.6 backfill repair: pending satır kalmadığı için prediction_history completed satırındaki tahmin değeri final olarak onarıldı."
+            : "v8.6 final repair: Türkiye saati 18:00 sonrası, hedef tarihin en son pending tahmini nihai tahmin olarak kilitlendi."
         );
 
         payloads.push(payload);
@@ -592,7 +609,11 @@ module.exports = async function handler(req, res) {
           sourcePredictionId: selected.id || null,
           sourceCreatedAt: selected.created_at || null,
           sourceUpdatedAt: selected.updated_at || null,
-          sourceLatestTimeMs: latestTimeMs(selected),
+          sourceActualChange: selected.actual_change === undefined ? null : selected.actual_change,
+          sourceSelection:
+            selectedWasPending
+              ? "pending_prediction"
+              : "completed_history_fallback",
           modelVersion: payload.model_version,
           finalPredictionChange: payload.final_prediction_change,
           predictedDirection: payload.predicted_direction,
@@ -607,7 +628,7 @@ module.exports = async function handler(req, res) {
 
     const alreadyFinalizedCount = results.filter(row => row.reason === "final_already_exists").length;
     const performanceClosedCount = results.filter(row => row.reason === "performance_already_closed").length;
-    const noPendingCount = results.filter(row => row.reason === "no_pending_prediction_for_date").length;
+    const noPredictionCount = results.filter(row => row.reason === "no_prediction_history_for_date").length;
     const finalizedCount = payloads.length;
 
     return res.status(200).json({
@@ -620,6 +641,7 @@ module.exports = async function handler(req, res) {
       thfIncluded: FUNDS.includes("THF"),
 
       mode,
+      includeCompletedHistory,
       fromDate,
       toDate,
       targetDates,
@@ -628,7 +650,7 @@ module.exports = async function handler(req, res) {
       finalized: finalizedCount,
       alreadyFinalized: alreadyFinalizedCount,
       performanceAlreadyClosed: performanceClosedCount,
-      noPendingPrediction: noPendingCount,
+      noPredictionHistory: noPredictionCount,
       totalTargets: targetDates.length * FUNDS.length,
 
       predictionRows: predictionRows.length,
@@ -638,13 +660,13 @@ module.exports = async function handler(req, res) {
       savedRows: Array.isArray(savedRows) ? savedRows.length : 0,
 
       rule:
-        "v8.5: Final kilidi 18:00 sonrası çalışır; seçilen tahmin hedef tarihin en son actual_change IS NULL pending tahminidir. Tahmin satırının ayrıca 18:00 sonrası oluşturulmuş olması şartı kaldırıldı.",
-      repairRule:
-        "backfill=1 modunda geçmiş tarihler için eksik prediction_finals kayıtları oluşturulur. Kapanmış performance veya mevcut final varsa kayıt değiştirilmez.",
+        "v8.6: Normal final kilidi 18:00 sonrası çalışır. Backfill modunda actual_change dolmuş eski prediction_history satırları da tahmin değeri taşıyorsa final onarımında kullanılabilir.",
+      selectionRule:
+        "Aynı fon/tarih için önce actual_change IS NULL pending tahmin seçilir. Pending yoksa backfill modunda en son created_at sıralı completed history satırı fallback olarak seçilir. Mevcut final veya kapanmış performance asla değiştirilmez.",
       nextStep:
         finalizedCount > 0
           ? "Şimdi /api/close-performance?manual=finscope çalıştırılarak yeni finaller performansa kapatılabilir."
-          : "Yeni final yazılmadıysa sonuçlarda final_already_exists veya performance_already_closed durumlarını kontrol edin.",
+          : "Yeni final yazılmadıysa predictionRows ve usablePredictionRows değerlerini kontrol edin. Sıfırsa ilgili tarih aralığında prediction_history yoktur ya da model/fund filtresi farklıdır.",
 
       results,
       saved: savedRows
