@@ -22,11 +22,12 @@ const MARKET_LABELS = {
   BRENT: "Brent Petrol"
 };
 
-const FUND_ORDER = ["PBR", "PHE", "TLY"];
-const FUND_CARD_ORDER = ["PBR", "PHE", "TLY", "THF"];
+const FUND_ORDER = ["PBR", "PHE", "TLY", "THF"];
+const FUND_CARD_ORDER = FUND_ORDER.slice();
 
-const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.3 - PBR Risk Control Layer";
-const DISPLAY_MODEL_SHORT = "v8.3";
+const FRONTEND_VERSION = "Read-Only Frontend v8.9.2";
+const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.9.2 - THF Frontend Integration";
+const DISPLAY_MODEL_SHORT = "v8.9.2";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -115,18 +116,48 @@ function getPredictions(predictionsJson) {
   return predictionsJson && predictionsJson.predictions ? predictionsJson.predictions : {};
 }
 
+function getPredictionChange(prediction) {
+  if (!prediction) return null;
+
+  return firstNumber(
+    [
+      prediction.predictedChange,
+      prediction.predicted_change,
+      prediction.currentPredictionChange,
+      prediction.finalPredictionChange,
+      prediction.calibratedChange,
+      prediction.calibrated_change
+    ],
+    null
+  );
+}
+
+function hasUsablePrediction(prediction) {
+  return getPredictionChange(prediction) !== null;
+}
+
 function getModelLabel(predictionsJson) {
   const model =
     predictionsJson && predictionsJson.model
       ? String(predictionsJson.model)
       : "";
 
-  if (model.includes("v8.3")) return model;
-  if (model.includes("v8.2")) return model;
+  if (
+    model.includes("v8.9") ||
+    model.includes("v8.8") ||
+    model.includes("v8.7") ||
+    model.includes("v8.6") ||
+    model.includes("v8.5") ||
+    model.includes("v8.4") ||
+    model.includes("v8.3") ||
+    model.includes("v8.2")
+  ) {
+    return model;
+  }
 
   /*
-    MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalır.
-    Kullanıcıya gösterilen aktif motor adı ise v8.3 olmalıdır.
+    MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalabilir.
+    Kullanıcıya gösterilen aktif frontend entegrasyon adı v8.9.2 olmalıdır.
   */
   return DISPLAY_MODEL_NAME;
 }
@@ -169,7 +200,7 @@ function renderMarketCards(marketJson, fundsJson, predictionsJson) {
     const pred = predictions[code] || {};
 
     const fundChange = fund.dailyChange ?? fund.daily_change;
-    const predChange = pred.predictedChange;
+    const predChange = getPredictionChange(pred);
     const cls = directionClass(fundChange);
     const predCls = directionClass(predChange);
 
@@ -192,8 +223,8 @@ function renderMarketCards(marketJson, fundsJson, predictionsJson) {
         <div class="small">Accuracy damping: ${formatNumber(pred.accuracyDamping || 1, 4)}</div>
       `
       : `
-        <div class="yellow">Tahmin: Portföy bekleniyor</div>
-        <div class="small">THF fiyatı alındı; tahmin için fund_holdings portföy ağırlığı gerekli.</div>
+        <div class="yellow">Tahmin: Kayıtlı tahmin bekleniyor</div>
+        <div class="small">${escapeHtml(code)} fiyatı alındı; tahmin için /api/predictions içinde kayıtlı tahmin ve fund_holdings portföy ağırlığı gerekir.</div>
         <div class="small">Holdings: ${formatNumber(fund.holdingsCount || 0, 0)} • Hazır: ${holdingsReady ? "Evet" : "Hayır"}</div>
       `;
 
@@ -223,21 +254,37 @@ function renderPredictionSummary(predictionsJson) {
 
   const lines = [];
 
+  lines.push(`
+    <div class="summary-line">
+      <b>Aktif Fon Kapsamı:</b> ${FUND_ORDER.map(escapeHtml).join(" / ")}
+    </div>
+  `);
+
   FUND_ORDER.forEach(function(code) {
     const p = predictions[code];
-    if (!p) return;
 
-    const pred = p.predictedChange;
-    const raw = p.rawPredictedChange;
-    const unsmoothed = p.unsmoothedChange;
-    const smoothingImpact = p.smoothingImpact || 0;
-    const offset = p.calibrationOffset || 0;
-    const damping = p.accuracyDamping || 1;
+    if (!hasUsablePrediction(p)) {
+      lines.push(`
+        <div class="summary-line yellow">
+          <b>${escapeHtml(code)}</b>:
+          Kayıtlı tahmin bekleniyor. Fon kartı fiyat gösterse bile Tahmin Özeti için /api/predictions içinde ${escapeHtml(code)} kaydı gerekir.
+        </div>
+      `);
+      return;
+    }
+
+    const pred = getPredictionChange(p);
+    const raw = firstNumber([p.rawPredictedChange, p.raw_predicted_change], null);
+    const unsmoothed = firstNumber([p.unsmoothedChange, p.unsmoothed_change], null);
+    const smoothingImpact = firstNumber([p.smoothingImpact, p.smoothing_impact], 0);
+    const offset = firstNumber([p.calibrationOffset, p.calibration_offset], 0);
+    const damping = firstNumber([p.accuracyDamping, p.accuracy_damping], 1);
     const cls = directionClass(pred);
 
     const learningStatus =
       (p.accuracyLayer && p.accuracyLayer.status) ||
       (p.calibration && p.calibration.status) ||
+      p.status ||
       "no_history";
 
     lines.push(`
@@ -260,7 +307,7 @@ function renderPredictionSummary(predictionsJson) {
 
   lines.push(`
     <div class="summary-line yellow">
-      Dashboard artık read-only çalışır. Tahmin Özeti, /api/predictions içindeki son kayıtlı tahminlerden okunur; sayfa açılışında /api/predict çalıştırılmaz.
+      ${escapeHtml(FRONTEND_VERSION)}: Tahmin Özeti artık PBR / PHE / TLY / THF sırasını kullanır ve sayfa açılışında /api/predict çalıştırmaz.
     </div>
   `);
 
@@ -280,31 +327,52 @@ function renderAiAnalyst(predictionsJson) {
 
   const rows = FUND_ORDER.map(function(code) {
     const p = predictions[code] || {};
+    const pred = getPredictionChange(p);
+
     return {
       code,
-      pred: num(p.predictedChange, 0),
+      hasPrediction: pred !== null,
+      pred: pred,
       smoothingImpact: num(p.smoothingImpact, 0),
       offset: num(p.calibrationOffset, 0),
       damping: num(p.accuracyDamping, 1)
     };
   });
 
-  const best = rows.slice().sort(function(a, b) { return b.pred - a.pred; })[0];
-  const worst = rows.slice().sort(function(a, b) { return a.pred - b.pred; })[0];
+  const availableRows = rows.filter(function(row) {
+    return row.hasPrediction;
+  });
+
+  if (!availableRows.length) {
+    box.innerHTML = `<span class="error">AI Analist için kullanılabilir kayıtlı tahmin yok.</span>`;
+    return;
+  }
+
+  const best = availableRows.slice().sort(function(a, b) { return b.pred - a.pred; })[0];
+  const worst = availableRows.slice().sort(function(a, b) { return a.pred - b.pred; })[0];
+
+  const missingCodes = rows
+    .filter(function(row) { return !row.hasPrediction; })
+    .map(function(row) { return row.code; });
 
   const avgSmoothing =
-    rows.reduce(function(sum, row) {
+    availableRows.reduce(function(sum, row) {
       return sum + Math.abs(row.smoothingImpact || 0);
-    }, 0) / Math.max(1, rows.length);
+    }, 0) / Math.max(1, availableRows.length);
 
   const avgOffset =
-    rows.reduce(function(sum, row) {
+    availableRows.reduce(function(sum, row) {
       return sum + Math.abs(row.offset || 0);
-    }, 0) / Math.max(1, rows.length);
+    }, 0) / Math.max(1, availableRows.length);
 
   box.innerHTML = `
     <div class="summary-line">
       <b>${escapeHtml(model)}</b> aktif. Bu panel artık sadece kayıtlı tahminleri okur; tahmin motorunu yeniden tetiklemez.
+    </div>
+    <div class="summary-line">
+      Analiz kapsamı: <b>${FUND_ORDER.map(escapeHtml).join(" / ")}</b>.
+      Kayıtlı tahmin bulunan fonlar: <b>${availableRows.map(function(row) { return escapeHtml(row.code); }).join(" / ")}</b>.
+      ${missingCodes.length ? `<br /><span class="yellow">Tahmini beklenen fonlar: ${missingCodes.map(escapeHtml).join(" / ")}</span>` : ""}
     </div>
     <div class="summary-line">
       En pozitif beklenti: <b>${escapeHtml(best.code)}</b> ${formatPercent(best.pred, 2)}.
@@ -315,7 +383,7 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      Read-Only Frontend v8.5 - THF Fund Card ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+      ${escapeHtml(FRONTEND_VERSION)} - THF entegrasyonu ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
     </div>
   `;
 }
@@ -327,6 +395,21 @@ function performanceGrade(errorAbs) {
   if (e <= 0.85) return "Makul";
   if (e <= 1.25) return "Zayıf";
   return "Çok zayıf";
+}
+
+function isCompletedPerformanceStatus(status) {
+  const s = String(status || "").toLowerCase();
+  return s === "completed" || s === "closed";
+}
+
+function isQuarantinedPerformanceStatus(status) {
+  return String(status || "").toLowerCase() === "quarantined";
+}
+
+function performanceStatusText(status) {
+  if (isCompletedPerformanceStatus(status)) return "Tamamlandı";
+  if (isQuarantinedPerformanceStatus(status)) return "Karantina";
+  return "Bekliyor";
 }
 
 function fundOrderIndex(code) {
@@ -504,7 +587,7 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
 
   const rows = FUND_ORDER.map(function(code) {
     const fundRows = performanceRows.filter(function(row) {
-      return row && row.fundCode === code && row.status === "completed";
+      return row && row.fundCode === code && isCompletedPerformanceStatus(row.status);
     });
 
     const stat = byFund[code] || {};
@@ -637,13 +720,13 @@ function renderPerformance(performanceJson) {
   const pendingRows =
     summary.pendingRows ??
     performanceRows.filter(function(row) {
-      return row && row.status !== "completed";
+      return row && !isCompletedPerformanceStatus(row.status) && !isQuarantinedPerformanceStatus(row.status);
     }).length;
 
   const completedRows =
     summary.completedRows ??
     performanceRows.filter(function(row) {
-      return row && row.status === "completed";
+      return row && isCompletedPerformanceStatus(row.status);
     }).length;
 
   const avgError =
@@ -693,8 +776,8 @@ function renderPerformance(performanceJson) {
 
         const error = apiError !== null ? apiError : calculatedError;
 
-        const statusText = status === "completed" ? "Tamamlandı" : "Bekliyor";
-        const statusClass = status === "completed" ? "status-completed" : "";
+        const statusText = performanceStatusText(status);
+        const statusClass = isCompletedPerformanceStatus(status) ? "status-completed" : "";
         const grade =
           error === null || error === undefined
             ? "Bekliyor"
