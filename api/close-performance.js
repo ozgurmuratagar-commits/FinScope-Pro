@@ -1,13 +1,16 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Close Performance API v8.4 - THF Close Layer";
+const API_VERSION = "FinScope Close Performance API v8.7 - Next TEFAS Actual Layer";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v8.4 - THF Initial Learning Layer";
+const MODEL_VERSION = "FinScope Prediction Engine v8.7 - Next TEFAS Actual Layer";
 
+const DEFAULT_FROM_DATE = "2026-08-26";
 const MIN_VALID_PRICE = 0;
 const MAX_ABSOLUTE_ACTUAL_CHANGE = 20;
 const MAX_ABSOLUTE_FINAL_PREDICTION = 20;
 const DIRECTION_EPSILON = 0.01;
+const PRICE_CHANGE_TOLERANCE = 0.0001;
+const DAILY_CHANGE_WARNING_TOLERANCE = 0.10;
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -21,17 +24,18 @@ function round(value, digits = 6) {
   return Number(n.toFixed(digits));
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 function dateText(value) {
   if (!value) return null;
-  return String(value).slice(0, 10);
+  const text = String(value).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
 function isValidDateText(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function compareDateText(a, b) {
+  return String(a || "").localeCompare(String(b || ""));
 }
 
 function direction(value) {
@@ -46,6 +50,7 @@ function directionHit(predicted, actual) {
   const a = num(actual, null);
 
   if (p === null || a === null) return null;
+
   if (Math.abs(p) < DIRECTION_EPSILON || Math.abs(a) < DIRECTION_EPSILON) {
     return null;
   }
@@ -67,14 +72,8 @@ function gradeFromError(errorAbs) {
 function getBiasLabel(averageError) {
   const e = num(averageError, 0);
 
-  if (e > 0.20) {
-    return "Model temkinli kalıyor / düşük tahmin ediyor";
-  }
-
-  if (e < -0.20) {
-    return "Model iyimser kalıyor / yüksek tahmin ediyor";
-  }
-
+  if (e > 0.20) return "Model temkinli kalıyor / düşük tahmin ediyor";
+  if (e < -0.20) return "Model iyimser kalıyor / yüksek tahmin ediyor";
   return "Dengeli";
 }
 
@@ -102,11 +101,12 @@ function average(rows, field) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function rowTimestamp(row) {
+function rowTimeMs(row) {
   const value =
     row.updated_at ||
     row.created_at ||
     row.closed_at ||
+    row.finalized_at ||
     row.price_date ||
     "1970-01-01T00:00:00.000Z";
 
@@ -114,14 +114,20 @@ function rowTimestamp(row) {
   return Number.isFinite(t) ? t : 0;
 }
 
-function sortNewest(a, b) {
-  const dateCompare = String(b.price_date || "").localeCompare(
-    String(a.price_date || "")
-  );
-
+function sortPriceRows(a, b) {
+  const dateCompare = compareDateText(dateText(a.price_date), dateText(b.price_date));
   if (dateCompare !== 0) return dateCompare;
 
-  return rowTimestamp(b) - rowTimestamp(a);
+  const timeCompare = rowTimeMs(a) - rowTimeMs(b);
+  if (timeCompare !== 0) return timeCompare;
+
+  return num(a.id, 0) - num(b.id, 0);
+}
+
+function sortNewestPerformance(a, b) {
+  const dateCompare = compareDateText(dateText(b.prediction_date), dateText(a.prediction_date));
+  if (dateCompare !== 0) return dateCompare;
+  return rowTimeMs(b) - rowTimeMs(a);
 }
 
 function getSupabaseConfig() {
@@ -159,7 +165,7 @@ async function supabaseRequest(path, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 900)}`
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1200)}`
     );
   }
 
@@ -167,8 +173,72 @@ async function supabaseRequest(path, options = {}) {
   return JSON.parse(text);
 }
 
+function authStatus(req) {
+  const cronSecret = process.env.CRON_SECRET;
+  const authHeader = req.headers.authorization;
+  const querySecret = req.query && req.query.secret;
+  const manualKey = req.query && req.query.manual;
+
+  const authorizedByHeader =
+    cronSecret && authHeader === `Bearer ${cronSecret}`;
+
+  const authorizedByQuery =
+    cronSecret && querySecret === cronSecret;
+
+  const authorizedByManual =
+    manualKey === "finscope";
+
+  if (
+    cronSecret &&
+    !authorizedByHeader &&
+    !authorizedByQuery &&
+    !authorizedByManual
+  ) {
+    return {
+      ok: false,
+      reason: "Yetkisiz istek."
+    };
+  }
+
+  return {
+    ok: true,
+    authorizedByHeader: Boolean(authorizedByHeader),
+    authorizedByQuery: Boolean(authorizedByQuery),
+    authorizedByManual: Boolean(authorizedByManual)
+  };
+}
+
+function queryValue(req, key) {
+  return req && req.query ? req.query[key] : undefined;
+}
+
+function isTruthyQuery(value) {
+  return value === true || value === "1" || value === "true" || value === "yes" || value === "evet";
+}
+
+function getFromDate(req) {
+  const exactDate = queryValue(req, "date");
+  if (isValidDateText(exactDate)) return exactDate;
+
+  const from = queryValue(req, "from");
+  if (isValidDateText(from)) return from;
+
+  return DEFAULT_FROM_DATE;
+}
+
+function getToDate(req) {
+  const exactDate = queryValue(req, "date");
+  if (isValidDateText(exactDate)) return exactDate;
+
+  const to = queryValue(req, "to");
+  if (isValidDateText(to)) return to;
+
+  return null;
+}
+
 async function getFinalRows(req) {
-  const queryDate = req.query && req.query.date;
+  const fromDate = getFromDate(req);
+  const toDate = getToDate(req);
 
   let path =
     "prediction_finals" +
@@ -176,25 +246,47 @@ async function getFinalRows(req) {
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&finalization_status=eq.finalized" +
-    "&order=prediction_date.asc,finalized_at.asc" +
-    "&limit=500";
+    `&prediction_date=gte.${encodeURIComponent(fromDate)}`;
 
-  if (isValidDateText(queryDate)) {
-    path += `&prediction_date=eq.${encodeURIComponent(queryDate)}`;
+  if (toDate) {
+    path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
   }
+
+  path += "&order=prediction_date.asc,fund_code.asc,finalized_at.asc&limit=10000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-async function getExistingPerformanceRows() {
+async function getExistingPerformanceRows(req) {
+  const fromDate = getFromDate(req);
+  const toDate = getToDate(req);
+
+  let path =
+    "prediction_performance" +
+    "?select=*" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
+    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
+    `&prediction_date=gte.${encodeURIComponent(fromDate)}`;
+
+  if (toDate) {
+    path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
+  }
+
+  path += "&order=prediction_date.desc,closed_at.desc&limit=10000";
+
+  const rows = await supabaseRequest(path);
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function getAllPerformanceRowsForLearning() {
   const path =
     "prediction_performance" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    "&order=prediction_date.desc,closed_at.desc" +
-    "&limit=1000";
+    `&prediction_date=gte.${encodeURIComponent(DEFAULT_FROM_DATE)}` +
+    "&order=prediction_date.desc,closed_at.desc&limit=10000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -205,20 +297,48 @@ async function getFundPriceRows() {
     "fund_prices" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    "&order=price_date.asc,created_at.asc" +
-    "&limit=1000";
+    "&order=fund_code.asc,price_date.asc,created_at.asc" +
+    "&limit=20000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
 }
 
 function makePerformanceKey(row) {
-  return `${row.fund_code}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+}
+
+function buildExistingPerformanceMap(rows) {
+  const map = new Map();
+
+  for (const row of rows || []) {
+    const key = makePerformanceKey(row);
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(row);
+  }
+
+  for (const [key, value] of map.entries()) {
+    value.sort(sortNewestPerformance);
+    map.set(key, value);
+  }
+
+  return map;
 }
 
 function validateFinalRow(finalRow) {
+  const fundCode = String(finalRow.fund_code || "").toUpperCase();
   const finalPrediction = num(finalRow.final_prediction_change, null);
   const issues = [];
+
+  if (!FUNDS.includes(fundCode)) {
+    issues.push("fund_code_invalid");
+  }
+
+  if (!dateText(finalRow.prediction_date)) {
+    issues.push("prediction_date_missing");
+  }
 
   if (finalPrediction === null) {
     issues.push("final_prediction_change_missing");
@@ -226,59 +346,138 @@ function validateFinalRow(finalRow) {
     issues.push("final_prediction_change_out_of_range");
   }
 
-  if (!dateText(finalRow.prediction_date)) {
-    issues.push("prediction_date_missing");
-  }
-
-  if (!finalRow.fund_code || !FUNDS.includes(finalRow.fund_code)) {
-    issues.push("fund_code_invalid");
-  }
-
   return {
     ok: issues.length === 0,
     issues,
+    fundCode,
     finalPrediction
   };
 }
 
-function validateActualPriceRow(finalRow, priceRow) {
+function buildPriceSeries(fundPriceRows) {
+  const latestByFundDate = new Map();
+
+  for (const row of fundPriceRows || []) {
+    const fundCode = String(row.fund_code || "").toUpperCase();
+    const priceDate = dateText(row.price_date);
+
+    if (!FUNDS.includes(fundCode) || !priceDate) continue;
+
+    const key = `${fundCode}|${priceDate}`;
+    const existing = latestByFundDate.get(key);
+
+    if (!existing || rowTimeMs(row) >= rowTimeMs(existing)) {
+      latestByFundDate.set(key, row);
+    }
+  }
+
+  const grouped = {};
+
+  for (const code of FUNDS) {
+    grouped[code] = [];
+  }
+
+  for (const row of latestByFundDate.values()) {
+    const code = String(row.fund_code || "").toUpperCase();
+    grouped[code].push(row);
+  }
+
+  for (const code of FUNDS) {
+    grouped[code].sort(sortPriceRows);
+  }
+
+  return grouped;
+}
+
+function findNextActualPriceForFinal(finalRow, priceSeries) {
+  const finalValidation = validateFinalRow(finalRow);
+
+  if (!finalValidation.ok) {
+    return {
+      ok: false,
+      reason: "invalid_final_prediction",
+      issues: finalValidation.issues,
+      row: null,
+      previousRow: null
+    };
+  }
+
+  const fundCode = finalValidation.fundCode;
   const predictionDate = dateText(finalRow.prediction_date);
-  const priceDate = dateText(priceRow && priceRow.price_date);
-  const price = num(priceRow && priceRow.price, null);
-  const dailyChange = num(priceRow && priceRow.daily_change, null);
+  const rows = priceSeries[fundCode] || [];
+
+  const actualIndex = rows.findIndex(row => compareDateText(dateText(row.price_date), predictionDate) > 0);
+
+  if (actualIndex === -1) {
+    return {
+      ok: false,
+      reason: "next_actual_price_not_available_yet",
+      issues: ["next_actual_price_not_available_yet"],
+      row: null,
+      previousRow: rows.length ? rows[rows.length - 1] : null,
+      predictionDate
+    };
+  }
+
+  const actualRow = rows[actualIndex];
+  const previousRow = rows[actualIndex - 1] || null;
+
+  const actualPriceDate = dateText(actualRow.price_date);
+  const actualPrice = num(actualRow.price, null);
+  const previousPrice = num(previousRow && previousRow.price, null);
+  const storedDailyChange = num(actualRow.daily_change, null);
 
   const issues = [];
 
-  if (!priceRow) {
-    issues.push("actual_price_not_available_yet");
+  if (!previousRow) {
+    issues.push("previous_price_not_available");
   }
 
-  if (priceRow && priceDate !== predictionDate) {
-    issues.push("actual_price_date_mismatch");
-  }
-
-  if (priceRow && (price === null || price <= MIN_VALID_PRICE)) {
+  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
     issues.push("actual_price_invalid_or_zero");
   }
 
-  if (priceRow && dailyChange === null) {
-    issues.push("actual_change_missing");
+  if (previousPrice === null || previousPrice <= MIN_VALID_PRICE) {
+    issues.push("previous_price_invalid_or_zero");
   }
 
-  if (
-    priceRow &&
-    dailyChange !== null &&
-    Math.abs(dailyChange) > MAX_ABSOLUTE_ACTUAL_CHANGE
-  ) {
+  let calculatedActualChange = null;
+
+  if (actualPrice !== null && previousPrice !== null && previousPrice > 0) {
+    calculatedActualChange = ((actualPrice - previousPrice) / previousPrice) * 100;
+  }
+
+  if (calculatedActualChange === null) {
+    issues.push("actual_change_calculation_failed");
+  } else if (Math.abs(calculatedActualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
     issues.push("actual_change_out_of_range");
   }
 
+  const storedVsCalculatedDifference =
+    storedDailyChange !== null && calculatedActualChange !== null
+      ? storedDailyChange - calculatedActualChange
+      : null;
+
+  const dailyChangeWarning =
+    storedVsCalculatedDifference !== null &&
+    Math.abs(storedVsCalculatedDifference) > DAILY_CHANGE_WARNING_TOLERANCE;
+
   return {
     ok: issues.length === 0,
+    reason: issues.length ? "actual_price_invalid_or_suspicious" : "next_actual_price",
     issues,
-    price,
-    dailyChange,
-    priceDate
+    row: actualRow,
+    previousRow,
+    predictionDate,
+    actualPriceDate,
+    actualPrice,
+    previousPrice,
+    previousPriceDate: previousRow ? dateText(previousRow.price_date) : null,
+    actualChange: calculatedActualChange,
+    storedDailyChange,
+    storedVsCalculatedDifference,
+    dailyChangeWarning,
+    matchRule: "next_available_tefas_price_after_prediction_date"
   };
 }
 
@@ -289,7 +488,11 @@ function isReliablePerformanceRow(row) {
   const actualChange = num(row.actual_change, null);
   const absoluteError = num(row.absolute_error, null);
 
-  if (!predictionDate || !actualPriceDate || predictionDate !== actualPriceDate) {
+  if (!predictionDate || !actualPriceDate) {
+    return false;
+  }
+
+  if (compareDateText(actualPriceDate, predictionDate) <= 0) {
     return false;
   }
 
@@ -308,128 +511,9 @@ function isReliablePerformanceRow(row) {
   return true;
 }
 
-function getSuspiciousPerformanceReason(row) {
-  const predictionDate = dateText(row.prediction_date);
-  const actualPriceDate = dateText(row.actual_price_date);
-  const actualPrice = num(row.actual_price, null);
-  const actualChange = num(row.actual_change, null);
-  const absoluteError = num(row.absolute_error, null);
-
-  if (!predictionDate || !actualPriceDate) {
-    return "performance_date_missing";
-  }
-
-  if (predictionDate !== actualPriceDate) {
-    return "performance_actual_price_date_mismatch";
-  }
-
-  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
-    return "performance_actual_price_invalid_or_zero";
-  }
-
-  if (actualChange === null) {
-    return "performance_actual_change_missing";
-  }
-
-  if (Math.abs(actualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
-    return "performance_actual_change_out_of_range";
-  }
-
-  if (absoluteError === null) {
-    return "performance_absolute_error_missing";
-  }
-
-  if (Math.abs(absoluteError) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
-    return "performance_absolute_error_out_of_range";
-  }
-
-  return null;
-}
-
-async function deleteSuspiciousPerformanceRows(rows) {
-  const rowsWithId = rows.filter(row => row && row.id !== null && row.id !== undefined);
-
-  if (!rowsWithId.length) {
-    return {
-      deletedRows: 0,
-      ids: []
-    };
-  }
-
-  const deletedIds = [];
-
-  for (const row of rowsWithId) {
-    const path = `prediction_performance?id=eq.${encodeURIComponent(row.id)}`;
-
-    await supabaseRequest(path, {
-      method: "DELETE",
-      prefer: "return=representation"
-    });
-
-    deletedIds.push(row.id);
-  }
-
-  return {
-    deletedRows: deletedIds.length,
-    ids: deletedIds
-  };
-}
-
-function findActualPriceForFinal(finalRow, fundPrices) {
-  const fundCode = finalRow.fund_code;
-  const predictionDate = dateText(finalRow.prediction_date);
-
-  const sameDateRows = fundPrices
-    .filter(row => row.fund_code === fundCode)
-    .filter(row => dateText(row.price_date) === predictionDate)
-    .sort(sortNewest);
-
-  if (!sameDateRows.length) {
-    return {
-      ok: false,
-      row: null,
-      matchRule: "exact_price_date_required",
-      quality: {
-        ok: false,
-        issues: ["actual_price_not_available_yet"],
-        price: null,
-        dailyChange: null,
-        priceDate: null
-      }
-    };
-  }
-
-  const validCandidates = sameDateRows
-    .map(row => ({
-      row,
-      quality: validateActualPriceRow(finalRow, row)
-    }))
-    .filter(item => item.quality.ok);
-
-  if (validCandidates.length) {
-    return {
-      ok: true,
-      row: validCandidates[0].row,
-      matchRule: "exact_price_date",
-      quality: validCandidates[0].quality
-    };
-  }
-
-  const firstInvalid = sameDateRows[0];
-
-  return {
-    ok: false,
-    row: firstInvalid,
-    matchRule: "exact_price_date_invalid",
-    quality: validateActualPriceRow(finalRow, firstInvalid)
-  };
-}
-
 function buildPerformancePayload(finalRow, actualMatch) {
-  const actualRow = actualMatch.row;
-
   const finalPrediction = num(finalRow.final_prediction_change, null);
-  const actualChange = num(actualRow.daily_change, null);
+  const actualChange = num(actualMatch.actualChange, null);
 
   const errorChange = actualChange - finalPrediction;
   const absoluteError = Math.abs(errorChange);
@@ -438,17 +522,16 @@ function buildPerformancePayload(finalRow, actualMatch) {
     finalRow.predicted_direction || direction(finalPrediction);
 
   const actualDirection = direction(actualChange);
-
   const hit = directionHit(finalPrediction, actualChange);
 
   return {
     final_id: finalRow.id,
 
-    fund_code: finalRow.fund_code,
+    fund_code: String(finalRow.fund_code || "").toUpperCase(),
     prediction_date: dateText(finalRow.prediction_date),
 
     model: finalRow.model || ACTIVE_MODEL,
-    model_version: finalRow.model_version || null,
+    model_version: finalRow.model_version || MODEL_VERSION,
 
     final_prediction_change: round(finalPrediction, 6),
     actual_change: round(actualChange, 6),
@@ -462,16 +545,48 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
     grade: gradeFromError(absoluteError),
     note:
-      "Sapma = gerçekleşen TEFAS değişimi - prediction_finals tablosundaki kilitli nihai tahmin. Data Quality Guard: fiyat sıfır/şüpheli ise performans kapatılmaz. THF dahil 4 fon desteklenir.",
+      "v8.7: Sapma = sonraki TEFAS iş günü gerçekleşen fiyat değişimi - prediction_finals kilitli nihai tahmin. Gerçekleşme, fund_prices.daily_change alanından değil fiyat oranından hesaplanır.",
 
-    actual_price: round(actualRow.price, 8),
-    actual_price_date: dateText(actualRow.price_date),
+    actual_price: round(actualMatch.actualPrice, 8),
+    actual_price_date: actualMatch.actualPriceDate,
 
     closed_at: new Date().toISOString(),
     status: "closed",
 
     updated_at: new Date().toISOString()
   };
+}
+
+function performanceNeedsUpsert(existingRows, payload, forceRepair) {
+  if (forceRepair) return true;
+
+  if (!existingRows || !existingRows.length) return true;
+
+  const existing = existingRows[0];
+
+  const existingActualDate = dateText(existing.actual_price_date);
+  const payloadActualDate = dateText(payload.actual_price_date);
+
+  if (existingActualDate !== payloadActualDate) return true;
+
+  const fields = [
+    "actual_change",
+    "final_prediction_change",
+    "error_change",
+    "absolute_error",
+    "actual_price"
+  ];
+
+  for (const field of fields) {
+    const oldValue = num(existing[field], null);
+    const newValue = num(payload[field], null);
+
+    if (oldValue === null && newValue === null) continue;
+    if (oldValue === null || newValue === null) return true;
+    if (Math.abs(oldValue - newValue) > PRICE_CHANGE_TOLERANCE) return true;
+  }
+
+  return false;
 }
 
 async function upsertPerformanceRows(payloads) {
@@ -522,14 +637,12 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
   const suggestedOffset =
     averageError === null
       ? null
-      : round(clamp(averageError * 0.45, -0.65, 0.65), 6);
+      : round(Math.max(-0.85, Math.min(0.85, averageError * 0.45)), 6);
 
   let confidenceAdjustment = 0;
 
   if (averageAbsoluteError === null) {
     confidenceAdjustment = 0;
-  } else if (averageAbsoluteError <= 0.10) {
-    confidenceAdjustment = 8;
   } else if (averageAbsoluteError <= 0.35) {
     confidenceAdjustment = 5;
   } else if (averageAbsoluteError <= 0.65) {
@@ -574,15 +687,15 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
 
     note:
       sampleSize === 0
-        ? "Henüz güvenilir kapanmış final performans kaydı yok."
-        : "İstatistikler sadece Data Quality Guard filtresinden geçen güvenilir prediction_performance kayıtlarından hesaplandı. THF yeni fon ise yeterli kapanış örneği oluşana kadar başlangıç öğrenme modunda kalır.",
+        ? "Henüz güvenilir sonraki TEFAS günü kapanmış final performans kaydı yok."
+        : "v8.7: İstatistikler prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılan güvenilir performans kayıtlarından hesaplandı.",
 
     updated_at: new Date().toISOString()
   };
 }
 
 async function updateLearningStats() {
-  const allRows = await getExistingPerformanceRows();
+  const allRows = await getAllPerformanceRowsForLearning();
   const reliableRows = allRows.filter(isReliablePerformanceRow);
 
   const payloads = FUNDS.map(fundCode =>
@@ -611,193 +724,174 @@ module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.authorization;
-  const querySecret = req.query && req.query.secret;
-  const manualKey = req.query && req.query.manual;
+  const auth = authStatus(req);
 
-  const authorizedByHeader =
-    cronSecret && authHeader === `Bearer ${cronSecret}`;
-
-  const authorizedByQuery =
-    cronSecret && querySecret === cronSecret;
-
-  const authorizedByManual =
-    manualKey === "finscope";
-
-  if (
-    cronSecret &&
-    !authorizedByHeader &&
-    !authorizedByQuery &&
-    !authorizedByManual
-  ) {
+  if (!auth.ok) {
     return res.status(401).json({
       ok: false,
       version: API_VERSION,
-      error: "Yetkisiz istek."
+      model: ACTIVE_MODEL,
+      error: auth.reason
     });
   }
 
   try {
+    const forceRepair = isTruthyQuery(queryValue(req, "force")) || isTruthyQuery(queryValue(req, "repair"));
+
     const finalRows = await getFinalRows(req);
-    const existingPerformanceRows = await getExistingPerformanceRows();
+    const existingPerformanceRows = await getExistingPerformanceRows(req);
+    const existingPerformanceMap = buildExistingPerformanceMap(existingPerformanceRows);
+
     const fundPriceRows = await getFundPriceRows();
-
-    const suspiciousExistingRows = existingPerformanceRows
-      .map(row => ({
-        ...row,
-        suspiciousReason: getSuspiciousPerformanceReason(row)
-      }))
-      .filter(row => row.suspiciousReason !== null);
-
-    const cleanup = await deleteSuspiciousPerformanceRows(suspiciousExistingRows);
-
-    const reliableExistingRows = existingPerformanceRows.filter(isReliablePerformanceRow);
-    const existingKeys = new Set(reliableExistingRows.map(makePerformanceKey));
+    const priceSeries = buildPriceSeries(fundPriceRows);
 
     const payloads = [];
     const results = [];
-    const invalidActualRows = [];
 
     for (const finalRow of finalRows) {
-      const key = makePerformanceKey(finalRow);
+      const finalValidation = validateFinalRow(finalRow);
 
-      if (existingKeys.has(key)) {
+      if (!finalValidation.ok) {
         results.push({
-          fund: finalRow.fund_code,
-          predictionDate: dateText(finalRow.prediction_date),
-          ok: true,
-          skipped: true,
-          reason: "performance_already_closed"
-        });
-
-        continue;
-      }
-
-      const finalQuality = validateFinalRow(finalRow);
-
-      if (!finalQuality.ok) {
-        results.push({
-          fund: finalRow.fund_code,
+          fund: finalRow.fund_code || null,
           predictionDate: dateText(finalRow.prediction_date),
           ok: false,
           skipped: true,
           reason: "invalid_final_prediction",
-          issues: finalQuality.issues
+          issues: finalValidation.issues
         });
-
         continue;
       }
 
-      const actualMatch = findActualPriceForFinal(finalRow, fundPriceRows);
+      const actualMatch = findNextActualPriceForFinal(finalRow, priceSeries);
 
       if (!actualMatch.ok) {
-        const reason =
-          actualMatch.quality.issues.includes("actual_price_not_available_yet")
-            ? "actual_price_not_available_yet"
-            : "actual_price_invalid_or_suspicious";
-
-        const blocked = {
-          fund: finalRow.fund_code,
+        results.push({
+          fund: finalValidation.fundCode,
           predictionDate: dateText(finalRow.prediction_date),
           ok: false,
           skipped: true,
-          reason,
-          matchRule: actualMatch.matchRule,
-          issues: actualMatch.quality.issues,
-          actualPrice: actualMatch.quality.price,
-          actualChange: actualMatch.quality.dailyChange,
-          actualPriceDate: actualMatch.quality.priceDate
-        };
-
-        results.push(blocked);
-        invalidActualRows.push(blocked);
-
+          reason: actualMatch.reason,
+          issues: actualMatch.issues,
+          previousPriceDate: actualMatch.previousRow ? dateText(actualMatch.previousRow.price_date) : null,
+          note:
+            actualMatch.reason === "next_actual_price_not_available_yet"
+              ? "Bu final tahmin için prediction_date sonrasındaki ilk TEFAS fiyatı henüz yok."
+              : "Gerçekleşen fiyat satırı şüpheli olduğu için performans kapatılmadı."
+        });
         continue;
       }
 
       const payload = buildPerformancePayload(finalRow, actualMatch);
+      const key = makePerformanceKey(payload);
+      const existingRows = existingPerformanceMap.get(key) || [];
+      const needsUpsert = performanceNeedsUpsert(existingRows, payload, forceRepair);
+
+      if (!needsUpsert) {
+        results.push({
+          fund: payload.fund_code,
+          predictionDate: payload.prediction_date,
+          ok: true,
+          skipped: true,
+          reason: "performance_already_closed_verified",
+          matchRule: actualMatch.matchRule,
+          actualPriceDate: payload.actual_price_date,
+          actualChange: payload.actual_change,
+          finalPredictionChange: payload.final_prediction_change,
+          errorChange: payload.error_change,
+          absoluteError: payload.absolute_error
+        });
+        continue;
+      }
+
       payloads.push(payload);
 
       results.push({
-        fund: finalRow.fund_code,
-        predictionDate: dateText(finalRow.prediction_date),
+        fund: payload.fund_code,
+        predictionDate: payload.prediction_date,
         ok: true,
         skipped: false,
+        reason: existingRows.length ? "performance_corrected" : "performance_created",
+        existingActualPriceDate: existingRows[0] ? dateText(existingRows[0].actual_price_date) : null,
         matchRule: actualMatch.matchRule,
-        modelVersion: payload.model_version || MODEL_VERSION,
+        previousPriceDate: actualMatch.previousPriceDate,
+        actualPriceDate: payload.actual_price_date,
+        actualPrice: payload.actual_price,
+        storedDailyChange: round(actualMatch.storedDailyChange, 6),
+        calculatedActualChange: payload.actual_change,
+        storedVsCalculatedDifference: round(actualMatch.storedVsCalculatedDifference, 6),
+        dailyChangeWarning: actualMatch.dailyChangeWarning,
         finalPredictionChange: payload.final_prediction_change,
-        actualChange: payload.actual_change,
         errorChange: payload.error_change,
         absoluteError: payload.absolute_error,
         predictedDirection: payload.predicted_direction,
         actualDirection: payload.actual_direction,
         directionHit: payload.direction_hit,
-        grade: payload.grade,
-        actualPrice: payload.actual_price,
-        actualPriceDate: payload.actual_price_date,
-        thfIncluded: finalRow.fund_code === "THF"
+        grade: payload.grade
       });
     }
 
     const savedPerformanceRows = await upsertPerformanceRows(payloads);
     const learningStats = await updateLearningStats();
 
+    const createdCount = results.filter(row => row.reason === "performance_created").length;
+    const correctedCount = results.filter(row => row.reason === "performance_corrected").length;
+    const verifiedCount = results.filter(row => row.reason === "performance_already_closed_verified").length;
+
     return res.status(200).json({
       ok: true,
       version: API_VERSION,
       generatedAt: new Date().toISOString(),
+
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
       fundOrder: FUNDS,
       thfIncluded: FUNDS.includes("THF"),
 
+      fromDate: getFromDate(req),
+      toDate: getToDate(req),
+      forceRepair,
+
       dataQualityGuard: {
         enabled: true,
         minValidPrice: MIN_VALID_PRICE,
         maxAbsoluteActualChange: MAX_ABSOLUTE_ACTUAL_CHANGE,
-        exactPriceDateRequired: true,
-        suspiciousExistingRowsFound: suspiciousExistingRows.length,
-        suspiciousExistingRowsDeleted: cleanup.deletedRows,
-        invalidActualRowsBlocked: invalidActualRows.length
+        nextActualPriceRequired: true,
+        actualChangeSource:
+          "calculated_from_next_tefas_price_and_previous_tefas_price",
+        storedDailyChangeUsedForPerformance: false,
+        dailyChangeWarningTolerance: DAILY_CHANGE_WARNING_TOLERANCE
       },
 
       finalsFound: finalRows.length,
+      existingPerformanceRows: existingPerformanceRows.length,
+
       closed: payloads.length,
-      alreadyClosed: results.filter(row => row.reason === "performance_already_closed").length,
-      waitingActual: results.filter(row => row.reason === "actual_price_not_available_yet").length,
+      created: createdCount,
+      corrected: correctedCount,
+      alreadyClosedVerified: verifiedCount,
+
+      waitingActual: results.filter(row => row.reason === "next_actual_price_not_available_yet").length,
       invalidActual: results.filter(row => row.reason === "actual_price_invalid_or_suspicious").length,
       invalidFinal: results.filter(row => row.reason === "invalid_final_prediction").length,
-      thfClosed: results.filter(row => row.fund === "THF" && row.ok === true && row.skipped === false).length,
-      thfWaitingActual: results.filter(row => row.fund === "THF" && row.reason === "actual_price_not_available_yet").length,
 
       savedPerformanceRows: Array.isArray(savedPerformanceRows)
         ? savedPerformanceRows.length
         : 0,
 
       formula:
-        "error_change = actual_change - final_prediction_change",
+        "actual_change = ((next_tefas_price - previous_tefas_price) / previous_tefas_price) * 100; error_change = actual_change - final_prediction_change",
       source:
-        "prediction_finals + fund_prices; PBR/PHE/TLY/THF",
+        "prediction_finals + fund_prices next available TEFAS price after prediction_date",
       learningStatsUpdated: learningStats.savedRows,
       learningStatsReliableRows: learningStats.reliablePerformanceRows,
       learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
 
+      rule:
+        "v8.7: prediction_date tarihli final tahmin, aynı gün fiyatıyla değil, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Bu THF 2026-09-08 finalinin gerçekleşmesini 2026-09-09 fiyat değişimiyle ölçer.",
+
       results,
       saved: savedPerformanceRows,
-      cleanup: {
-        deletedRows: cleanup.deletedRows,
-        deletedIds: cleanup.ids,
-        suspiciousExistingRows: suspiciousExistingRows.map(row => ({
-          id: row.id,
-          fund: row.fund_code,
-          predictionDate: dateText(row.prediction_date),
-          reason: row.suspiciousReason,
-          actualPrice: row.actual_price,
-          actualChange: row.actual_change,
-          actualPriceDate: dateText(row.actual_price_date)
-        }))
-      },
       learningStats
     });
   } catch (error) {
@@ -805,6 +899,7 @@ module.exports = async function handler(req, res) {
       ok: false,
       version: API_VERSION,
       model: ACTIVE_MODEL,
+      modelVersion: MODEL_VERSION,
       error: String(error.message || error)
     });
   }
