@@ -25,9 +25,9 @@ const MARKET_LABELS = {
 const FUND_ORDER = ["PBR", "PHE", "TLY", "THF"];
 const FUND_CARD_ORDER = FUND_ORDER.slice();
 
-const FRONTEND_VERSION = "Read-Only Frontend v8.9.4";
-const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.9.4 - Performance UI Sync";
-const DISPLAY_MODEL_SHORT = "v8.9.4";
+const FRONTEND_VERSION = "Shock UI Sync Frontend v9.0";
+const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v9.0 - Shock UI Sync";
+const DISPLAY_MODEL_SHORT = "v9.0";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -124,7 +124,9 @@ function getPredictionChange(prediction) {
       prediction.predictedChange,
       prediction.predicted_change,
       prediction.currentPredictionChange,
+      prediction.current_prediction_change,
       prediction.finalPredictionChange,
+      prediction.final_prediction_change,
       prediction.calibratedChange,
       prediction.calibrated_change
     ],
@@ -137,28 +139,23 @@ function hasUsablePrediction(prediction) {
 }
 
 function getModelLabel(predictionsJson) {
-  const model =
+  const candidates = [
+    predictionsJson && predictionsJson.modelVersion,
+    predictionsJson && predictionsJson.modelName,
+    predictionsJson && predictionsJson.version,
     predictionsJson && predictionsJson.model
-      ? String(predictionsJson.model)
-      : "";
+  ]
+    .filter(Boolean)
+    .map(function(value) {
+      return String(value);
+    });
 
-  if (
-    model.includes("v8.9") ||
-    model.includes("v8.8") ||
-    model.includes("v8.7") ||
-    model.includes("v8.6") ||
-    model.includes("v8.5") ||
-    model.includes("v8.4") ||
-    model.includes("v8.3") ||
-    model.includes("v8.2")
-  ) {
-    return model;
+  for (const text of candidates) {
+    if (text.includes("FinScope Prediction Engine")) return text;
+    if (text.includes("v9.")) return text;
+    if (text.includes("v8.")) return text;
   }
 
-  /*
-    MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalabilir.
-    Kullanıcıya gösterilen aktif frontend entegrasyon adı v8.9.4 olmalıdır.
-  */
   return DISPLAY_MODEL_NAME;
 }
 
@@ -307,7 +304,7 @@ function renderPredictionSummary(predictionsJson) {
 
   lines.push(`
     <div class="summary-line yellow">
-      ${escapeHtml(FRONTEND_VERSION)}: Tahmin Özeti PBR / PHE / TLY / THF sırasını kullanır; performans metrikleri artık karantina farkındalıklı okunur ve sayfa açılışında /api/predict çalıştırılmaz.
+      ${escapeHtml(FRONTEND_VERSION)}: Tahmin Özeti PBR / PHE / TLY / THF sırasını kullanır. Performans tarafında normal kapanış ve şok kapanış ayrımı okunur; sayfa açılışında /api/predict çalıştırılmaz.
     </div>
   `);
 
@@ -367,7 +364,7 @@ function renderAiAnalyst(predictionsJson) {
 
   box.innerHTML = `
     <div class="summary-line">
-      <b>${escapeHtml(model)}</b> aktif. Bu panel artık sadece kayıtlı tahminleri okur; tahmin motorunu yeniden tetiklemez.
+      <b>${escapeHtml(model)}</b> aktif. Bu panel sadece kayıtlı tahminleri okur; tahmin motorunu yeniden tetiklemez.
     </div>
     <div class="summary-line">
       Analiz kapsamı: <b>${FUND_ORDER.map(escapeHtml).join(" / ")}</b>.
@@ -383,12 +380,14 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      ${escapeHtml(FRONTEND_VERSION)} - Performance UI Sync ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve karantina farkındalıklı /api/performance okur.
+      ${escapeHtml(FRONTEND_VERSION)}: AI paneli THF dahil aktif fon listesini okur. Şok kapanışlar performans tarafında ayrı izlenir.
     </div>
   `;
 }
 
-function performanceGrade(errorAbs) {
+function performanceGrade(errorAbs, shockClosed) {
+  if (shockClosed) return "Şok";
+
   const e = Math.abs(num(errorAbs, 0));
   if (e <= 0.25) return "Çok iyi";
   if (e <= 0.50) return "İyi";
@@ -397,19 +396,40 @@ function performanceGrade(errorAbs) {
   return "Çok zayıf";
 }
 
-function isCompletedPerformanceStatus(status) {
+function isNormalClosedPerformanceStatus(status) {
   const s = String(status || "").toLowerCase();
   return s === "completed" || s === "closed";
 }
 
+function isShockClosedPerformanceStatus(status) {
+  return String(status || "").toLowerCase() === "shock_closed";
+}
+
+function isCompletedPerformanceStatus(status) {
+  return isNormalClosedPerformanceStatus(status) || isShockClosedPerformanceStatus(status);
+}
+
 function isQuarantinedPerformanceStatus(status) {
-  return String(status || "").toLowerCase() === "quarantined";
+  const s = String(status || "").toLowerCase();
+  return s === "quarantined" || s === "karantina";
 }
 
 function performanceStatusText(status) {
-  if (isCompletedPerformanceStatus(status)) return "Tamamlandı";
-  if (isQuarantinedPerformanceStatus(status)) return "Karantina";
+  if (isShockClosedPerformanceStatus(status)) return "Şok Kapanış";
+  if (isNormalClosedPerformanceStatus(status)) return "Normal Kapanış";
+  if (isQuarantinedPerformanceStatus(status)) return "Karantina / Audit";
+
+  const s = String(status || "").toLowerCase();
+  if (s === "waiting_actual") return "Gerçekleşme Bekliyor";
+
   return "Bekliyor";
+}
+
+function performanceStatusClass(status) {
+  if (isShockClosedPerformanceStatus(status)) return "status-completed";
+  if (isNormalClosedPerformanceStatus(status)) return "status-completed";
+  if (isQuarantinedPerformanceStatus(status)) return "";
+  return "";
 }
 
 function fundOrderIndex(code) {
@@ -489,49 +509,23 @@ function biasLabelFromAverageError(avgError) {
   return "Dengeli";
 }
 
-function learningStatusFromMetrics(completedRows, avgAbsError, directionHitRate) {
-  const completed = Number(completedRows || 0);
-  const absError = num(avgAbsError, null);
-  const directionRate = num(directionHitRate, null);
-
-  if (completed === 0) return "Henüz kapanmış veri yok";
-  if (completed < 5) return "Örnek sayısı düşük";
-
-  if (absError !== null && absError <= 0.35 && directionRate !== null && directionRate >= 70) {
-    return "İyi çalışıyor";
-  }
-
-  if (absError !== null && absError <= 0.65 && directionRate !== null && directionRate >= 70) {
-    return "Öğreniyor / kullanılabilir";
-  }
-
-  if (absError !== null && absError <= 0.90 && directionRate !== null && directionRate >= 60) {
-    return "Takip ediliyor";
-  }
-
-  if (directionRate !== null && directionRate < 50) {
-    return "Yön tahmini zayıf";
-  }
-
-  if (absError !== null && absError > 1.25) {
-    return "Model yaklaşımı gözden geçirilmeli";
-  }
-
-  return "Geliştiriliyor";
-}
-
 function buildFundLearningPanel(performanceJson, performanceRows) {
   const summary = performanceJson.summary || {};
   const byFund = summary.byFund || performanceJson.byFund || {};
   const learningStats = performanceJson.learningStats || {};
 
-  function trendLabel(completedRows, averageAbsError, averageError) {
+  function trendLabel(completedRows, averageAbsError, averageError, shockRows) {
     const completed = Number(completedRows || 0);
+    const shock = Number(shockRows || 0);
     const absError = num(averageAbsError, null);
     const avgError = num(averageError, null);
     const prefix = completed < 5 ? "Erken sinyal: " : "";
 
     if (avgError === null) return `${prefix}veri yok`;
+
+    if (shock >= 3 && absError !== null && absError >= 2.5) {
+      return `${prefix}şok hareket etkisi yüksek`;
+    }
 
     if (absError !== null && absError >= 0.85 && Math.abs(avgError) <= 0.25) {
       return `${prefix}hata yönü kararsız`;
@@ -543,13 +537,18 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
     return `${prefix}dengeli`;
   }
 
-  function readableStatus(completedRows, averageAbsError, directionHitRate) {
+  function readableStatus(completedRows, averageAbsError, directionHitRate, shockRows) {
     const completed = Number(completedRows || 0);
+    const shock = Number(shockRows || 0);
     const absError = num(averageAbsError, null);
     const hitRate = num(directionHitRate, null);
 
     if (completed === 0) return "Kapanmış veri yok";
     if (completed < 5) return "Örnek sayısı düşük — karar için erken";
+
+    if (shock >= 3 && absError !== null && absError > 1.25) {
+      return "Şok dönemi — nedensel motor gerekli";
+    }
 
     if (absError !== null && absError <= 0.35 && hitRate !== null && hitRate >= 70) {
       return "İyi çalışıyor";
@@ -606,8 +605,32 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
       return row && row.fundCode === code && isCompletedPerformanceStatus(row.status);
     });
 
+    const normalRows = fundRows.filter(function(row) {
+      return isNormalClosedPerformanceStatus(row.status);
+    });
+
+    const shockRows = fundRows.filter(function(row) {
+      return isShockClosedPerformanceStatus(row.status) || row.shockClosed === true;
+    });
+
     const stat = byFund[code] || {};
     const learning = stat.learning || learningStats[code] || {};
+
+    const normalClosedRows = firstNumber(
+      [
+        stat.normalClosedRows,
+        learning.normalClosedRows
+      ],
+      normalRows.length
+    );
+
+    const shockClosedRows = firstNumber(
+      [
+        stat.shockClosedRows,
+        learning.shockClosedRows
+      ],
+      shockRows.length
+    );
 
     const completedRows = firstNumber(
       [
@@ -671,8 +694,8 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
       null
     );
 
-    const trend = trendLabel(completedRows, averageAbsError, averageError);
-    const status = readableStatus(completedRows, averageAbsError, directionHitRate);
+    const trend = trendLabel(completedRows, averageAbsError, averageError, shockClosedRows);
+    const status = readableStatus(completedRows, averageAbsError, directionHitRate, shockClosedRows);
 
     const avgErrorClass = directionClass(averageError);
     const offsetClass = directionClass(suggestedOffset);
@@ -680,7 +703,9 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
     return `
       <tr>
         <td><b>${escapeHtml(code)}</b></td>
-        <td>${formatNumber(completedRows, 0)}</td>
+        <td>${formatNumber(normalClosedRows, 0)}</td>
+        <td class="yellow">${formatNumber(shockClosedRows, 0)}</td>
+        <td><b>${formatNumber(completedRows, 0)}</b></td>
         <td>${formatNumber(quarantinedRows, 0)}</td>
         <td><b>${formatPercent(averageAbsError, 2)}</b></td>
         <td class="${avgErrorClass}">
@@ -699,24 +724,26 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
 
   return `
     <div class="summary-line">
-      <b>Fon Bazlı Öğrenme ve Sapma</b><br />
-      Bu bölümde her fon ayrı değerlendirilir. Ortalama değerler yalnızca güvenilir closed kayıtlarla hesaplanır; karantina kayıtları ayrı sayılır.
+      <b>Fon Bazlı Öğrenme, Sapma ve Şok Ayrımı</b><br />
+      Bu bölümde her fon ayrı değerlendirilir. <b>Normal Kapanış</b> olağan güvenilir kapanmış performanstır.
+      <b>Şok Kapanış</b> ise PBR/PHE gibi büyük ama fiyat zinciriyle tutarlı gerçek hareketleri gösterir.
+      Karantina / Audit kayıtları genel başarı ortalamasına alınmaz.
       <br />
-      <b>Ortalama Mutlak Sapma</b>: |Gerçekleşen - Nihai Tahmin| ortalamasıdır; tahminin büyüklük hatasını gösterir.
+      <b>Ortalama Mutlak Sapma</b>: |Gerçekleşen - Nihai Tahmin| ortalamasıdır.
       <br />
       <b>Ortalama Yönlü Hata</b>: Gerçekleşen - Nihai Tahmin ortalamasıdır. Pozitifse tahmin düşük kalmış, negatifse tahmin yüksek kalmıştır.
       <br />
       <b>Tahmin Düzeltmesi</b>: gelecek tahmine eklenmesi veya tahminden düşülmesi önerilen temkinli düzeltmedir.
-      <br />
-      <b>Güven Etkisi</b>: modelin bu fondaki güven skoruna yapılan artırma/azaltma etkisidir; pozitif güveni artırır, negatif güveni düşürür.
     </div>
 
     <table class="perf-table">
       <thead>
         <tr>
           <th>Fon</th>
-          <th>Güvenilir Kapanan</th>
-          <th>Karantina</th>
+          <th>Normal Kapanış</th>
+          <th>Şok Kapanış</th>
+          <th>Güvenilir Toplam</th>
+          <th>Karantina / Audit</th>
           <th>Ortalama Mutlak Sapma</th>
           <th>Ortalama Yönlü Hata</th>
           <th>Tahmin Eğilimi</th>
@@ -724,6 +751,72 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
           <th>Tahmin Düzeltmesi</th>
           <th>Güven Etkisi</th>
           <th>Veri Durumu</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+function buildShockMovementPanel(performanceRows) {
+  const shockRows = performanceRows
+    .filter(function(row) {
+      return row && (row.shockClosed === true || isShockClosedPerformanceStatus(row.status));
+    })
+    .sort(sortPerformanceRows);
+
+  if (!shockRows.length) {
+    return `
+      <div class="summary-line">
+        <b>Şok Hareket İzleme:</b> Şu anda shock_closed kayıt bulunmuyor.
+      </div>
+    `;
+  }
+
+  const rows = shockRows.slice(0, 16).map(function(row) {
+    const finalPrediction = resolveFinalPrediction(row);
+    const actual = num(row.actualChange, null);
+    const error = num(row.errorChange, null);
+
+    return `
+      <tr>
+        <td><b>${escapeHtml(row.fundCode || "—")}</b></td>
+        <td>${escapeHtml(row.predictionDate || "—")}</td>
+        <td>${actual === null ? "—" : formatPercent(actual, 2)}</td>
+        <td>${finalPrediction === null ? "—" : formatPercent(finalPrediction, 2)}</td>
+        <td>${error === null ? "—" : formatPercent(error, 2)}</td>
+        <td>${escapeHtml(row.actualPriceDate || "—")}</td>
+        <td>${escapeHtml(row.grade || "Şok")}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const pbrPheShockCount = shockRows.filter(function(row) {
+    return row.fundCode === "PBR" || row.fundCode === "PHE";
+  }).length;
+
+  return `
+    <div class="summary-line">
+      <b>Şok Hareket İzleme</b><br />
+      Bu tablo büyük ama gerçek fiyat zinciriyle tutarlı hareketleri gösterir.
+      Bu kayıtlar veri hatası sayılmaz; özellikle PBR/PHE tarafında nedensel tahmin motoru için sinyal kabul edilir.
+      <br />
+      Toplam şok kayıt: <b>${formatNumber(shockRows.length, 0)}</b>
+      • PBR/PHE şok kayıt: <b>${formatNumber(pbrPheShockCount, 0)}</b>.
+    </div>
+
+    <table class="perf-table">
+      <thead>
+        <tr>
+          <th>Fon</th>
+          <th>Tahmin Tarihi</th>
+          <th>Gerçekleşen</th>
+          <th>Nihai Tahmin</th>
+          <th>Sapma</th>
+          <th>Gerçekleşme Tarihi</th>
+          <th>Etiket</th>
         </tr>
       </thead>
       <tbody>
@@ -746,15 +839,33 @@ function renderPerformance(performanceJson) {
 
   const rawCounts = performanceJson.rawCounts || {};
 
+  const normalClosedRows = firstNumber(
+    [
+      summary.normalClosedRows,
+      rawCounts.normalClosedPerformanceRows
+    ],
+    performanceRows.filter(function(row) {
+      return row && isNormalClosedPerformanceStatus(row.status);
+    }).length
+  );
+
+  const shockClosedRows = firstNumber(
+    [
+      summary.shockClosedRows,
+      rawCounts.shockClosedPerformanceRows
+    ],
+    performanceRows.filter(function(row) {
+      return row && (row.shockClosed === true || isShockClosedPerformanceStatus(row.status));
+    }).length
+  );
+
   const reliableCompletedRows = firstNumber(
     [
       summary.reliableCompletedRows,
       summary.completedRows,
       rawCounts.reliablePerformanceRows
     ],
-    performanceRows.filter(function(row) {
-      return row && isCompletedPerformanceStatus(row.status) && !isQuarantinedPerformanceStatus(row.status);
-    }).length
+    normalClosedRows + shockClosedRows
   );
 
   const quarantinedRows = firstNumber(
@@ -797,6 +908,11 @@ function renderPerformance(performanceJson) {
     rawTotalRows ? (quarantinedRows / rawTotalRows) * 100 : null
   );
 
+  const shockRate = firstNumber(
+    [summary.shockRate],
+    reliableCompletedRows ? (shockClosedRows / reliableCompletedRows) * 100 : null
+  );
+
   const avgError =
     summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
       ? "Bekliyor"
@@ -825,6 +941,7 @@ function renderPerformance(performanceJson) {
 
   const apiVersion = performanceJson.version || "Performance API";
   const fundLearningPanel = buildFundLearningPanel(performanceJson, performanceRows);
+  const shockMovementPanel = buildShockMovementPanel(performanceRows);
 
   const tableRows = performanceRows.length
     ? performanceRows.map(function(perf) {
@@ -845,11 +962,13 @@ function renderPerformance(performanceJson) {
         const error = apiError !== null ? apiError : calculatedError;
 
         const statusText = performanceStatusText(status);
-        const statusClass = isCompletedPerformanceStatus(status) ? "status-completed" : "";
+        const statusClass = performanceStatusClass(status);
+        const shockClosed = perf.shockClosed === true || isShockClosedPerformanceStatus(status);
+
         const grade =
           error === null || error === undefined
             ? "Bekliyor"
-            : (perf.grade || performanceGrade(error));
+            : (perf.grade || performanceGrade(error, shockClosed));
 
         return `
           <tr>
@@ -872,16 +991,20 @@ function renderPerformance(performanceJson) {
   box.innerHTML = `
     <div class="performance-grid">
       <div class="metric">
-        <div class="metric-label">Güvenilir Kapanmış Kayıt</div>
+        <div class="metric-label">Normal Kapanış</div>
+        <div class="metric-value up">${formatNumber(normalClosedRows, 0)}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Şok Kapanış</div>
+        <div class="metric-value yellow">${formatNumber(shockClosedRows, 0)}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Güvenilir Toplam</div>
         <div class="metric-value up">${formatNumber(reliableCompletedRows, 0)}</div>
       </div>
       <div class="metric">
-        <div class="metric-label">Karantina</div>
+        <div class="metric-label">Karantina / Audit</div>
         <div class="metric-value yellow">${formatNumber(quarantinedRows, 0)}</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">Ham Toplam</div>
-        <div class="metric-value">${formatNumber(rawTotalRows, 0)}</div>
       </div>
       <div class="metric">
         <div class="metric-label">Genel Ortalama Sapma</div>
@@ -894,13 +1017,14 @@ function renderPerformance(performanceJson) {
     </div>
 
     <div class="summary-line">
-      <b>Karantina farkındalıklı performans:</b>
-      Genel ortalama sapma ve yön isabeti yalnızca güvenilir closed kayıtlarla hesaplanır.
-      Karantina kayıtları genel ortalamaya dahil edilmez.
+      <b>Shock UI Sync:</b>
+      Dashboard artık <b>normal kapanış</b> ile <b>şok kapanış</b> kayıtlarını ayrı gösterir.
+      PBR/PHE gibi büyük ama TEFAS fiyat zinciriyle tutarlı hareketler veri hatası olarak okunmaz; <b>shock_closed</b> kapsamında izlenir.
       <br />
       Güvenilir toplam: <b>${formatNumber(reliableTotalRows, 0)}</b>
       • Bekleyen tahmin: <b>${formatNumber(pendingRows, 0)}</b>
-      • Karantina oranı: <b>${formatPercent(quarantineRate, 2)}</b>.
+      • Karantina oranı: <b>${formatPercent(quarantineRate, 2)}</b>
+      • Şok oranı: <b>${formatPercent(shockRate, 2)}</b>.
       ${latestDateAvgError ? `Son tamamlanan gün ortalaması: <b>${latestDateAvgError}</b>.` : ""}
       <br />
       <b>${escapeHtml(finalLabel)}</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange alanından okunur.
@@ -908,6 +1032,8 @@ function renderPerformance(performanceJson) {
     </div>
 
     ${fundLearningPanel}
+
+    ${shockMovementPanel}
 
     <div class="summary-line">
       <b>Kapanmış Tahmin Performans Kayıtları</b>
