@@ -1,19 +1,19 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Close Performance API v8.9.1 - Strict Learning Gate Safe Repair";
+const API_VERSION = "FinScope Close Performance API v9.0 - Shock Aware Performance";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v8.9.1 - Strict Learning Gate Safe Repair";
+const MODEL_VERSION = "FinScope Prediction Engine v9.0 - Shock Aware Causal Prep";
 
 const DEFAULT_FROM_DATE = "2026-08-26";
 const MIN_VALID_PRICE = 0;
-const MAX_ABSOLUTE_ACTUAL_CHANGE = 20;
+
+const MAX_ABSOLUTE_ACTUAL_CHANGE = 35;
 const MAX_ABSOLUTE_FINAL_PREDICTION = 20;
 
-// Öğrenme motorunu koruyan güvenilirlik eşikleri.
-// Bu eşikler performans kaydını silmez; şüpheli satırı karantinaya alır.
-const MAX_RELIABLE_ACTUAL_CHANGE = 6;
-const MAX_RELIABLE_FINAL_PREDICTION = 5;
-const MAX_RELIABLE_ABSOLUTE_ERROR = 2.5;
+const SHOCK_ACTUAL_CHANGE_THRESHOLD = 6;
+const SHOCK_ABSOLUTE_ERROR_THRESHOLD = 2.5;
+const SHOCK_FINAL_PREDICTION_THRESHOLD = 5;
+
 const DIRECTION_EPSILON = 0.01;
 const PRICE_CHANGE_TOLERANCE = 0.0001;
 const DAILY_CHANGE_WARNING_TOLERANCE = 0.10;
@@ -56,10 +56,7 @@ function directionHit(predicted, actual) {
   const a = num(actual, null);
 
   if (p === null || a === null) return null;
-
-  if (Math.abs(p) < DIRECTION_EPSILON || Math.abs(a) < DIRECTION_EPSILON) {
-    return null;
-  }
+  if (Math.abs(p) < DIRECTION_EPSILON || Math.abs(a) < DIRECTION_EPSILON) return null;
 
   return direction(p) === direction(a);
 }
@@ -83,17 +80,20 @@ function getBiasLabel(averageError) {
   return "Dengeli";
 }
 
-function getLearningStatus(sampleSize, averageAbsoluteError, directionHitRate) {
+function getLearningStatus(sampleSize, averageAbsoluteError, directionHitRate, shockRows) {
   const n = num(sampleSize, 0);
   const err = num(averageAbsoluteError, null);
   const hit = num(directionHitRate, null);
+  const shocks = num(shockRows, 0);
 
   if (n === 0) return "Henüz öğrenme verisi yok";
   if (n < 5) return "Örnek sayısı düşük";
+  if (shocks >= 3 && err !== null && err > 2.5) return "Şok öğrenmesi gerekli / causal engine öncelikli";
   if (err !== null && err <= 0.10 && hit !== null && hit >= 70) return "Hedefe yakın öğreniyor";
   if (err !== null && err <= 0.35 && hit !== null && hit >= 60) return "İyi öğreniyor";
   if (err !== null && err <= 0.65) return "Öğreniyor";
-  if (err !== null && err > 1.25) return "Sapma yüksek";
+  if (err !== null && err <= 1.00) return "Takip ediliyor";
+  if (err !== null && err > 1.25) return "Model yaklaşımı gözden geçirilmeli";
   return "Takip ediliyor";
 }
 
@@ -149,6 +149,10 @@ function finalSelectionTimeMs(row) {
 }
 
 function makeFinalKey(row) {
+  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+}
+
+function makePerformanceKey(row) {
   return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
 }
 
@@ -239,25 +243,12 @@ function authStatus(req) {
   const querySecret = req.query && req.query.secret;
   const manualKey = req.query && req.query.manual;
 
-  const authorizedByHeader =
-    cronSecret && authHeader === `Bearer ${cronSecret}`;
+  const authorizedByHeader = cronSecret && authHeader === `Bearer ${cronSecret}`;
+  const authorizedByQuery = cronSecret && querySecret === cronSecret;
+  const authorizedByManual = manualKey === "finscope";
 
-  const authorizedByQuery =
-    cronSecret && querySecret === cronSecret;
-
-  const authorizedByManual =
-    manualKey === "finscope";
-
-  if (
-    cronSecret &&
-    !authorizedByHeader &&
-    !authorizedByQuery &&
-    !authorizedByManual
-  ) {
-    return {
-      ok: false,
-      reason: "Yetkisiz istek."
-    };
+  if (cronSecret && !authorizedByHeader && !authorizedByQuery && !authorizedByManual) {
+    return { ok: false, reason: "Yetkisiz istek." };
   }
 
   return {
@@ -364,18 +355,12 @@ async function getFundPriceRows() {
   return Array.isArray(rows) ? rows : [];
 }
 
-function makePerformanceKey(row) {
-  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
-}
-
 function buildExistingPerformanceMap(rows) {
   const map = new Map();
 
   for (const row of rows || []) {
     const key = makePerformanceKey(row);
-    if (!map.has(key)) {
-      map.set(key, []);
-    }
+    if (!map.has(key)) map.set(key, []);
     map.get(key).push(row);
   }
 
@@ -392,18 +377,13 @@ function validateFinalRow(finalRow) {
   const finalPrediction = num(finalRow.final_prediction_change, null);
   const issues = [];
 
-  if (!FUNDS.includes(fundCode)) {
-    issues.push("fund_code_invalid");
-  }
-
-  if (!dateText(finalRow.prediction_date)) {
-    issues.push("prediction_date_missing");
-  }
+  if (!FUNDS.includes(fundCode)) issues.push("fund_code_invalid");
+  if (!dateText(finalRow.prediction_date)) issues.push("prediction_date_missing");
 
   if (finalPrediction === null) {
     issues.push("final_prediction_change_missing");
   } else if (Math.abs(finalPrediction) > MAX_ABSOLUTE_FINAL_PREDICTION) {
-    issues.push("final_prediction_change_out_of_range");
+    issues.push("final_prediction_change_out_of_absolute_range");
   }
 
   return {
@@ -489,17 +469,9 @@ function findNextActualPriceForFinal(finalRow, priceSeries) {
 
   const issues = [];
 
-  if (!previousRow) {
-    issues.push("previous_price_not_available");
-  }
-
-  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
-    issues.push("actual_price_invalid_or_zero");
-  }
-
-  if (previousPrice === null || previousPrice <= MIN_VALID_PRICE) {
-    issues.push("previous_price_invalid_or_zero");
-  }
+  if (!previousRow) issues.push("previous_price_not_available");
+  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) issues.push("actual_price_invalid_or_zero");
+  if (previousPrice === null || previousPrice <= MIN_VALID_PRICE) issues.push("previous_price_invalid_or_zero");
 
   let calculatedActualChange = null;
 
@@ -510,7 +482,7 @@ function findNextActualPriceForFinal(finalRow, priceSeries) {
   if (calculatedActualChange === null) {
     issues.push("actual_change_calculation_failed");
   } else if (Math.abs(calculatedActualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
-    issues.push("actual_change_out_of_range");
+    issues.push(`actual_change_out_of_absolute_range_abs_gt_${MAX_ABSOLUTE_ACTUAL_CHANGE}`);
   }
 
   const storedVsCalculatedDifference =
@@ -541,58 +513,6 @@ function findNextActualPriceForFinal(finalRow, priceSeries) {
   };
 }
 
-function isReliablePerformanceRow(row) {
-  const predictionDate = dateText(row.prediction_date);
-  const actualPriceDate = dateText(row.actual_price_date);
-  const actualPrice = num(row.actual_price, null);
-  const actualChange = num(row.actual_change, null);
-  const finalPrediction = num(row.final_prediction_change, null);
-  const absoluteError = num(row.absolute_error, null);
-  const status = String(row.status || "").toLowerCase();
-  const grade = String(row.grade || "").toLowerCase();
-  const note = String(row.note || "").toLowerCase();
-
-  if (status !== "closed") {
-    return false;
-  }
-
-  if (grade.includes("karantina") || note.includes("karantina")) {
-    return false;
-  }
-
-  if (!predictionDate || !actualPriceDate) {
-    return false;
-  }
-
-  if (compareDateText(actualPriceDate, predictionDate) <= 0) {
-    return false;
-  }
-
-  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
-    return false;
-  }
-
-  if (actualChange === null || Math.abs(actualChange) > MAX_RELIABLE_ACTUAL_CHANGE) {
-    return false;
-  }
-
-  if (
-    finalPrediction === null ||
-    Math.abs(finalPrediction) > MAX_RELIABLE_FINAL_PREDICTION
-  ) {
-    return false;
-  }
-
-  if (
-    absoluteError === null ||
-    Math.abs(absoluteError) > MAX_RELIABLE_ABSOLUTE_ERROR
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
 function buildPerformancePayload(finalRow, actualMatch) {
   const finalPrediction = num(finalRow.final_prediction_change, null);
   const actualChange = num(actualMatch.actualChange, null);
@@ -600,9 +520,7 @@ function buildPerformancePayload(finalRow, actualMatch) {
   const errorChange = actualChange - finalPrediction;
   const absoluteError = Math.abs(errorChange);
 
-  const predictedDirection =
-    finalRow.predicted_direction || direction(finalPrediction);
-
+  const predictedDirection = finalRow.predicted_direction || direction(finalPrediction);
   const actualDirection = direction(actualChange);
   const hit = directionHit(finalPrediction, actualChange);
 
@@ -613,7 +531,7 @@ function buildPerformancePayload(finalRow, actualMatch) {
     prediction_date: dateText(finalRow.prediction_date),
 
     model: finalRow.model || ACTIVE_MODEL,
-    model_version: finalRow.model_version || MODEL_VERSION,
+    model_version: MODEL_VERSION,
 
     final_prediction_change: round(finalPrediction, 6),
     actual_change: round(actualChange, 6),
@@ -627,7 +545,7 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
     grade: gradeFromError(absoluteError),
     note:
-      "v8.9: Sapma = sonraki TEFAS iş günü gerçekleşen fiyat değişimi - prediction_finals kilitli nihai tahmin. Gerçekleşme, fund_prices.daily_change alanından değil fiyat oranından hesaplanır.",
+      "v9.0: Sapma = sonraki TEFAS iş günü gerçekleşen fiyat değişimi - prediction_finals kilitli nihai tahmin. Büyük ve fiyat zinciriyle tutarlı hareketler karantina yerine shock_closed olarak izlenir.",
 
     actual_price: round(actualMatch.actualPrice, 8),
     actual_price_date: actualMatch.actualPriceDate,
@@ -641,57 +559,64 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
 function evaluatePerformanceQuality(payload, actualMatch) {
   const reasons = [];
+  const warnings = [];
+  const shockReasons = [];
 
   const fundCode = String(payload.fund_code || "").toUpperCase();
+  const actualPrice = num(payload.actual_price, null);
   const actualChange = num(payload.actual_change, null);
   const finalPrediction = num(payload.final_prediction_change, null);
   const absoluteError = num(payload.absolute_error, null);
 
-  if (!FUNDS.includes(fundCode)) {
-    reasons.push("fund_code_invalid");
+  if (!FUNDS.includes(fundCode)) reasons.push("fund_code_invalid");
+
+  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) {
+    reasons.push("actual_price_invalid_or_zero");
   }
 
   if (actualChange === null) {
     reasons.push("actual_change_missing");
-  } else if (Math.abs(actualChange) > MAX_RELIABLE_ACTUAL_CHANGE) {
-    reasons.push(
-      `actual_change_outlier_abs_gt_${MAX_RELIABLE_ACTUAL_CHANGE}`
-    );
+  } else if (Math.abs(actualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) {
+    reasons.push(`actual_change_out_of_absolute_range_abs_gt_${MAX_ABSOLUTE_ACTUAL_CHANGE}`);
+  } else if (Math.abs(actualChange) > SHOCK_ACTUAL_CHANGE_THRESHOLD) {
+    shockReasons.push(`real_price_shock_abs_actual_change_gt_${SHOCK_ACTUAL_CHANGE_THRESHOLD}`);
   }
 
   if (finalPrediction === null) {
     reasons.push("final_prediction_missing");
-  } else if (Math.abs(finalPrediction) > MAX_RELIABLE_FINAL_PREDICTION) {
-    reasons.push(
-      `final_prediction_outlier_abs_gt_${MAX_RELIABLE_FINAL_PREDICTION}`
-    );
+  } else if (Math.abs(finalPrediction) > MAX_ABSOLUTE_FINAL_PREDICTION) {
+    reasons.push(`final_prediction_out_of_absolute_range_abs_gt_${MAX_ABSOLUTE_FINAL_PREDICTION}`);
+  } else if (Math.abs(finalPrediction) > SHOCK_FINAL_PREDICTION_THRESHOLD) {
+    shockReasons.push(`model_final_prediction_extreme_abs_gt_${SHOCK_FINAL_PREDICTION_THRESHOLD}`);
   }
 
   if (absoluteError === null) {
     reasons.push("absolute_error_missing");
-  } else if (Math.abs(absoluteError) > MAX_RELIABLE_ABSOLUTE_ERROR) {
-    reasons.push(
-      `absolute_error_outlier_abs_gt_${MAX_RELIABLE_ABSOLUTE_ERROR}`
-    );
+  } else if (Math.abs(absoluteError) > SHOCK_ABSOLUTE_ERROR_THRESHOLD) {
+    shockReasons.push(`large_model_miss_abs_error_gt_${SHOCK_ABSOLUTE_ERROR_THRESHOLD}`);
   }
 
   if (actualMatch && actualMatch.dailyChangeWarning) {
-    reasons.push("stored_daily_change_mismatch_warning");
+    warnings.push("stored_daily_change_mismatch_warning");
   }
 
-  const reliable = reasons.length === 0;
+  const quarantined = reasons.length > 0;
+  const shocked = !quarantined && shockReasons.length > 0;
 
   return {
-    reliable,
-    status: reliable ? "closed" : "quarantined",
-    grade: reliable ? payload.grade : "Karantina",
-    reasons
+    reliable: !quarantined,
+    learningEligible: !quarantined,
+    shock: shocked,
+    status: quarantined ? "quarantined" : shocked ? "shock_closed" : "closed",
+    grade: quarantined ? "Karantina" : shocked ? "Şok" : payload.grade,
+    reasons,
+    warnings,
+    shockReasons
   };
 }
 
 function performanceNeedsUpsert(existingRows, payload, forceRepair) {
   if (forceRepair) return true;
-
   if (!existingRows || !existingRows.length) return true;
 
   const existing = existingRows[0];
@@ -700,14 +625,8 @@ function performanceNeedsUpsert(existingRows, payload, forceRepair) {
   const payloadActualDate = dateText(payload.actual_price_date);
 
   if (existingActualDate !== payloadActualDate) return true;
-
-  if (String(existing.status || "") !== String(payload.status || "")) {
-    return true;
-  }
-
-  if (String(existing.grade || "") !== String(payload.grade || "")) {
-    return true;
-  }
+  if (String(existing.status || "") !== String(payload.status || "")) return true;
+  if (String(existing.grade || "") !== String(payload.grade || "")) return true;
 
   const fields = [
     "actual_change",
@@ -743,14 +662,39 @@ async function upsertPerformanceRows(payloads) {
   });
 }
 
+function isLearningPerformanceRow(row) {
+  const status = String(row.status || "").toLowerCase();
+  const predictionDate = dateText(row.prediction_date);
+  const actualPriceDate = dateText(row.actual_price_date);
+  const actualPrice = num(row.actual_price, null);
+  const actualChange = num(row.actual_change, null);
+  const finalPrediction = num(row.final_prediction_change, null);
+  const absoluteError = num(row.absolute_error, null);
+
+  if (status !== "closed" && status !== "shock_closed") return false;
+  if (!predictionDate || !actualPriceDate) return false;
+  if (compareDateText(actualPriceDate, predictionDate) <= 0) return false;
+  if (actualPrice === null || actualPrice <= MIN_VALID_PRICE) return false;
+  if (actualChange === null || Math.abs(actualChange) > MAX_ABSOLUTE_ACTUAL_CHANGE) return false;
+  if (finalPrediction === null || Math.abs(finalPrediction) > MAX_ABSOLUTE_FINAL_PREDICTION) return false;
+  if (absoluteError === null) return false;
+
+  return true;
+}
+
+function isShockLearningRow(row) {
+  return String(row.status || "").toLowerCase() === "shock_closed";
+}
+
 function computeLearningStatsForFund(fundCode, performanceRows) {
   const rows = performanceRows
     .filter(row => row.fund_code === fundCode)
     .filter(row => row.model === ACTIVE_MODEL)
-    .filter(isReliablePerformanceRow)
-    .sort((a, b) =>
-      String(b.prediction_date || "").localeCompare(String(a.prediction_date || ""))
-    );
+    .filter(isLearningPerformanceRow)
+    .sort((a, b) => String(b.prediction_date || "").localeCompare(String(a.prediction_date || "")));
+
+  const shockRows = rows.filter(isShockLearningRow);
+  const normalRows = rows.filter(row => !isShockLearningRow(row));
 
   const sampleSize = rows.length;
   const last5 = rows.slice(0, 5);
@@ -789,6 +733,8 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
     confidenceAdjustment = 2;
   } else if (averageAbsoluteError <= 1.00) {
     confidenceAdjustment = -3;
+  } else if (shockRows.length >= 3) {
+    confidenceAdjustment = -10;
   } else {
     confidenceAdjustment = -8;
   }
@@ -816,11 +762,7 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
     direction_hit_rate: round(directionHitRate, 4),
 
     bias_label: getBiasLabel(averageError),
-    learning_status: getLearningStatus(
-      sampleSize,
-      averageAbsoluteError,
-      directionHitRate
-    ),
+    learning_status: getLearningStatus(sampleSize, averageAbsoluteError, directionHitRate, shockRows.length),
 
     suggested_offset: suggestedOffset,
     confidence_adjustment: round(confidenceAdjustment, 6),
@@ -828,7 +770,7 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
     note:
       sampleSize === 0
         ? "Henüz güvenilir sonraki TEFAS günü kapanmış final performans kaydı yok."
-        : "v8.7: İstatistikler prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılan güvenilir performans kayıtlarından hesaplandı.",
+        : `v9.0: İstatistikler normal closed + shock_closed gerçek fiyat hareketlerinden hesaplandı. Normal kayıt: ${normalRows.length}, şok kayıt: ${shockRows.length}. Quarantined kayıtlar öğrenmeye alınmaz.`,
 
     updated_at: new Date().toISOString()
   };
@@ -836,11 +778,9 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
 
 async function updateLearningStats() {
   const allRows = await getAllPerformanceRowsForLearning();
-  const reliableRows = allRows.filter(isReliablePerformanceRow);
+  const learningRows = allRows.filter(isLearningPerformanceRow);
 
-  const payloads = FUNDS.map(fundCode =>
-    computeLearningStatsForFund(fundCode, reliableRows)
-  );
+  const payloads = FUNDS.map(fundCode => computeLearningStatsForFund(fundCode, learningRows));
 
   const path =
     "model_learning_stats" +
@@ -854,8 +794,8 @@ async function updateLearningStats() {
 
   return {
     savedRows: Array.isArray(saved) ? saved.length : 0,
-    reliablePerformanceRows: reliableRows.length,
-    ignoredPerformanceRows: allRows.length - reliableRows.length,
+    learningPerformanceRows: learningRows.length,
+    ignoredPerformanceRows: allRows.length - learningRows.length,
     rows: saved
   };
 }
@@ -876,7 +816,9 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const forceRepair = isTruthyQuery(queryValue(req, "force")) || isTruthyQuery(queryValue(req, "repair"));
+    const forceRepair =
+      isTruthyQuery(queryValue(req, "force")) ||
+      isTruthyQuery(queryValue(req, "repair"));
 
     const rawFinalRows = await getFinalRows(req);
     const finalRows = dedupeFinalRows(rawFinalRows);
@@ -919,7 +861,7 @@ module.exports = async function handler(req, res) {
           note:
             actualMatch.reason === "next_actual_price_not_available_yet"
               ? "Bu final tahmin için prediction_date sonrasındaki ilk TEFAS fiyatı henüz yok."
-              : "Gerçekleşen fiyat satırı şüpheli olduğu için performans kapatılmadı."
+              : "Gerçekleşen fiyat satırı mutlak güvenlik sınırını geçtiği veya hesaplanamadığı için performans kapatılmadı."
         });
         continue;
       }
@@ -930,10 +872,14 @@ module.exports = async function handler(req, res) {
       payload.status = quality.status;
       payload.grade = quality.grade;
 
-      if (!quality.reliable) {
+      if (quality.status === "quarantined") {
         payload.note =
-          `v8.9 STRICT GATE: Bu satır model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
-          "Performans kaydı denetim için saklanır; model_learning_stats sadece güvenilir closed kayıtları kullanır.";
+          `v9.0 SHOCK AWARE: Bu satır veri güvenliği nedeniyle model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
+          "Performans kaydı denetim için saklanır; model_learning_stats quarantined kayıtları kullanmaz.";
+      } else if (quality.status === "shock_closed") {
+        payload.note =
+          `v9.0 SHOCK AWARE: Büyük hareket gerçek fiyat zinciriyle kapatıldı ve shock_closed olarak saklandı. Şok nedenleri: ${quality.shockReasons.join(", ")}. ` +
+          "Bu kayıt veri hatası sayılmaz; v9.0 Causal NAV Engine için şok öğrenme örneği olarak korunur.";
       }
 
       const key = makePerformanceKey(payload);
@@ -952,7 +898,8 @@ module.exports = async function handler(req, res) {
           actualChange: payload.actual_change,
           finalPredictionChange: payload.final_prediction_change,
           errorChange: payload.error_change,
-          absoluteError: payload.absolute_error
+          absoluteError: payload.absolute_error,
+          qualityStatus: payload.status
         });
         continue;
       }
@@ -982,7 +929,9 @@ module.exports = async function handler(req, res) {
         directionHit: payload.direction_hit,
         grade: payload.grade,
         qualityStatus: quality.status,
-        qualityReasons: quality.reasons
+        qualityReasons: quality.reasons,
+        qualityWarnings: quality.warnings,
+        shockReasons: quality.shockReasons
       });
     }
 
@@ -995,8 +944,11 @@ module.exports = async function handler(req, res) {
     const createdCount = results.filter(row => row.reason === "performance_created").length;
     const correctedCount = results.filter(row => row.reason === "performance_corrected").length;
     const verifiedCount = results.filter(row => row.reason === "performance_already_closed_verified").length;
+
+    const normalClosedCount = results.filter(row => row.qualityStatus === "closed").length;
+    const shockClosedCount = results.filter(row => row.qualityStatus === "shock_closed").length;
     const quarantinedCount = results.filter(row => row.qualityStatus === "quarantined").length;
-    const reliableClosedCount = results.filter(row => row.qualityStatus === "closed").length;
+    const reliableClosedCount = normalClosedCount + shockClosedCount;
 
     return res.status(200).json({
       ok: true,
@@ -1012,20 +964,15 @@ module.exports = async function handler(req, res) {
       toDate: getToDate(req),
       forceRepair,
 
-      dataQualityGuard: {
+      shockAwarePerformance: {
         enabled: true,
-        minValidPrice: MIN_VALID_PRICE,
         maxAbsoluteActualChange: MAX_ABSOLUTE_ACTUAL_CHANGE,
-        maxReliableActualChange: MAX_RELIABLE_ACTUAL_CHANGE,
-        maxReliableFinalPrediction: MAX_RELIABLE_FINAL_PREDICTION,
-        maxReliableAbsoluteError: MAX_RELIABLE_ABSOLUTE_ERROR,
-        quarantineEnabled: true,
-        strictLearningGateEnabled: true,
-        nextActualPriceRequired: true,
-        actualChangeSource:
-          "calculated_from_next_tefas_price_and_previous_tefas_price",
-        storedDailyChangeUsedForPerformance: false,
-        dailyChangeWarningTolerance: DAILY_CHANGE_WARNING_TOLERANCE
+        maxAbsoluteFinalPrediction: MAX_ABSOLUTE_FINAL_PREDICTION,
+        shockActualChangeThreshold: SHOCK_ACTUAL_CHANGE_THRESHOLD,
+        shockAbsoluteErrorThreshold: SHOCK_ABSOLUTE_ERROR_THRESHOLD,
+        shockFinalPredictionThreshold: SHOCK_FINAL_PREDICTION_THRESHOLD,
+        policy:
+          "Büyük ama fiyat zinciriyle tutarlı TEFAS hareketleri quarantined değil shock_closed olur. Böylece PBR/PHE gibi gerçek sert düşüşler veri hatası sayılmaz ve Causal NAV Engine için korunur."
       },
 
       rawFinalRowsFound: rawFinalRows.length,
@@ -1033,12 +980,16 @@ module.exports = async function handler(req, res) {
       duplicateFinalRowsRemoved: rawFinalRows.length - finalRows.length,
       existingPerformanceRows: existingPerformanceRows.length,
 
-      closed: dedupedPayloads.length,
       payloadsBeforeDedupe: payloads.length,
       duplicatePayloadsRemoved,
+      savedPerformanceRows: Array.isArray(savedPerformanceRows) ? savedPerformanceRows.length : 0,
+
       created: createdCount,
       corrected: correctedCount,
       alreadyClosedVerified: verifiedCount,
+
+      normalClosed: normalClosedCount,
+      shockClosed: shockClosedCount,
       quarantined: quarantinedCount,
       reliableClosed: reliableClosedCount,
 
@@ -1046,31 +997,27 @@ module.exports = async function handler(req, res) {
       invalidActual: results.filter(row => row.reason === "actual_price_invalid_or_suspicious").length,
       invalidFinal: results.filter(row => row.reason === "invalid_final_prediction").length,
 
-      savedPerformanceRows: Array.isArray(savedPerformanceRows)
-        ? savedPerformanceRows.length
-        : 0,
-
       formula:
         "actual_change = ((next_tefas_price - previous_tefas_price) / previous_tefas_price) * 100; error_change = actual_change - final_prediction_change",
       source:
         "prediction_finals + fund_prices next available TEFAS price after prediction_date",
-      strictLearningGate:
-        "Learning stats use only status=closed rows with abs(actual_change)<=6, abs(final_prediction)<=5 and abs(error_change)<=2.5.",
+      learningPolicy:
+        "model_learning_stats status=closed ve status=shock_closed gerçek fiyat hareketlerini kullanır. status=quarantined kayıtlar öğrenmeye alınmaz.",
       learningStatsUpdated: learningStats.savedRows,
-      learningStatsReliableRows: learningStats.reliablePerformanceRows,
+      learningStatsLearningRows: learningStats.learningPerformanceRows,
       learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
 
       rule:
-        "v8.9.1: prediction_date tarihli final tahmin, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Abs(actual_change) > 6, abs(final_prediction) > 5 veya abs(error) > 2.5 ise satır karantinaya alınır ve öğrenme istatistiğine dahil edilmez. Bu sürüm duplicate final kayıtlarını tekilleştirir ve response çıktısını hafifletir.",
+        "v9.0: prediction_date tarihli final tahmin, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Büyük ama fiyat zinciriyle tutarlı hareketler shock_closed olur; veri geçersizliği veya mutlak güvenlik sınırı aşımı quarantined olur.",
 
       resultCount: results.length,
-      resultSample: results.slice(0, 60),
+      resultSample: results.slice(0, 80),
       savedPerformanceRowsSample: Array.isArray(savedPerformanceRows)
-        ? savedPerformanceRows.slice(0, 20)
+        ? savedPerformanceRows.slice(0, 30)
         : [],
       learningStatsSummary: {
         savedRows: learningStats.savedRows,
-        reliablePerformanceRows: learningStats.reliablePerformanceRows,
+        learningPerformanceRows: learningStats.learningPerformanceRows,
         ignoredPerformanceRows: learningStats.ignoredPerformanceRows
       }
     });
