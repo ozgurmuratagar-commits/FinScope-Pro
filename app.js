@@ -25,9 +25,9 @@ const MARKET_LABELS = {
 const FUND_ORDER = ["PBR", "PHE", "TLY", "THF"];
 const FUND_CARD_ORDER = FUND_ORDER.slice();
 
-const FRONTEND_VERSION = "Read-Only Frontend v8.9.2";
-const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.9.2 - THF Frontend Integration";
-const DISPLAY_MODEL_SHORT = "v8.9.2";
+const FRONTEND_VERSION = "Read-Only Frontend v8.9.4";
+const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v8.9.4 - Performance UI Sync";
+const DISPLAY_MODEL_SHORT = "v8.9.4";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -157,7 +157,7 @@ function getModelLabel(predictionsJson) {
 
   /*
     MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalabilir.
-    Kullanıcıya gösterilen aktif frontend entegrasyon adı v8.9.2 olmalıdır.
+    Kullanıcıya gösterilen aktif frontend entegrasyon adı v8.9.4 olmalıdır.
   */
   return DISPLAY_MODEL_NAME;
 }
@@ -307,7 +307,7 @@ function renderPredictionSummary(predictionsJson) {
 
   lines.push(`
     <div class="summary-line yellow">
-      ${escapeHtml(FRONTEND_VERSION)}: Tahmin Özeti artık PBR / PHE / TLY / THF sırasını kullanır ve sayfa açılışında /api/predict çalıştırmaz.
+      ${escapeHtml(FRONTEND_VERSION)}: Tahmin Özeti PBR / PHE / TLY / THF sırasını kullanır; performans metrikleri artık karantina farkındalıklı okunur ve sayfa açılışında /api/predict çalıştırılmaz.
     </div>
   `);
 
@@ -383,7 +383,7 @@ function renderAiAnalyst(predictionsJson) {
       Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
     </div>
     <div class="summary-line">
-      ${escapeHtml(FRONTEND_VERSION)} - THF entegrasyonu ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+      ${escapeHtml(FRONTEND_VERSION)} - Performance UI Sync ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve karantina farkındalıklı /api/performance okur.
     </div>
   `;
 }
@@ -501,15 +501,23 @@ function learningStatusFromMetrics(completedRows, avgAbsError, directionHitRate)
     return "İyi çalışıyor";
   }
 
-  if (absError !== null && absError > 0.85) {
-    return "Model yaklaşımı gözden geçirilmeli";
+  if (absError !== null && absError <= 0.65 && directionRate !== null && directionRate >= 70) {
+    return "Öğreniyor / kullanılabilir";
+  }
+
+  if (absError !== null && absError <= 0.90 && directionRate !== null && directionRate >= 60) {
+    return "Takip ediliyor";
   }
 
   if (directionRate !== null && directionRate < 50) {
     return "Yön tahmini zayıf";
   }
 
-  return "İzlenmeli";
+  if (absError !== null && absError > 1.25) {
+    return "Model yaklaşımı gözden geçirilmeli";
+  }
+
+  return "Geliştiriliyor";
 }
 
 function buildFundLearningPanel(performanceJson, performanceRows) {
@@ -547,15 +555,23 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
       return "İyi çalışıyor";
     }
 
-    if (absError !== null && absError > 0.85) {
-      return "Model yaklaşımı gözden geçirilmeli";
+    if (absError !== null && absError <= 0.65 && hitRate !== null && hitRate >= 70) {
+      return "Öğreniyor / kullanılabilir";
+    }
+
+    if (absError !== null && absError <= 0.90 && hitRate !== null && hitRate >= 60) {
+      return "Takip ediliyor";
     }
 
     if (hitRate !== null && hitRate < 50) {
       return "Yön tahmini zayıf";
     }
 
-    return "İzlenmeli";
+    if (absError !== null && absError > 1.25) {
+      return "Model yaklaşımı gözden geçirilmeli";
+    }
+
+    return "Geliştiriliyor";
   }
 
   function offsetLabel(value) {
@@ -595,11 +611,21 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
 
     const completedRows = firstNumber(
       [
+        stat.reliableCompletedRows,
         stat.completedRows,
         learning.completedPredictionCount,
         learning.sampleSize
       ],
       fundRows.length
+    );
+
+    const quarantinedRows = firstNumber(
+      [
+        stat.quarantinedRows,
+        stat.quarantineRows,
+        learning.quarantinedRows
+      ],
+      0
     );
 
     const averageAbsError = firstNumber(
@@ -655,6 +681,7 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
       <tr>
         <td><b>${escapeHtml(code)}</b></td>
         <td>${formatNumber(completedRows, 0)}</td>
+        <td>${formatNumber(quarantinedRows, 0)}</td>
         <td><b>${formatPercent(averageAbsError, 2)}</b></td>
         <td class="${avgErrorClass}">
           ${averageError === null ? "—" : formatPercent(averageError, 2)}
@@ -673,7 +700,7 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
   return `
     <div class="summary-line">
       <b>Fon Bazlı Öğrenme ve Sapma</b><br />
-      Bu bölümde her fon ayrı değerlendirilir. Genel ortalama sadece sistem özeti olarak kalır.
+      Bu bölümde her fon ayrı değerlendirilir. Ortalama değerler yalnızca güvenilir closed kayıtlarla hesaplanır; karantina kayıtları ayrı sayılır.
       <br />
       <b>Ortalama Mutlak Sapma</b>: |Gerçekleşen - Nihai Tahmin| ortalamasıdır; tahminin büyüklük hatasını gösterir.
       <br />
@@ -688,7 +715,8 @@ function buildFundLearningPanel(performanceJson, performanceRows) {
       <thead>
         <tr>
           <th>Fon</th>
-          <th>Kapanan</th>
+          <th>Güvenilir Kapanan</th>
+          <th>Karantina</th>
           <th>Ortalama Mutlak Sapma</th>
           <th>Ortalama Yönlü Hata</th>
           <th>Tahmin Eğilimi</th>
@@ -716,18 +744,58 @@ function renderPerformance(performanceJson) {
   const summary = performanceJson.summary || {};
   const performanceRows = getLatestPerformanceRows(performanceJson);
 
-  const totalRows = summary.totalRows ?? performanceRows.length;
-  const pendingRows =
-    summary.pendingRows ??
+  const rawCounts = performanceJson.rawCounts || {};
+
+  const reliableCompletedRows = firstNumber(
+    [
+      summary.reliableCompletedRows,
+      summary.completedRows,
+      rawCounts.reliablePerformanceRows
+    ],
+    performanceRows.filter(function(row) {
+      return row && isCompletedPerformanceStatus(row.status) && !isQuarantinedPerformanceStatus(row.status);
+    }).length
+  );
+
+  const quarantinedRows = firstNumber(
+    [
+      summary.quarantinedRows,
+      rawCounts.quarantinedPerformanceRows
+    ],
+    0
+  );
+
+  const pendingRows = firstNumber(
+    [
+      summary.pendingRows,
+      rawCounts.pendingFinalRows
+    ],
     performanceRows.filter(function(row) {
       return row && !isCompletedPerformanceStatus(row.status) && !isQuarantinedPerformanceStatus(row.status);
-    }).length;
+    }).length
+  );
 
-  const completedRows =
-    summary.completedRows ??
-    performanceRows.filter(function(row) {
-      return row && isCompletedPerformanceStatus(row.status);
-    }).length;
+  const rawTotalRows = firstNumber(
+    [
+      summary.rawTotalRows,
+      summary.totalRawRows,
+      rawCounts.predictionPerformanceRows
+    ],
+    reliableCompletedRows + quarantinedRows + pendingRows
+  );
+
+  const reliableTotalRows = firstNumber(
+    [
+      summary.reliableTotalRows,
+      summary.totalRows
+    ],
+    reliableCompletedRows + pendingRows
+  );
+
+  const quarantineRate = firstNumber(
+    [summary.quarantineRate],
+    rawTotalRows ? (quarantinedRows / rawTotalRows) * 100 : null
+  );
 
   const avgError =
     summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
@@ -804,26 +872,35 @@ function renderPerformance(performanceJson) {
   box.innerHTML = `
     <div class="performance-grid">
       <div class="metric">
-        <div class="metric-label">Toplam Kayıt</div>
-        <div class="metric-value">${formatNumber(totalRows, 0)}</div>
+        <div class="metric-label">Güvenilir Kapanmış Kayıt</div>
+        <div class="metric-value up">${formatNumber(reliableCompletedRows, 0)}</div>
       </div>
       <div class="metric">
-        <div class="metric-label">Bekleyen Tahmin</div>
-        <div class="metric-value yellow">${formatNumber(pendingRows, 0)}</div>
+        <div class="metric-label">Karantina</div>
+        <div class="metric-value yellow">${formatNumber(quarantinedRows, 0)}</div>
       </div>
       <div class="metric">
-        <div class="metric-label">Tamamlanan Tahmin</div>
-        <div class="metric-value up">${formatNumber(completedRows, 0)}</div>
+        <div class="metric-label">Ham Toplam</div>
+        <div class="metric-value">${formatNumber(rawTotalRows, 0)}</div>
       </div>
       <div class="metric">
         <div class="metric-label">Genel Ortalama Sapma</div>
         <div class="metric-value">${avgError}</div>
       </div>
+      <div class="metric">
+        <div class="metric-label">Yön İsabeti</div>
+        <div class="metric-value up">${directionRate}</div>
+      </div>
     </div>
 
     <div class="summary-line">
-      Genel yön isabet oranı: <b>${directionRate}</b>.
-      Genel ortalama sapma, tüm fonların toplam performansını gösterir; fon bazlı karar için aşağıdaki öğrenme tablosu kullanılmalıdır.
+      <b>Karantina farkındalıklı performans:</b>
+      Genel ortalama sapma ve yön isabeti yalnızca güvenilir closed kayıtlarla hesaplanır.
+      Karantina kayıtları genel ortalamaya dahil edilmez.
+      <br />
+      Güvenilir toplam: <b>${formatNumber(reliableTotalRows, 0)}</b>
+      • Bekleyen tahmin: <b>${formatNumber(pendingRows, 0)}</b>
+      • Karantina oranı: <b>${formatPercent(quarantineRate, 2)}</b>.
       ${latestDateAvgError ? `Son tamamlanan gün ortalaması: <b>${latestDateAvgError}</b>.` : ""}
       <br />
       <b>${escapeHtml(finalLabel)}</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange alanından okunur.
