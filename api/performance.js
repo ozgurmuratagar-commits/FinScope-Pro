@@ -1,13 +1,15 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Performance API v8.9.3 - Quarantine Aware Performance API";
+const API_VERSION = "FinScope Performance API v9.0 - Shock Aware Performance API";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v8.9.1 - Strict Learning Gate";
+const MODEL_VERSION = "FinScope Prediction Engine v9.0 - Shock Aware Causal Prep";
 const FINAL_LABEL = "T-1 18:00 Nihai Tahmin";
 
-const MAX_RELIABLE_ACTUAL_CHANGE = 6;
-const MAX_RELIABLE_FINAL_PREDICTION = 5;
-const MAX_RELIABLE_ABSOLUTE_ERROR = 2.5;
+const MAX_VALID_ACTUAL_CHANGE = 35;
+const MAX_VALID_FINAL_PREDICTION = 20;
+
+const SHOCK_ACTUAL_CHANGE_THRESHOLD = 6;
+const SHOCK_ABSOLUTE_ERROR_THRESHOLD = 2.5;
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -23,14 +25,8 @@ function round(value, digits = 6) {
 
 function dateText(value) {
   if (!value) return null;
-  return String(value).slice(0, 10);
-}
-
-function boolOrNull(value) {
-  if (value === null || value === undefined) return null;
-  if (value === true || value === "true") return true;
-  if (value === false || value === "false") return false;
-  return Boolean(value);
+  const text = String(value).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
 function direction(value) {
@@ -38,16 +34,6 @@ function direction(value) {
   if (n > 0) return "up";
   if (n < 0) return "down";
   return "flat";
-}
-
-function gradeFromError(errorAbs) {
-  const e = Math.abs(num(errorAbs, 0));
-
-  if (e <= 0.25) return "Çok iyi";
-  if (e <= 0.50) return "İyi";
-  if (e <= 0.85) return "Makul";
-  if (e <= 1.25) return "Zayıf";
-  return "Çok zayıf";
 }
 
 function fundOrder(code) {
@@ -65,9 +51,18 @@ function sortDisplayRows(a, b) {
   return fundOrder(a.fundCode) - fundOrder(b.fundCode);
 }
 
-function isClosedStatus(value) {
+function isNormalClosedStatus(value) {
   const status = String(value || "").toLowerCase();
   return status === "closed" || status === "completed";
+}
+
+function isShockClosedStatus(value) {
+  const status = String(value || "").toLowerCase();
+  return status === "shock_closed";
+}
+
+function isReliableClosedStatus(value) {
+  return isNormalClosedStatus(value) || isShockClosedStatus(value);
 }
 
 function isQuarantinedStatus(value) {
@@ -75,11 +70,22 @@ function isQuarantinedStatus(value) {
   return status === "quarantined" || status === "karantina";
 }
 
-function reliabilityReasons(row) {
+function gradeFromError(errorAbs, shockClosed) {
+  if (shockClosed) return "Şok";
+
+  const e = Math.abs(num(errorAbs, 0));
+
+  if (e <= 0.10) return "Hedefte";
+  if (e <= 0.25) return "Çok iyi";
+  if (e <= 0.50) return "İyi";
+  if (e <= 0.85) return "Makul";
+  if (e <= 1.25) return "Zayıf";
+  return "Çok zayıf";
+}
+
+function shockReasonsFromRow(row) {
   const reasons = [];
 
-  const predictionDate = dateText(row.prediction_date);
-  const actualPriceDate = dateText(row.actual_price_date);
   const actualChange = num(row.actual_change, null);
   const finalPredictionChange = num(row.final_prediction_change, null);
 
@@ -93,12 +99,32 @@ function reliabilityReasons(row) {
       ? Math.abs(errorChange)
       : num(row.absolute_error, null);
 
-  if (isQuarantinedStatus(row.status)) {
+  if (actualChange !== null && Math.abs(actualChange) > SHOCK_ACTUAL_CHANGE_THRESHOLD) {
+    reasons.push(`real_price_shock_abs_actual_change_gt_${SHOCK_ACTUAL_CHANGE_THRESHOLD}`);
+  }
+
+  if (absoluteError !== null && Math.abs(absoluteError) > SHOCK_ABSOLUTE_ERROR_THRESHOLD) {
+    reasons.push(`large_model_miss_abs_error_gt_${SHOCK_ABSOLUTE_ERROR_THRESHOLD}`);
+  }
+
+  return reasons;
+}
+
+function reliabilityReasons(row) {
+  const reasons = [];
+
+  const rawStatus = String(row.status || "").toLowerCase();
+  const predictionDate = dateText(row.prediction_date);
+  const actualPriceDate = dateText(row.actual_price_date);
+  const actualChange = num(row.actual_change, null);
+  const finalPredictionChange = num(row.final_prediction_change, null);
+
+  if (isQuarantinedStatus(rawStatus)) {
     reasons.push("status_quarantined");
   }
 
-  if (!isClosedStatus(row.status)) {
-    reasons.push("status_not_closed");
+  if (!isReliableClosedStatus(rawStatus)) {
+    reasons.push("status_not_reliable_closed");
   }
 
   if (!predictionDate) {
@@ -115,24 +141,14 @@ function reliabilityReasons(row) {
 
   if (actualChange === null) {
     reasons.push("actual_change_missing");
-  } else if (Math.abs(actualChange) > MAX_RELIABLE_ACTUAL_CHANGE) {
-    reasons.push(`actual_change_outlier_abs_gt_${MAX_RELIABLE_ACTUAL_CHANGE}`);
+  } else if (Math.abs(actualChange) > MAX_VALID_ACTUAL_CHANGE) {
+    reasons.push(`actual_change_invalid_abs_gt_${MAX_VALID_ACTUAL_CHANGE}`);
   }
 
   if (finalPredictionChange === null) {
     reasons.push("final_prediction_missing");
-  } else if (Math.abs(finalPredictionChange) > MAX_RELIABLE_FINAL_PREDICTION) {
-    reasons.push(
-      `final_prediction_outlier_abs_gt_${MAX_RELIABLE_FINAL_PREDICTION}`
-    );
-  }
-
-  if (absoluteError === null) {
-    reasons.push("absolute_error_missing");
-  } else if (Math.abs(absoluteError) > MAX_RELIABLE_ABSOLUTE_ERROR) {
-    reasons.push(
-      `absolute_error_outlier_abs_gt_${MAX_RELIABLE_ABSOLUTE_ERROR}`
-    );
+  } else if (Math.abs(finalPredictionChange) > MAX_VALID_FINAL_PREDICTION) {
+    reasons.push(`final_prediction_invalid_abs_gt_${MAX_VALID_FINAL_PREDICTION}`);
   }
 
   return reasons;
@@ -177,12 +193,17 @@ async function supabaseRequest(path, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 900)}`
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1200)}`
     );
   }
 
   if (!text) return [];
-  return JSON.parse(text);
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Supabase JSON parse error: ${text.slice(0, 1200)}`);
+  }
 }
 
 async function getPerformanceRows() {
@@ -192,7 +213,7 @@ async function getPerformanceRows() {
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,closed_at.desc,updated_at.desc" +
-    "&limit=1000";
+    "&limit=10000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -205,7 +226,7 @@ async function getFinalRows() {
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     "&order=prediction_date.desc,finalized_at.desc,updated_at.desc" +
-    "&limit=1000";
+    "&limit=10000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -224,7 +245,7 @@ async function getLearningRows() {
 }
 
 function makeKey(row) {
-  return `${row.fund_code}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
 }
 
 function latestDate(rows, fieldName) {
@@ -237,6 +258,9 @@ function latestDate(rows, fieldName) {
 }
 
 function normalizeCompletedRow(row) {
+  const rawStatus = String(row.status || "").toLowerCase();
+  const shockClosed = isShockClosedStatus(rawStatus);
+
   const finalPredictionChange = num(row.final_prediction_change, null);
   const actualChange = num(row.actual_change, null);
 
@@ -250,20 +274,26 @@ function normalizeCompletedRow(row) {
       ? Math.abs(errorChange)
       : num(row.absolute_error, null);
 
+  const shockReasons = shockClosed
+    ? shockReasonsFromRow(row)
+    : [];
+
   return {
     id: row.id,
     finalId: row.final_id || null,
 
-    fundCode: row.fund_code,
+    fundCode: String(row.fund_code || "").toUpperCase(),
     predictionDate: dateText(row.prediction_date),
 
     model: row.model || ACTIVE_MODEL,
     modelVersion: row.model_version || null,
 
-    status: "completed",
+    status: shockClosed ? "shock_closed" : "shock_closed" : "completed",
     rawStatus: row.status || null,
     completed: true,
     reliableForMetrics: true,
+    shockClosed,
+    shockReasons,
     quarantineReasons: [],
 
     source: "prediction_performance",
@@ -285,13 +315,24 @@ function normalizeCompletedRow(row) {
     actualDirection:
       row.actual_direction || direction(actualChange),
 
-    directionHit: boolOrNull(row.direction_hit),
+    directionHit:
+      row.direction_hit === true ||
+      row.direction_hit === "true"
+        ? true
+        : row.direction_hit === false ||
+          row.direction_hit === "false"
+            ? false
+            : null,
 
-    grade: row.grade || gradeFromError(absoluteError),
+    grade: row.grade || gradeFromError(absoluteError, shockClosed),
 
     note:
       row.note ||
-      "Sapma = gerçekleşen TEFAS değişimi - tahmin tarihinden önceki gün 18:00 sonrası kilitlenen nihai tahmin.",
+      (
+        shockClosed
+          ? "Büyük ama gerçek fiyat zinciriyle tutarlı hareket. shock_closed olarak güvenilir performans içinde izlenir."
+          : "Sapma = gerçekleşen TEFAS değişimi - tahmin tarihinden önceki gün 18:00 sonrası kilitlenen nihai tahmin."
+      ),
 
     actualPrice: round(row.actual_price, 8),
     actualPriceDate: dateText(row.actual_price_date),
@@ -303,20 +344,79 @@ function normalizeCompletedRow(row) {
 }
 
 function normalizeQuarantinedRow(row) {
-  const normalized = normalizeCompletedRow(row);
+  const finalPredictionChange = num(row.final_prediction_change, null);
+  const actualChange = num(row.actual_change, null);
+
+  const errorChange =
+    actualChange !== null && finalPredictionChange !== null
+      ? actualChange - finalPredictionChange
+      : num(row.error_change, null);
+
+  const absoluteError =
+    errorChange !== null
+      ? Math.abs(errorChange)
+      : num(row.absolute_error, null);
+
   const reasons = reliabilityReasons(row);
 
   return {
-    ...normalized,
+    id: row.id,
+    finalId: row.final_id || null,
+
+    fundCode: String(row.fund_code || "").toUpperCase(),
+    predictionDate: dateText(row.prediction_date),
+
+    model: row.model || ACTIVE_MODEL,
+    modelVersion: row.model_version || null,
+
     status: "quarantined",
     rawStatus: row.status || "quarantined",
     completed: false,
     reliableForMetrics: false,
+    shockClosed: false,
+    shockReasons: [],
     quarantineReasons: reasons,
+
+    source: "prediction_performance",
+    finalPredictionSource: "prediction_finals.final_prediction_change",
+
+    actualChange: round(actualChange, 4),
+
+    finalPredictionChange: round(finalPredictionChange, 4),
+    finalPredictionLabel: FINAL_LABEL,
+
+    predictedChange: round(finalPredictionChange, 4),
+
+    errorChange: round(errorChange, 4),
+    absoluteError: round(absoluteError, 4),
+
+    predictedDirection:
+      row.predicted_direction || direction(finalPredictionChange),
+
+    actualDirection:
+      row.actual_direction || direction(actualChange),
+
+    directionHit:
+      row.direction_hit === true ||
+      row.direction_hit === "true"
+        ? true
+        : row.direction_hit === false ||
+          row.direction_hit === "false"
+            ? false
+            : null,
+
     grade: row.grade || "Karantina",
+
     note:
       row.note ||
-      `Strict Learning Gate: Bu kayıt genel performans ortalamasına ve öğrenme metriklerine dahil edilmedi. Nedenler: ${reasons.join(", ")}`
+      `v9.0: Bu kayıt güvenilir performans ortalamasına alınmadı. Nedenler: ${reasons.join(", ")}`,
+
+    actualPrice: round(row.actual_price, 8),
+    actualPriceDate: dateText(row.actual_price_date),
+
+    closedAt: row.closed_at || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
   };
 }
 
@@ -327,14 +427,19 @@ function normalizePendingFinalRow(row) {
     id: row.id,
     finalId: row.id,
 
-    fundCode: row.fund_code,
+    fundCode: String(row.fund_code || "").toUpperCase(),
     predictionDate: dateText(row.prediction_date),
 
     model: row.model || ACTIVE_MODEL,
     modelVersion: row.model_version || null,
 
     status: "waiting_actual",
+    rawStatus: "waiting_actual",
     completed: false,
+    reliableForMetrics: false,
+    shockClosed: false,
+    shockReasons: [],
+    quarantineReasons: [],
 
     source: "prediction_finals",
     finalPredictionSource: "prediction_finals.final_prediction_change",
@@ -422,14 +527,8 @@ function buildLearningMap(learningRows) {
           averageAbsoluteError: null,
           directionHitRate: null,
           biasLabel: "Veri yok",
-          learningStatus:
-            code === "THF"
-              ? "THF yeni fon; henüz kapanmış performans verisi yok"
-              : "Henüz öğrenme verisi yok",
-          note:
-            code === "THF"
-              ? "THF için öğrenme istatistiği, ilk final tahmin kapanışı tamamlandıktan sonra oluşacaktır."
-              : "model_learning_stats kaydı bulunamadı."
+          learningStatus: "Henüz öğrenme verisi yok",
+          note: "model_learning_stats kaydı bulunamadı."
         };
   }
 
@@ -466,6 +565,9 @@ function directionRate(rows) {
 }
 
 function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) {
+  const normalClosedRows = completedRows.filter(row => !row.shockClosed);
+  const shockClosedRows = completedRows.filter(row => row.shockClosed);
+
   const latestCompletedDate =
     completedRows.length > 0
       ? latestDate(
@@ -478,6 +580,8 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
     row => row.predictionDate === latestCompletedDate
   );
 
+  const latestShockRows = latestCompletedRows.filter(row => row.shockClosed);
+
   const allDirection = directionRate(completedRows);
   const latestDirection = directionRate(latestCompletedRows);
 
@@ -485,6 +589,8 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
 
   for (const code of FUNDS) {
     const fundRows = completedRows.filter(row => row.fundCode === code);
+    const fundNormalRows = fundRows.filter(row => !row.shockClosed);
+    const fundShockRows = fundRows.filter(row => row.shockClosed);
     const fundPendingRows = pendingRows.filter(row => row.fundCode === code);
     const fundQuarantinedRows = quarantinedRows.filter(row => row.fundCode === code);
     const fundDirection = directionRate(fundRows);
@@ -494,12 +600,17 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
 
       completedRows: fundRows.length,
       reliableCompletedRows: fundRows.length,
+      normalClosedRows: fundNormalRows.length,
+      shockClosedRows: fundShockRows.length,
       pendingRows: fundPendingRows.length,
       quarantinedRows: fundQuarantinedRows.length,
       rawPerformanceRows: fundRows.length + fundQuarantinedRows.length,
 
       averageAbsoluteError: round(averageNumber(fundRows, "absoluteError"), 4),
       averageError: round(averageNumber(fundRows, "errorChange"), 4),
+
+      normalAverageAbsoluteError: round(averageNumber(fundNormalRows, "absoluteError"), 4),
+      shockAverageAbsoluteError: round(averageNumber(fundShockRows, "absoluteError"), 4),
 
       directionHitCount: fundDirection.hitCount,
       directionTotalCount: fundDirection.totalCount,
@@ -513,10 +624,16 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
     totalRows: completedRows.length + pendingRows.length,
     reliableTotalRows: completedRows.length + pendingRows.length,
     rawTotalRows: completedRows.length + pendingRows.length + quarantinedRows.length,
+
     completedRows: completedRows.length,
     reliableCompletedRows: completedRows.length,
+
+    normalClosedRows: normalClosedRows.length,
+    shockClosedRows: shockClosedRows.length,
+
     pendingRows: pendingRows.length,
     quarantinedRows: quarantinedRows.length,
+
     quarantineRate:
       completedRows.length + quarantinedRows.length > 0
         ? round(
@@ -525,8 +642,16 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
           )
         : null,
 
+    shockRate:
+      completedRows.length > 0
+        ? round((shockClosedRows.length / completedRows.length) * 100, 2)
+        : null,
+
     averageAbsoluteError: round(averageNumber(completedRows, "absoluteError"), 4),
     averageError: round(averageNumber(completedRows, "errorChange"), 4),
+
+    normalAverageAbsoluteError: round(averageNumber(normalClosedRows, "absoluteError"), 4),
+    shockAverageAbsoluteError: round(averageNumber(shockClosedRows, "absoluteError"), 4),
 
     latestDateAverageAbsoluteError: round(
       averageNumber(latestCompletedRows, "absoluteError"),
@@ -536,6 +661,8 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
       averageNumber(latestCompletedRows, "errorChange"),
       4
     ),
+
+    latestDateShockRows: latestShockRows.length,
 
     directionHitCount: allDirection.hitCount,
     directionTotalCount: allDirection.totalCount,
@@ -559,13 +686,14 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
     fundOrder: FUNDS,
     thfIncluded: FUNDS.includes("THF"),
     thfCompletedRows: completedRows.filter(row => row.fundCode === "THF").length,
+    thfShockRows: completedRows.filter(row => row.fundCode === "THF" && row.shockClosed).length,
     thfPendingRows: pendingRows.filter(row => row.fundCode === "THF").length,
 
     formula:
       "Sapma = prediction_date sonrasındaki ilk TEFAS gerçekleşmesi - T-1 18:00 sonrası kilitlenen nihai tahmin",
 
     metricPolicy:
-      "averageAbsoluteError ve directionHitRate yalnızca status=closed olan ve Strict Learning Gate filtresinden geçen güvenilir performans kayıtlarından hesaplanır. Karantina kayıtları genel ortalamaya katılmaz; summary.quarantinedRows ve byFund[].quarantinedRows içinde ayrıca raporlanır.",
+      "v9.0: averageAbsoluteError ve directionHitRate status=closed + status=shock_closed güvenilir gerçek hareketlerinden hesaplanır. status=quarantined kayıtlar genel metriklere ve öğrenmeye katılmaz. shock_closed kayıtlar veri hatası değil, büyük gerçek fiyat hareketi olarak izlenir.",
 
     byFund
   };
@@ -597,6 +725,9 @@ module.exports = async function handler(req, res) {
       .map(normalizePendingFinalRow)
       .sort(sortDisplayRows);
 
+    const normalClosedRows = completedRows.filter(row => !row.shockClosed);
+    const shockClosedRows = completedRows.filter(row => row.shockClosed);
+
     const learningMap = buildLearningMap(learningRows);
     const summary = buildSummary(completedRows, pendingRows, quarantinedRows, learningMap);
 
@@ -608,21 +739,26 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
 
       source: "prediction_performance + prediction_finals + model_learning_stats",
+      shockAware: true,
       quarantineAware: true,
-      strictLearningGate: {
-        maxReliableActualChange: MAX_RELIABLE_ACTUAL_CHANGE,
-        maxReliableFinalPrediction: MAX_RELIABLE_FINAL_PREDICTION,
-        maxReliableAbsoluteError: MAX_RELIABLE_ABSOLUTE_ERROR,
+
+      shockAwarePerformance: {
+        enabled: true,
+        maxValidActualChange: MAX_VALID_ACTUAL_CHANGE,
+        maxValidFinalPrediction: MAX_VALID_FINAL_PREDICTION,
+        shockActualChangeThreshold: SHOCK_ACTUAL_CHANGE_THRESHOLD,
+        shockAbsoluteErrorThreshold: SHOCK_ABSOLUTE_ERROR_THRESHOLD,
         rule:
-          "Dashboard ortalamaları sadece güvenilir closed kayıtları kullanır; quarantined kayıtlar audit amaçlı ayrıca döner."
+          "status=shock_closed kayıtlar güvenilir performans kabul edilir; büyük gerçek hareket olarak izlenir. status=quarantined kayıtlar metriklere alınmaz."
       },
+
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
       fundOrder: FUNDS,
       thfIncluded: FUNDS.includes("THF"),
 
       selectionRule:
-        "Dashboard rows THF dahil yalnızca güvenilir closed performans kayıtlarını ve bekleyen final tahminleri döndürür. Karantina kayıtları genel metriklerden ayrıştırılır.",
+        "Dashboard rows THF dahil status=closed + status=shock_closed güvenilir performans kayıtlarını ve bekleyen final tahminleri döndürür. Karantina kayıtları genel metriklerden ayrıştırılır.",
 
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_finals.final_prediction_change",
@@ -631,6 +767,8 @@ module.exports = async function handler(req, res) {
 
       rows,
       completedRows,
+      normalClosedRows,
+      shockClosedRows,
       pendingFinalRows: pendingRows,
       quarantinedRows,
 
@@ -639,18 +777,23 @@ module.exports = async function handler(req, res) {
       rawCounts: {
         predictionPerformanceRows: performanceRows.length,
         reliablePerformanceRows: reliablePerformanceRows.length,
+        normalClosedPerformanceRows: normalClosedRows.length,
+        shockClosedPerformanceRows: shockClosedRows.length,
         quarantinedPerformanceRows: quarantinedPerformanceRows.length,
         predictionFinalRows: finalRows.length,
         modelLearningRows: learningRows.length,
+
         thfPerformanceRows: performanceRows.filter(row => row.fund_code === "THF").length,
         thfReliablePerformanceRows: reliablePerformanceRows.filter(row => row.fund_code === "THF").length,
+        thfNormalClosedPerformanceRows: normalClosedRows.filter(row => row.fundCode === "THF").length,
+        thfShockClosedPerformanceRows: shockClosedRows.filter(row => row.fundCode === "THF").length,
         thfQuarantinedPerformanceRows: quarantinedPerformanceRows.filter(row => row.fund_code === "THF").length,
         thfFinalRows: finalRows.filter(row => row.fund_code === "THF").length,
         thfLearningRows: learningRows.filter(row => row.fund_code === "THF").length
       },
 
       note:
-        "Bu API eski prediction_history satır seçme mantığını kullanmaz. Performans yalnızca kilitli T-1 final tahmin ve gerçekleşen TEFAS verisi üzerinden hesaplanır. v8.9.3 ile quarantined kayıtlar genel ortalama ve yön isabeti hesabından ayrılır."
+        "v9.0: Bu API artık shock_closed kayıtları güvenilir gerçek hareket olarak kabul eder. Büyük PBR/PHE düşüşleri veri hatası sayılmaz; Causal NAV Engine için şok örneği olarak korunur."
     });
   } catch (error) {
     return res.status(500).json({
@@ -658,7 +801,7 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
-      error: String(error.message || error)
+      error: String(error.message || error).slice(0, 1500)
     });
   }
 };
