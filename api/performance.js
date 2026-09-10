@@ -1,15 +1,12 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Performance API v9.0 - Shock Aware Performance API";
+const API_VERSION = "FinScope Performance API v9.0.1 - Safe Shock Aware Performance API";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v9.0 - Shock Aware Causal Prep";
+const MODEL_VERSION = "FinScope Prediction Engine v9.0.1 - Safe Shock Layer";
 const FINAL_LABEL = "T-1 18:00 Nihai Tahmin";
 
 const MAX_VALID_ACTUAL_CHANGE = 35;
 const MAX_VALID_FINAL_PREDICTION = 20;
-
-const SHOCK_ACTUAL_CHANGE_THRESHOLD = 6;
-const SHOCK_ABSOLUTE_ERROR_THRESHOLD = 2.5;
 
 function num(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -17,13 +14,13 @@ function num(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function round(value, digits = 6) {
+function round(value, digits = 4) {
   const n = num(value, null);
   if (n === null) return null;
   return Number(n.toFixed(digits));
 }
 
-function dateText(value) {
+function dateOnly(value) {
   if (!value) return null;
   const text = String(value).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
@@ -37,43 +34,38 @@ function direction(value) {
 }
 
 function fundOrder(code) {
-  const index = FUNDS.indexOf(code);
+  const index = FUNDS.indexOf(String(code || "").toUpperCase());
   return index === -1 ? 999 : index;
 }
 
-function sortDisplayRows(a, b) {
-  const dateCompare = String(b.predictionDate || "").localeCompare(
-    String(a.predictionDate || "")
-  );
-
-  if (dateCompare !== 0) return dateCompare;
-
+function sortRows(a, b) {
+  const d = String(b.predictionDate || "").localeCompare(String(a.predictionDate || ""));
+  if (d !== 0) return d;
   return fundOrder(a.fundCode) - fundOrder(b.fundCode);
 }
 
-function isNormalClosedStatus(value) {
-  const status = String(value || "").toLowerCase();
-  return status === "closed" || status === "completed";
+function isClosedStatus(status) {
+  const s = String(status || "").toLowerCase();
+  return s === "closed" || s === "completed";
 }
 
-function isShockClosedStatus(value) {
-  const status = String(value || "").toLowerCase();
-  return status === "shock_closed";
+function isShockStatus(status) {
+  return String(status || "").toLowerCase() === "shock_closed";
 }
 
-function isReliableClosedStatus(value) {
-  return isNormalClosedStatus(value) || isShockClosedStatus(value);
+function isQuarantineStatus(status) {
+  const s = String(status || "").toLowerCase();
+  return s === "quarantined" || s === "karantina";
 }
 
-function isQuarantinedStatus(value) {
-  const status = String(value || "").toLowerCase();
-  return status === "quarantined" || status === "karantina";
+function isReliableStatus(status) {
+  return isClosedStatus(status) || isShockStatus(status);
 }
 
-function gradeFromError(errorAbs, shockClosed) {
+function gradeFromError(absError, shockClosed) {
   if (shockClosed) return "Şok";
 
-  const e = Math.abs(num(errorAbs, 0));
+  const e = Math.abs(num(absError, 0));
 
   if (e <= 0.10) return "Hedefte";
   if (e <= 0.25) return "Çok iyi";
@@ -83,79 +75,53 @@ function gradeFromError(errorAbs, shockClosed) {
   return "Çok zayıf";
 }
 
-function shockReasonsFromRow(row) {
-  const reasons = [];
+function directionHitValue(row, finalPredictionChange, actualChange) {
+  if (row.direction_hit === true || row.direction_hit === "true") return true;
+  if (row.direction_hit === false || row.direction_hit === "false") return false;
 
-  const actualChange = num(row.actual_change, null);
-  const finalPredictionChange = num(row.final_prediction_change, null);
+  if (finalPredictionChange === null || actualChange === null) return null;
+  if (Math.abs(finalPredictionChange) < 0.01 || Math.abs(actualChange) < 0.01) return null;
 
-  const errorChange =
-    actualChange !== null && finalPredictionChange !== null
-      ? actualChange - finalPredictionChange
-      : num(row.error_change, null);
-
-  const absoluteError =
-    errorChange !== null
-      ? Math.abs(errorChange)
-      : num(row.absolute_error, null);
-
-  if (actualChange !== null && Math.abs(actualChange) > SHOCK_ACTUAL_CHANGE_THRESHOLD) {
-    reasons.push(`real_price_shock_abs_actual_change_gt_${SHOCK_ACTUAL_CHANGE_THRESHOLD}`);
-  }
-
-  if (absoluteError !== null && Math.abs(absoluteError) > SHOCK_ABSOLUTE_ERROR_THRESHOLD) {
-    reasons.push(`large_model_miss_abs_error_gt_${SHOCK_ABSOLUTE_ERROR_THRESHOLD}`);
-  }
-
-  return reasons;
+  return direction(finalPredictionChange) === direction(actualChange);
 }
 
-function reliabilityReasons(row) {
-  const reasons = [];
+function average(rows, field) {
+  const values = [];
 
-  const rawStatus = String(row.status || "").toLowerCase();
-  const predictionDate = dateText(row.prediction_date);
-  const actualPriceDate = dateText(row.actual_price_date);
-  const actualChange = num(row.actual_change, null);
-  const finalPredictionChange = num(row.final_prediction_change, null);
-
-  if (isQuarantinedStatus(rawStatus)) {
-    reasons.push("status_quarantined");
+  for (const row of rows) {
+    const value = num(row[field], null);
+    if (value !== null) values.push(value);
   }
 
-  if (!isReliableClosedStatus(rawStatus)) {
-    reasons.push("status_not_reliable_closed");
-  }
+  if (!values.length) return null;
 
-  if (!predictionDate) {
-    reasons.push("prediction_date_missing");
-  }
-
-  if (!actualPriceDate) {
-    reasons.push("actual_price_date_missing");
-  }
-
-  if (predictionDate && actualPriceDate && actualPriceDate <= predictionDate) {
-    reasons.push("actual_price_date_not_after_prediction_date");
-  }
-
-  if (actualChange === null) {
-    reasons.push("actual_change_missing");
-  } else if (Math.abs(actualChange) > MAX_VALID_ACTUAL_CHANGE) {
-    reasons.push(`actual_change_invalid_abs_gt_${MAX_VALID_ACTUAL_CHANGE}`);
-  }
-
-  if (finalPredictionChange === null) {
-    reasons.push("final_prediction_missing");
-  } else if (Math.abs(finalPredictionChange) > MAX_VALID_FINAL_PREDICTION) {
-    reasons.push(`final_prediction_invalid_abs_gt_${MAX_VALID_FINAL_PREDICTION}`);
-  }
-
-  return reasons;
+  return values.reduce(function(sum, value) {
+    return sum + value;
+  }, 0) / values.length;
 }
 
-function isReliablePerformanceRow(row) {
-  return reliabilityReasons(row).length === 0;
+function directionRate(rows) {
+  const usable = rows.filter(function(row) {
+    return row.directionHit === true || row.directionHit === false;
+  });
+
+  if (!usable.length) {
+    return {
+      hitCount: 0,
+      totalCount: 0,
+      rate: null
+    };
+  }
+
+  const hitCount = usable.filter(function(row) {
+    return row.directionHit === true;
+  }).length;
+
+  return {
+    hitCount: hitCount,
+    totalCount: usable.length,
+    rate: (hitCount / usable.length) * 100
+  };
 }
 
 function getSupabaseConfig() {
@@ -170,31 +136,25 @@ function getSupabaseConfig() {
     throw new Error("SUPABASE_URL veya Supabase key eksik.");
   }
 
-  return { url, key };
+  return { url: url, key: key };
 }
 
-async function supabaseRequest(path, options = {}) {
-  const { url, key } = getSupabaseConfig();
+async function supabaseGet(path) {
+  const config = getSupabaseConfig();
 
-  const response = await fetch(`${url}/rest/v1/${path}`, {
-    method: options.method || "GET",
+  const response = await fetch(config.url + "/rest/v1/" + path, {
+    method: "GET",
     headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Prefer: options.prefer || "return=representation",
-      ...(options.headers || {})
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined
+      apikey: config.key,
+      Authorization: "Bearer " + config.key,
+      Accept: "application/json"
+    }
   });
 
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1200)}`
-    );
+    throw new Error("Supabase GET " + path + " HTTP " + response.status + ": " + text.slice(0, 800));
   }
 
   if (!text) return [];
@@ -202,7 +162,7 @@ async function supabaseRequest(path, options = {}) {
   try {
     return JSON.parse(text);
   } catch (error) {
-    throw new Error(`Supabase JSON parse error: ${text.slice(0, 1200)}`);
+    throw new Error("Supabase JSON parse error: " + text.slice(0, 800));
   }
 }
 
@@ -211,11 +171,11 @@ async function getPerformanceRows() {
     "prediction_performance" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    "&order=prediction_date.desc,closed_at.desc,updated_at.desc" +
+    "&model=eq." + encodeURIComponent(ACTIVE_MODEL) +
+    "&order=prediction_date.desc" +
     "&limit=10000";
 
-  const rows = await supabaseRequest(path);
+  const rows = await supabaseGet(path);
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -224,11 +184,11 @@ async function getFinalRows() {
     "prediction_finals" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
-    "&order=prediction_date.desc,finalized_at.desc,updated_at.desc" +
+    "&model=eq." + encodeURIComponent(ACTIVE_MODEL) +
+    "&order=prediction_date.desc" +
     "&limit=10000";
 
-  const rows = await supabaseRequest(path);
+  const rows = await supabaseGet(path);
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -237,92 +197,99 @@ async function getLearningRows() {
     "model_learning_stats" +
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
-    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
+    "&model=eq." + encodeURIComponent(ACTIVE_MODEL) +
     "&order=fund_code.asc";
 
-  const rows = await supabaseRequest(path);
+  const rows = await supabaseGet(path);
   return Array.isArray(rows) ? rows : [];
 }
 
-function makeKey(row) {
-  return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
+function makeKeyFromPerformance(row) {
+  return [
+    String(row.fund_code || "").toUpperCase(),
+    dateOnly(row.prediction_date),
+    row.model || ACTIVE_MODEL
+  ].join("|");
 }
 
-function latestDate(rows, fieldName) {
-  const dates = rows
-    .map(row => dateText(row[fieldName]))
-    .filter(Boolean)
-    .sort();
-
-  return dates.length ? dates[dates.length - 1] : null;
+function makeKeyFromFinal(row) {
+  return [
+    String(row.fund_code || "").toUpperCase(),
+    dateOnly(row.prediction_date),
+    row.model || ACTIVE_MODEL
+  ].join("|");
 }
 
-function normalizeCompletedRow(row) {
-  const rawStatus = String(row.status || "").toLowerCase();
-  const shockClosed = isShockClosedStatus(rawStatus);
+function isReliablePerformanceRow(row) {
+  const status = String(row.status || "").toLowerCase();
+  const predictionDate = dateOnly(row.prediction_date);
+  const actualPriceDate = dateOnly(row.actual_price_date);
+  const actualChange = num(row.actual_change, null);
+  const finalPredictionChange = num(row.final_prediction_change, null);
+
+  if (!isReliableStatus(status)) return false;
+  if (!predictionDate || !actualPriceDate) return false;
+  if (actualPriceDate <= predictionDate) return false;
+
+  if (actualChange === null) return false;
+  if (Math.abs(actualChange) > MAX_VALID_ACTUAL_CHANGE) return false;
+
+  if (finalPredictionChange === null) return false;
+  if (Math.abs(finalPredictionChange) > MAX_VALID_FINAL_PREDICTION) return false;
+
+  return true;
+}
+
+function normalizePerformanceRow(row) {
+  const status = String(row.status || "").toLowerCase();
+  const shockClosed = isShockStatus(status);
 
   const finalPredictionChange = num(row.final_prediction_change, null);
   const actualChange = num(row.actual_change, null);
 
-  const errorChange =
-    actualChange !== null && finalPredictionChange !== null
-      ? actualChange - finalPredictionChange
-      : num(row.error_change, null);
+  let errorChange = num(row.error_change, null);
+
+  if (actualChange !== null && finalPredictionChange !== null) {
+    errorChange = actualChange - finalPredictionChange;
+  }
 
   const absoluteError =
-    errorChange !== null
-      ? Math.abs(errorChange)
-      : num(row.absolute_error, null);
+    errorChange === null
+      ? num(row.absolute_error, null)
+      : Math.abs(errorChange);
 
-  const shockReasons = shockClosed
-    ? shockReasonsFromRow(row)
-    : [];
+  const hit = directionHitValue(row, finalPredictionChange, actualChange);
 
   return {
-    id: row.id,
+    id: row.id || null,
     finalId: row.final_id || null,
 
     fundCode: String(row.fund_code || "").toUpperCase(),
-    predictionDate: dateText(row.prediction_date),
+    predictionDate: dateOnly(row.prediction_date),
 
     model: row.model || ACTIVE_MODEL,
-    modelVersion: row.model_version || null,
+    modelVersion: row.model_version || MODEL_VERSION,
 
-    status: shockClosed ? "shock_closed" : "shock_closed" : "completed",
+    status: shockClosed ? "shock_closed" : "completed",
     rawStatus: row.status || null,
     completed: true,
     reliableForMetrics: true,
-    shockClosed,
-    shockReasons,
-    quarantineReasons: [],
+    shockClosed: shockClosed,
 
     source: "prediction_performance",
     finalPredictionSource: "prediction_finals.final_prediction_change",
 
     actualChange: round(actualChange, 4),
-
     finalPredictionChange: round(finalPredictionChange, 4),
     finalPredictionLabel: FINAL_LABEL,
-
     predictedChange: round(finalPredictionChange, 4),
 
     errorChange: round(errorChange, 4),
     absoluteError: round(absoluteError, 4),
 
-    predictedDirection:
-      row.predicted_direction || direction(finalPredictionChange),
-
-    actualDirection:
-      row.actual_direction || direction(actualChange),
-
-    directionHit:
-      row.direction_hit === true ||
-      row.direction_hit === "true"
-        ? true
-        : row.direction_hit === false ||
-          row.direction_hit === "false"
-            ? false
-            : null,
+    predictedDirection: row.predicted_direction || direction(finalPredictionChange),
+    actualDirection: row.actual_direction || direction(actualChange),
+    directionHit: hit,
 
     grade: row.grade || gradeFromError(absoluteError, shockClosed),
 
@@ -331,11 +298,11 @@ function normalizeCompletedRow(row) {
       (
         shockClosed
           ? "Büyük ama gerçek fiyat zinciriyle tutarlı hareket. shock_closed olarak güvenilir performans içinde izlenir."
-          : "Sapma = gerçekleşen TEFAS değişimi - tahmin tarihinden önceki gün 18:00 sonrası kilitlenen nihai tahmin."
+          : "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 nihai tahmin."
       ),
 
     actualPrice: round(row.actual_price, 8),
-    actualPriceDate: dateText(row.actual_price_date),
+    actualPriceDate: dateOnly(row.actual_price_date),
 
     closedAt: row.closed_at || null,
     createdAt: row.created_at || null,
@@ -343,76 +310,58 @@ function normalizeCompletedRow(row) {
   };
 }
 
-function normalizeQuarantinedRow(row) {
+function normalizeQuarantineRow(row) {
   const finalPredictionChange = num(row.final_prediction_change, null);
   const actualChange = num(row.actual_change, null);
 
-  const errorChange =
-    actualChange !== null && finalPredictionChange !== null
-      ? actualChange - finalPredictionChange
-      : num(row.error_change, null);
+  let errorChange = num(row.error_change, null);
+
+  if (actualChange !== null && finalPredictionChange !== null) {
+    errorChange = actualChange - finalPredictionChange;
+  }
 
   const absoluteError =
-    errorChange !== null
-      ? Math.abs(errorChange)
-      : num(row.absolute_error, null);
-
-  const reasons = reliabilityReasons(row);
+    errorChange === null
+      ? num(row.absolute_error, null)
+      : Math.abs(errorChange);
 
   return {
-    id: row.id,
+    id: row.id || null,
     finalId: row.final_id || null,
 
     fundCode: String(row.fund_code || "").toUpperCase(),
-    predictionDate: dateText(row.prediction_date),
+    predictionDate: dateOnly(row.prediction_date),
 
     model: row.model || ACTIVE_MODEL,
-    modelVersion: row.model_version || null,
+    modelVersion: row.model_version || MODEL_VERSION,
 
     status: "quarantined",
     rawStatus: row.status || "quarantined",
     completed: false,
     reliableForMetrics: false,
     shockClosed: false,
-    shockReasons: [],
-    quarantineReasons: reasons,
 
     source: "prediction_performance",
     finalPredictionSource: "prediction_finals.final_prediction_change",
 
     actualChange: round(actualChange, 4),
-
     finalPredictionChange: round(finalPredictionChange, 4),
     finalPredictionLabel: FINAL_LABEL,
-
     predictedChange: round(finalPredictionChange, 4),
 
     errorChange: round(errorChange, 4),
     absoluteError: round(absoluteError, 4),
 
-    predictedDirection:
-      row.predicted_direction || direction(finalPredictionChange),
-
-    actualDirection:
-      row.actual_direction || direction(actualChange),
-
-    directionHit:
-      row.direction_hit === true ||
-      row.direction_hit === "true"
-        ? true
-        : row.direction_hit === false ||
-          row.direction_hit === "false"
-            ? false
-            : null,
+    predictedDirection: row.predicted_direction || direction(finalPredictionChange),
+    actualDirection: row.actual_direction || direction(actualChange),
+    directionHit: directionHitValue(row, finalPredictionChange, actualChange),
 
     grade: row.grade || "Karantina",
 
-    note:
-      row.note ||
-      `v9.0: Bu kayıt güvenilir performans ortalamasına alınmadı. Nedenler: ${reasons.join(", ")}`,
+    note: row.note || "Bu kayıt güvenilir performans ortalamasına alınmadı.",
 
     actualPrice: round(row.actual_price, 8),
-    actualPriceDate: dateText(row.actual_price_date),
+    actualPriceDate: dateOnly(row.actual_price_date),
 
     closedAt: row.closed_at || null,
     createdAt: row.created_at || null,
@@ -424,46 +373,39 @@ function normalizePendingFinalRow(row) {
   const finalPredictionChange = num(row.final_prediction_change, null);
 
   return {
-    id: row.id,
-    finalId: row.id,
+    id: row.id || null,
+    finalId: row.id || null,
 
     fundCode: String(row.fund_code || "").toUpperCase(),
-    predictionDate: dateText(row.prediction_date),
+    predictionDate: dateOnly(row.prediction_date),
 
     model: row.model || ACTIVE_MODEL,
-    modelVersion: row.model_version || null,
+    modelVersion: row.model_version || MODEL_VERSION,
 
     status: "waiting_actual",
     rawStatus: "waiting_actual",
     completed: false,
     reliableForMetrics: false,
     shockClosed: false,
-    shockReasons: [],
-    quarantineReasons: [],
 
     source: "prediction_finals",
     finalPredictionSource: "prediction_finals.final_prediction_change",
 
     actualChange: null,
-
     finalPredictionChange: round(finalPredictionChange, 4),
     finalPredictionLabel: FINAL_LABEL,
-
     predictedChange: round(finalPredictionChange, 4),
 
     errorChange: null,
     absoluteError: null,
 
-    predictedDirection:
-      row.predicted_direction || direction(finalPredictionChange),
-
+    predictedDirection: row.predicted_direction || direction(finalPredictionChange),
     actualDirection: null,
     directionHit: null,
 
     grade: "Bekliyor",
 
-    note:
-      "Final tahmin kilitlendi; gerçekleşen TEFAS fiyatı geldiğinde performans kapanacak.",
+    note: "Final tahmin kilitlendi; sonraki TEFAS gerçekleşmesi bekleniyor.",
 
     actualPrice: null,
     actualPriceDate: null,
@@ -474,143 +416,132 @@ function normalizePendingFinalRow(row) {
   };
 }
 
-function getPendingFinalRows(finalRows, performanceRows) {
-  const closedKeys = new Set(performanceRows.map(makeKey));
+function buildPendingRows(finalRows, performanceRows) {
+  const closedKeys = new Set();
 
-  return finalRows.filter(row => {
-    const key = makeKey(row);
-    return !closedKeys.has(key);
-  });
+  for (const row of performanceRows) {
+    closedKeys.add(makeKeyFromPerformance(row));
+  }
+
+  const pending = [];
+
+  for (const row of finalRows) {
+    const key = makeKeyFromFinal(row);
+    if (!closedKeys.has(key)) {
+      pending.push(normalizePendingFinalRow(row));
+    }
+  }
+
+  return pending;
 }
 
 function buildLearningMap(learningRows) {
   const map = {};
 
   for (const code of FUNDS) {
-    const row = learningRows.find(item => item.fund_code === code) || null;
+    const row = learningRows.find(function(item) {
+      return String(item.fund_code || "").toUpperCase() === code;
+    });
 
-    map[code] = row
-      ? {
-          fundCode: row.fund_code,
-          model: row.model || ACTIVE_MODEL,
-          calculatedAt: row.calculated_at || null,
+    if (!row) {
+      map[code] = {
+        fundCode: code,
+        model: ACTIVE_MODEL,
+        sampleSize: 0,
+        completedPredictionCount: 0,
+        averageError: null,
+        averageAbsoluteError: null,
+        directionHitRate: null,
+        biasLabel: "Veri yok",
+        learningStatus: "Henüz öğrenme verisi yok",
+        note: "model_learning_stats kaydı bulunamadı."
+      };
+      continue;
+    }
 
-          sampleSize: Number(row.sample_size || 0),
-          completedPredictionCount: Number(row.completed_prediction_count || 0),
+    map[code] = {
+      fundCode: code,
+      model: row.model || ACTIVE_MODEL,
+      calculatedAt: row.calculated_at || null,
 
-          averageError: round(row.average_error, 4),
-          averageAbsoluteError: round(row.average_absolute_error, 4),
+      sampleSize: Number(row.sample_size || 0),
+      completedPredictionCount: Number(row.completed_prediction_count || 0),
 
-          last5AverageError: round(row.last5_average_error, 4),
-          last5AverageAbsoluteError: round(row.last5_average_absolute_error, 4),
+      averageError: round(row.average_error, 4),
+      averageAbsoluteError: round(row.average_absolute_error, 4),
 
-          last10AverageError: round(row.last10_average_error, 4),
-          last10AverageAbsoluteError: round(row.last10_average_absolute_error, 4),
+      last5AverageError: round(row.last5_average_error, 4),
+      last5AverageAbsoluteError: round(row.last5_average_absolute_error, 4),
 
-          directionHitCount: Number(row.direction_hit_count || 0),
-          directionTotalCount: Number(row.direction_total_count || 0),
-          directionHitRate: round(row.direction_hit_rate, 2),
+      last10AverageError: round(row.last10_average_error, 4),
+      last10AverageAbsoluteError: round(row.last10_average_absolute_error, 4),
 
-          biasLabel: row.bias_label || null,
-          learningStatus: row.learning_status || null,
-          suggestedOffset: round(row.suggested_offset, 4),
-          confidenceAdjustment: round(row.confidence_adjustment, 4),
+      directionHitCount: Number(row.direction_hit_count || 0),
+      directionTotalCount: Number(row.direction_total_count || 0),
+      directionHitRate: round(row.direction_hit_rate, 2),
 
-          note: row.note || null
-        }
-      : {
-          fundCode: code,
-          model: ACTIVE_MODEL,
-          sampleSize: 0,
-          completedPredictionCount: 0,
-          averageError: null,
-          averageAbsoluteError: null,
-          directionHitRate: null,
-          biasLabel: "Veri yok",
-          learningStatus: "Henüz öğrenme verisi yok",
-          note: "model_learning_stats kaydı bulunamadı."
-        };
+      biasLabel: row.bias_label || null,
+      learningStatus: row.learning_status || null,
+      suggestedOffset: round(row.suggested_offset, 4),
+      confidenceAdjustment: round(row.confidence_adjustment, 4),
+
+      note: row.note || null
+    };
   }
 
   return map;
 }
 
-function averageNumber(rows, fieldName) {
-  const values = rows
-    .map(row => num(row[fieldName], null))
-    .filter(value => value !== null);
+function latestDate(rows) {
+  const dates = rows
+    .map(function(row) {
+      return row.predictionDate;
+    })
+    .filter(Boolean)
+    .sort();
 
-  if (!values.length) return null;
-
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+  return dates.length ? dates[dates.length - 1] : null;
 }
 
-function directionRate(rows) {
-  const directionRows = rows.filter(row => row.directionHit !== null);
-  const hits = directionRows.filter(row => row.directionHit === true).length;
-
-  if (!directionRows.length) {
-    return {
-      hitCount: 0,
-      totalCount: 0,
-      rate: null
-    };
-  }
-
-  return {
-    hitCount: hits,
-    totalCount: directionRows.length,
-    rate: (hits / directionRows.length) * 100
-  };
-}
-
-function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) {
-  const normalClosedRows = completedRows.filter(row => !row.shockClosed);
-  const shockClosedRows = completedRows.filter(row => row.shockClosed);
-
-  const latestCompletedDate =
-    completedRows.length > 0
-      ? latestDate(
-          completedRows.map(row => ({ prediction_date: row.predictionDate })),
-          "prediction_date"
-        )
-      : null;
-
-  const latestCompletedRows = completedRows.filter(
-    row => row.predictionDate === latestCompletedDate
-  );
-
-  const latestShockRows = latestCompletedRows.filter(row => row.shockClosed);
-
-  const allDirection = directionRate(completedRows);
-  const latestDirection = directionRate(latestCompletedRows);
-
-  const byFund = {};
+function buildByFund(completedRows, pendingRows, quarantinedRows, learningMap) {
+  const out = {};
 
   for (const code of FUNDS) {
-    const fundRows = completedRows.filter(row => row.fundCode === code);
-    const fundNormalRows = fundRows.filter(row => !row.shockClosed);
-    const fundShockRows = fundRows.filter(row => row.shockClosed);
-    const fundPendingRows = pendingRows.filter(row => row.fundCode === code);
-    const fundQuarantinedRows = quarantinedRows.filter(row => row.fundCode === code);
-    const fundDirection = directionRate(fundRows);
+    const rows = completedRows.filter(function(row) {
+      return row.fundCode === code;
+    });
 
-    byFund[code] = {
+    const normalRows = rows.filter(function(row) {
+      return !row.shockClosed;
+    });
+
+    const shockRows = rows.filter(function(row) {
+      return row.shockClosed;
+    });
+
+    const fundDirection = directionRate(rows);
+
+    out[code] = {
       fundCode: code,
 
-      completedRows: fundRows.length,
-      reliableCompletedRows: fundRows.length,
-      normalClosedRows: fundNormalRows.length,
-      shockClosedRows: fundShockRows.length,
-      pendingRows: fundPendingRows.length,
-      quarantinedRows: fundQuarantinedRows.length,
-      rawPerformanceRows: fundRows.length + fundQuarantinedRows.length,
+      completedRows: rows.length,
+      reliableCompletedRows: rows.length,
+      normalClosedRows: normalRows.length,
+      shockClosedRows: shockRows.length,
 
-      averageAbsoluteError: round(averageNumber(fundRows, "absoluteError"), 4),
-      averageError: round(averageNumber(fundRows, "errorChange"), 4),
+      pendingRows: pendingRows.filter(function(row) {
+        return row.fundCode === code;
+      }).length,
 
-      normalAverageAbsoluteError: round(averageNumber(fundNormalRows, "absoluteError"), 4),
-      shockAverageAbsoluteError: round(averageNumber(fundShockRows, "absoluteError"), 4),
+      quarantinedRows: quarantinedRows.filter(function(row) {
+        return row.fundCode === code;
+      }).length,
+
+      averageAbsoluteError: round(average(rows, "absoluteError"), 4),
+      averageError: round(average(rows, "errorChange"), 4),
+
+      normalAverageAbsoluteError: round(average(normalRows, "absoluteError"), 4),
+      shockAverageAbsoluteError: round(average(shockRows, "absoluteError"), 4),
 
       directionHitCount: fundDirection.hitCount,
       directionTotalCount: fundDirection.totalCount,
@@ -620,49 +551,65 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
     };
   }
 
+  return out;
+}
+
+function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) {
+  const normalRows = completedRows.filter(function(row) {
+    return !row.shockClosed;
+  });
+
+  const shockRows = completedRows.filter(function(row) {
+    return row.shockClosed;
+  });
+
+  const allDirection = directionRate(completedRows);
+  const lastDate = latestDate(completedRows);
+
+  const latestRows = completedRows.filter(function(row) {
+    return row.predictionDate === lastDate;
+  });
+
+  const latestDirection = directionRate(latestRows);
+
+  const rawTotal =
+    completedRows.length +
+    pendingRows.length +
+    quarantinedRows.length;
+
   return {
     totalRows: completedRows.length + pendingRows.length,
     reliableTotalRows: completedRows.length + pendingRows.length,
-    rawTotalRows: completedRows.length + pendingRows.length + quarantinedRows.length,
+    rawTotalRows: rawTotal,
 
     completedRows: completedRows.length,
     reliableCompletedRows: completedRows.length,
 
-    normalClosedRows: normalClosedRows.length,
-    shockClosedRows: shockClosedRows.length,
+    normalClosedRows: normalRows.length,
+    shockClosedRows: shockRows.length,
 
     pendingRows: pendingRows.length,
     quarantinedRows: quarantinedRows.length,
 
     quarantineRate:
-      completedRows.length + quarantinedRows.length > 0
-        ? round(
-            (quarantinedRows.length / (completedRows.length + quarantinedRows.length)) * 100,
-            2
-          )
+      rawTotal > 0
+        ? round((quarantinedRows.length / rawTotal) * 100, 2)
         : null,
 
     shockRate:
       completedRows.length > 0
-        ? round((shockClosedRows.length / completedRows.length) * 100, 2)
+        ? round((shockRows.length / completedRows.length) * 100, 2)
         : null,
 
-    averageAbsoluteError: round(averageNumber(completedRows, "absoluteError"), 4),
-    averageError: round(averageNumber(completedRows, "errorChange"), 4),
+    averageAbsoluteError: round(average(completedRows, "absoluteError"), 4),
+    averageError: round(average(completedRows, "errorChange"), 4),
 
-    normalAverageAbsoluteError: round(averageNumber(normalClosedRows, "absoluteError"), 4),
-    shockAverageAbsoluteError: round(averageNumber(shockClosedRows, "absoluteError"), 4),
+    normalAverageAbsoluteError: round(average(normalRows, "absoluteError"), 4),
+    shockAverageAbsoluteError: round(average(shockRows, "absoluteError"), 4),
 
-    latestDateAverageAbsoluteError: round(
-      averageNumber(latestCompletedRows, "absoluteError"),
-      4
-    ),
-    latestDateAverageError: round(
-      averageNumber(latestCompletedRows, "errorChange"),
-      4
-    ),
-
-    latestDateShockRows: latestShockRows.length,
+    latestCompletedDate: lastDate,
+    latestDateAverageAbsoluteError: round(average(latestRows, "absoluteError"), 4),
+    latestDateAverageError: round(average(latestRows, "errorChange"), 4),
 
     directionHitCount: allDirection.hitCount,
     directionTotalCount: allDirection.totalCount,
@@ -672,30 +619,18 @@ function buildSummary(completedRows, pendingRows, quarantinedRows, learningMap) 
     latestDateDirectionTotalCount: latestDirection.totalCount,
     latestDateDirectionHitRate: round(latestDirection.rate, 2),
 
-    latestCompletedDate,
-
-    latestPendingFinalDate:
-      pendingRows.length > 0
-        ? latestDate(
-            pendingRows.map(row => ({ prediction_date: row.predictionDate })),
-            "prediction_date"
-          )
-        : null,
-
     finalPredictionLabel: FINAL_LABEL,
+
     fundOrder: FUNDS,
-    thfIncluded: FUNDS.includes("THF"),
-    thfCompletedRows: completedRows.filter(row => row.fundCode === "THF").length,
-    thfShockRows: completedRows.filter(row => row.fundCode === "THF" && row.shockClosed).length,
-    thfPendingRows: pendingRows.filter(row => row.fundCode === "THF").length,
+    thfIncluded: true,
+
+    byFund: buildByFund(completedRows, pendingRows, quarantinedRows, learningMap),
 
     formula:
       "Sapma = prediction_date sonrasındaki ilk TEFAS gerçekleşmesi - T-1 18:00 sonrası kilitlenen nihai tahmin",
 
     metricPolicy:
-      "v9.0: averageAbsoluteError ve directionHitRate status=closed + status=shock_closed güvenilir gerçek hareketlerinden hesaplanır. status=quarantined kayıtlar genel metriklere ve öğrenmeye katılmaz. shock_closed kayıtlar veri hatası değil, büyük gerçek fiyat hareketi olarak izlenir.",
-
-    byFund
+      "v9.0.1: status=closed ve status=shock_closed güvenilir performans kabul edilir. status=quarantined genel metriklere alınmaz."
   };
 }
 
@@ -708,30 +643,35 @@ module.exports = async function handler(req, res) {
     const finalRows = await getFinalRows();
     const learningRows = await getLearningRows();
 
-    const reliablePerformanceRows = performanceRows.filter(isReliablePerformanceRow);
-    const quarantinedPerformanceRows = performanceRows.filter(
-      row => !isReliablePerformanceRow(row)
-    );
+    const reliableRawRows = performanceRows.filter(function(row) {
+      return isReliablePerformanceRow(row);
+    });
 
-    const completedRows = reliablePerformanceRows
-      .map(normalizeCompletedRow)
-      .sort(sortDisplayRows);
+    const quarantinedRawRows = performanceRows.filter(function(row) {
+      return !isReliablePerformanceRow(row) || isQuarantineStatus(row.status);
+    });
 
-    const quarantinedRows = quarantinedPerformanceRows
-      .map(normalizeQuarantinedRow)
-      .sort(sortDisplayRows);
+    const completedRows = reliableRawRows
+      .map(normalizePerformanceRow)
+      .sort(sortRows);
 
-    const pendingRows = getPendingFinalRows(finalRows, performanceRows)
-      .map(normalizePendingFinalRow)
-      .sort(sortDisplayRows);
+    const quarantinedRows = quarantinedRawRows
+      .map(normalizeQuarantineRow)
+      .sort(sortRows);
 
-    const normalClosedRows = completedRows.filter(row => !row.shockClosed);
-    const shockClosedRows = completedRows.filter(row => row.shockClosed);
+    const pendingRows = buildPendingRows(finalRows, performanceRows)
+      .sort(sortRows);
+
+    const normalClosedRows = completedRows.filter(function(row) {
+      return !row.shockClosed;
+    });
+
+    const shockClosedRows = completedRows.filter(function(row) {
+      return row.shockClosed;
+    });
 
     const learningMap = buildLearningMap(learningRows);
     const summary = buildSummary(completedRows, pendingRows, quarantinedRows, learningMap);
-
-    const rows = [...completedRows, ...pendingRows];
 
     return res.status(200).json({
       ok: true,
@@ -742,58 +682,57 @@ module.exports = async function handler(req, res) {
       shockAware: true,
       quarantineAware: true,
 
-      shockAwarePerformance: {
-        enabled: true,
-        maxValidActualChange: MAX_VALID_ACTUAL_CHANGE,
-        maxValidFinalPrediction: MAX_VALID_FINAL_PREDICTION,
-        shockActualChangeThreshold: SHOCK_ACTUAL_CHANGE_THRESHOLD,
-        shockAbsoluteErrorThreshold: SHOCK_ABSOLUTE_ERROR_THRESHOLD,
-        rule:
-          "status=shock_closed kayıtlar güvenilir performans kabul edilir; büyük gerçek hareket olarak izlenir. status=quarantined kayıtlar metriklere alınmaz."
-      },
-
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
-      fundOrder: FUNDS,
-      thfIncluded: FUNDS.includes("THF"),
 
-      selectionRule:
-        "Dashboard rows THF dahil status=closed + status=shock_closed güvenilir performans kayıtlarını ve bekleyen final tahminleri döndürür. Karantina kayıtları genel metriklerden ayrıştırılır.",
+      fundOrder: FUNDS,
+      thfIncluded: true,
 
       finalPredictionLabel: FINAL_LABEL,
       finalPredictionSource: "prediction_finals.final_prediction_change",
 
-      summary,
+      selectionRule:
+        "Dashboard THF dahil status=closed + status=shock_closed güvenilir performans kayıtlarını döndürür. Karantina kayıtları metriklerden ayrıdır.",
 
-      rows,
-      completedRows,
-      normalClosedRows,
-      shockClosedRows,
+      summary: summary,
+
+      rows: completedRows.concat(pendingRows),
+      completedRows: completedRows,
+      normalClosedRows: normalClosedRows,
+      shockClosedRows: shockClosedRows,
       pendingFinalRows: pendingRows,
-      quarantinedRows,
+      quarantinedRows: quarantinedRows,
 
       learningStats: learningMap,
 
       rawCounts: {
         predictionPerformanceRows: performanceRows.length,
-        reliablePerformanceRows: reliablePerformanceRows.length,
+        reliablePerformanceRows: reliableRawRows.length,
         normalClosedPerformanceRows: normalClosedRows.length,
         shockClosedPerformanceRows: shockClosedRows.length,
-        quarantinedPerformanceRows: quarantinedPerformanceRows.length,
+        quarantinedPerformanceRows: quarantinedRows.length,
         predictionFinalRows: finalRows.length,
         modelLearningRows: learningRows.length,
 
-        thfPerformanceRows: performanceRows.filter(row => row.fund_code === "THF").length,
-        thfReliablePerformanceRows: reliablePerformanceRows.filter(row => row.fund_code === "THF").length,
-        thfNormalClosedPerformanceRows: normalClosedRows.filter(row => row.fundCode === "THF").length,
-        thfShockClosedPerformanceRows: shockClosedRows.filter(row => row.fundCode === "THF").length,
-        thfQuarantinedPerformanceRows: quarantinedPerformanceRows.filter(row => row.fund_code === "THF").length,
-        thfFinalRows: finalRows.filter(row => row.fund_code === "THF").length,
-        thfLearningRows: learningRows.filter(row => row.fund_code === "THF").length
+        thfPerformanceRows: performanceRows.filter(function(row) {
+          return row.fund_code === "THF";
+        }).length,
+
+        thfReliablePerformanceRows: reliableRawRows.filter(function(row) {
+          return row.fund_code === "THF";
+        }).length,
+
+        thfShockClosedPerformanceRows: shockClosedRows.filter(function(row) {
+          return row.fundCode === "THF";
+        }).length,
+
+        thfLearningRows: learningRows.filter(function(row) {
+          return row.fund_code === "THF";
+        }).length
       },
 
       note:
-        "v9.0: Bu API artık shock_closed kayıtları güvenilir gerçek hareket olarak kabul eder. Büyük PBR/PHE düşüşleri veri hatası sayılmaz; Causal NAV Engine için şok örneği olarak korunur."
+        "v9.0.1 güvenli sürüm: API çökmesini önlemek için sadeleştirildi. shock_closed kayıtlar güvenilir gerçek hareket olarak kabul edilir."
     });
   } catch (error) {
     return res.status(500).json({
