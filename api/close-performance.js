@@ -1,14 +1,14 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Close Performance API v9.0 - Shock Aware Performance";
+const API_VERSION = "FinScope Close Performance API v10.1 - Deterministic Next TEFAS Close Repair";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v9.0 - Shock Aware Causal Prep";
+const MODEL_VERSION = "FinScope Prediction Engine v10.0 - Causal NAV Prediction Engine";
 
 const DEFAULT_FROM_DATE = "2026-08-26";
 const MIN_VALID_PRICE = 0;
 
 const MAX_ABSOLUTE_ACTUAL_CHANGE = 35;
-const MAX_ABSOLUTE_FINAL_PREDICTION = 20;
+const MAX_ABSOLUTE_FINAL_PREDICTION = 25;
 
 const SHOCK_ACTUAL_CHANGE_THRESHOLD = 6;
 const SHOCK_ABSOLUTE_ERROR_THRESHOLD = 2.5;
@@ -156,44 +156,6 @@ function makePerformanceKey(row) {
   return `${String(row.fund_code || "").toUpperCase()}|${dateText(row.prediction_date)}|${row.model || ACTIVE_MODEL}`;
 }
 
-function dedupeFinalRows(rows) {
-  const map = new Map();
-
-  for (const row of rows || []) {
-    const key = makeFinalKey(row);
-    const existing = map.get(key);
-
-    if (!existing || finalSelectionTimeMs(row) >= finalSelectionTimeMs(existing)) {
-      map.set(key, row);
-    }
-  }
-
-  return [...map.values()].sort((a, b) => {
-    const dateCompare = compareDateText(dateText(a.prediction_date), dateText(b.prediction_date));
-    if (dateCompare !== 0) return dateCompare;
-
-    const fundCompare = String(a.fund_code || "").localeCompare(String(b.fund_code || ""));
-    if (fundCompare !== 0) return fundCompare;
-
-    return finalSelectionTimeMs(b) - finalSelectionTimeMs(a);
-  });
-}
-
-function dedupePerformancePayloads(payloads) {
-  const map = new Map();
-
-  for (const payload of payloads || []) {
-    const key = makePerformanceKey(payload);
-    const existing = map.get(key);
-
-    if (!existing || rowTimeMs(payload) >= rowTimeMs(existing)) {
-      map.set(key, payload);
-    }
-  }
-
-  return [...map.values()];
-}
-
 function getSupabaseConfig() {
   const url = process.env.SUPABASE_URL;
 
@@ -229,12 +191,26 @@ async function supabaseRequest(path, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1200)}`
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1500)}`
     );
   }
 
   if (!text) return [];
-  return JSON.parse(text);
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Supabase JSON parse failed for ${path}: ${text.slice(0, 600)}`);
+  }
+}
+
+async function optionalSupabaseRequest(path, fallback = []) {
+  try {
+    const rows = await supabaseRequest(path);
+    return Array.isArray(rows) ? rows : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function authStatus(req) {
@@ -287,7 +263,50 @@ function getToDate(req) {
   return null;
 }
 
-async function getFinalRows(req) {
+function predictionValueFromAnyRow(row) {
+  return (
+    num(row.final_prediction_change, null) ??
+    num(row.calibrated_change, null) ??
+    num(row.predicted_change, null) ??
+    num(row.raw_predicted_change, null)
+  );
+}
+
+function normalizeFinalFromPredictionFinal(row) {
+  const finalPrediction = predictionValueFromAnyRow(row);
+
+  return {
+    ...row,
+    source_table: "prediction_finals",
+    source_priority: 100,
+    source_id: row.id,
+    final_id: row.id,
+    final_prediction_change: finalPrediction,
+    predicted_direction: row.predicted_direction || direction(finalPrediction),
+    model: row.model || ACTIVE_MODEL,
+    model_version: row.model_version || MODEL_VERSION,
+    finalized_at: row.finalized_at || row.updated_at || row.created_at || null
+  };
+}
+
+function normalizeFinalFromPredictionHistory(row) {
+  const finalPrediction = predictionValueFromAnyRow(row);
+
+  return {
+    ...row,
+    source_table: "prediction_history_fallback",
+    source_priority: 10,
+    source_id: row.id,
+    final_id: null,
+    final_prediction_change: finalPrediction,
+    predicted_direction: row.predicted_direction || direction(finalPrediction),
+    model: row.model || ACTIVE_MODEL,
+    model_version: row.model_version || MODEL_VERSION,
+    finalized_at: row.updated_at || row.created_at || null
+  };
+}
+
+async function getPredictionFinalRows(req) {
   const fromDate = getFromDate(req);
   const toDate = getToDate(req);
 
@@ -303,10 +322,81 @@ async function getFinalRows(req) {
     path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
   }
 
-  path += "&order=prediction_date.asc,fund_code.asc,finalized_at.asc&limit=10000";
+  path += "&order=prediction_date.asc,fund_code.asc,finalized_at.asc,updated_at.asc,created_at.asc&limit=10000";
 
-  const rows = await supabaseRequest(path);
-  return Array.isArray(rows) ? rows : [];
+  const rows = await optionalSupabaseRequest(path, []);
+  return rows.map(normalizeFinalFromPredictionFinal).filter(row => predictionValueFromAnyRow(row) !== null);
+}
+
+async function getPredictionHistoryFallbackRows(req) {
+  const fromDate = getFromDate(req);
+  const toDate = getToDate(req);
+
+  let path =
+    "prediction_history" +
+    "?select=*" +
+    "&fund_code=in.(PBR,PHE,TLY,THF)" +
+    `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
+    `&prediction_date=gte.${encodeURIComponent(fromDate)}`;
+
+  if (toDate) {
+    path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
+  }
+
+  path += "&order=prediction_date.asc,fund_code.asc,updated_at.asc,created_at.asc&limit=12000";
+
+  const rows = await optionalSupabaseRequest(path, []);
+
+  return rows
+    .map(normalizeFinalFromPredictionHistory)
+    .filter(row => predictionValueFromAnyRow(row) !== null)
+    .filter(row => dateText(row.prediction_date))
+    .filter(row => FUNDS.includes(String(row.fund_code || "").toUpperCase()));
+}
+
+function selectBestFinalRow(existing, candidate) {
+  if (!existing) return candidate;
+
+  if (num(candidate.source_priority, 0) !== num(existing.source_priority, 0)) {
+    return num(candidate.source_priority, 0) > num(existing.source_priority, 0) ? candidate : existing;
+  }
+
+  return finalSelectionTimeMs(candidate) >= finalSelectionTimeMs(existing) ? candidate : existing;
+}
+
+function mergeFinalSources(predictionFinalRows, historyFallbackRows) {
+  const map = new Map();
+  const sourceMap = {};
+
+  for (const row of [...(historyFallbackRows || []), ...(predictionFinalRows || [])]) {
+    const key = makeFinalKey(row);
+    const selected = selectBestFinalRow(map.get(key), row);
+    map.set(key, selected);
+  }
+
+  const rows = [...map.values()].sort((a, b) => {
+    const dateCompare = compareDateText(dateText(a.prediction_date), dateText(b.prediction_date));
+    if (dateCompare !== 0) return dateCompare;
+
+    const fundCompare = String(a.fund_code || "").localeCompare(String(b.fund_code || ""));
+    if (fundCompare !== 0) return fundCompare;
+
+    return finalSelectionTimeMs(b) - finalSelectionTimeMs(a);
+  });
+
+  for (const row of rows) {
+    const source = row.source_table || "unknown";
+    sourceMap[source] = (sourceMap[source] || 0) + 1;
+  }
+
+  return {
+    rows,
+    sourceMap,
+    predictionFinalRows: predictionFinalRows.length,
+    historyFallbackRows: historyFallbackRows.length,
+    mergedRows: rows.length,
+    fallbackRowsUsed: rows.filter(row => row.source_table === "prediction_history_fallback").length
+  };
 }
 
 async function getExistingPerformanceRows(req) {
@@ -324,7 +414,7 @@ async function getExistingPerformanceRows(req) {
     path += `&prediction_date=lte.${encodeURIComponent(toDate)}`;
   }
 
-  path += "&order=prediction_date.desc,closed_at.desc&limit=10000";
+  path += "&order=prediction_date.desc,closed_at.desc,updated_at.desc,created_at.desc&limit=12000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -337,7 +427,7 @@ async function getAllPerformanceRowsForLearning() {
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     `&model=eq.${encodeURIComponent(ACTIVE_MODEL)}` +
     `&prediction_date=gte.${encodeURIComponent(DEFAULT_FROM_DATE)}` +
-    "&order=prediction_date.desc,closed_at.desc&limit=10000";
+    "&order=prediction_date.desc,closed_at.desc,updated_at.desc,created_at.desc&limit=12000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
@@ -349,10 +439,84 @@ async function getFundPriceRows() {
     "?select=*" +
     "&fund_code=in.(PBR,PHE,TLY,THF)" +
     "&order=fund_code.asc,price_date.asc,created_at.asc" +
-    "&limit=20000";
+    "&limit=30000";
 
   const rows = await supabaseRequest(path);
   return Array.isArray(rows) ? rows : [];
+}
+
+function isValidPriceRow(row) {
+  const fundCode = String(row.fund_code || "").toUpperCase();
+  const priceDate = dateText(row.price_date);
+  const price = num(row.price, null);
+
+  return FUNDS.includes(fundCode) && Boolean(priceDate) && price !== null && price > MIN_VALID_PRICE;
+}
+
+function buildPriceSeries(fundPriceRows) {
+  const latestByFundDate = new Map();
+  const rejected = [];
+
+  for (const row of fundPriceRows || []) {
+    const fundCode = String(row.fund_code || "").toUpperCase();
+    const priceDate = dateText(row.price_date);
+
+    if (!FUNDS.includes(fundCode) || !priceDate) continue;
+
+    const key = `${fundCode}|${priceDate}`;
+    const existing = latestByFundDate.get(key);
+    const rowValid = isValidPriceRow(row);
+    const existingValid = existing ? isValidPriceRow(existing) : false;
+
+    if (!rowValid) {
+      rejected.push({
+        fundCode,
+        priceDate,
+        price: row.price ?? null,
+        reason: "invalid_price_row_ignored_if_valid_alternative_exists"
+      });
+    }
+
+    if (!existing) {
+      latestByFundDate.set(key, row);
+      continue;
+    }
+
+    if (rowValid && !existingValid) {
+      latestByFundDate.set(key, row);
+      continue;
+    }
+
+    if (rowValid === existingValid && rowTimeMs(row) >= rowTimeMs(existing)) {
+      latestByFundDate.set(key, row);
+    }
+  }
+
+  const grouped = {};
+
+  for (const code of FUNDS) {
+    grouped[code] = [];
+  }
+
+  for (const row of latestByFundDate.values()) {
+    const code = String(row.fund_code || "").toUpperCase();
+    if (!isValidPriceRow(row)) continue;
+    grouped[code].push(row);
+  }
+
+  for (const code of FUNDS) {
+    grouped[code].sort(sortPriceRows);
+  }
+
+  return {
+    grouped,
+    diagnostics: {
+      rawPriceRows: Array.isArray(fundPriceRows) ? fundPriceRows.length : 0,
+      selectedPriceRows: Object.values(grouped).reduce((sum, rows) => sum + rows.length, 0),
+      rejectedInvalidPriceRows: rejected.length,
+      rejectedSample: rejected.slice(0, 20)
+    }
+  };
 }
 
 function buildExistingPerformanceMap(rows) {
@@ -374,7 +538,7 @@ function buildExistingPerformanceMap(rows) {
 
 function validateFinalRow(finalRow) {
   const fundCode = String(finalRow.fund_code || "").toUpperCase();
-  const finalPrediction = num(finalRow.final_prediction_change, null);
+  const finalPrediction = predictionValueFromAnyRow(finalRow);
   const issues = [];
 
   if (!FUNDS.includes(fundCode)) issues.push("fund_code_invalid");
@@ -392,41 +556,6 @@ function validateFinalRow(finalRow) {
     fundCode,
     finalPrediction
   };
-}
-
-function buildPriceSeries(fundPriceRows) {
-  const latestByFundDate = new Map();
-
-  for (const row of fundPriceRows || []) {
-    const fundCode = String(row.fund_code || "").toUpperCase();
-    const priceDate = dateText(row.price_date);
-
-    if (!FUNDS.includes(fundCode) || !priceDate) continue;
-
-    const key = `${fundCode}|${priceDate}`;
-    const existing = latestByFundDate.get(key);
-
-    if (!existing || rowTimeMs(row) >= rowTimeMs(existing)) {
-      latestByFundDate.set(key, row);
-    }
-  }
-
-  const grouped = {};
-
-  for (const code of FUNDS) {
-    grouped[code] = [];
-  }
-
-  for (const row of latestByFundDate.values()) {
-    const code = String(row.fund_code || "").toUpperCase();
-    grouped[code].push(row);
-  }
-
-  for (const code of FUNDS) {
-    grouped[code].sort(sortPriceRows);
-  }
-
-  return grouped;
 }
 
 function findNextActualPriceForFinal(finalRow, priceSeries) {
@@ -509,12 +638,12 @@ function findNextActualPriceForFinal(finalRow, priceSeries) {
     storedDailyChange,
     storedVsCalculatedDifference,
     dailyChangeWarning,
-    matchRule: "next_available_tefas_price_after_prediction_date"
+    matchRule: "deterministic_next_available_tefas_price_after_prediction_date"
   };
 }
 
 function buildPerformancePayload(finalRow, actualMatch) {
-  const finalPrediction = num(finalRow.final_prediction_change, null);
+  const finalPrediction = predictionValueFromAnyRow(finalRow);
   const actualChange = num(actualMatch.actualChange, null);
 
   const errorChange = actualChange - finalPrediction;
@@ -524,9 +653,7 @@ function buildPerformancePayload(finalRow, actualMatch) {
   const actualDirection = direction(actualChange);
   const hit = directionHit(finalPrediction, actualChange);
 
-  return {
-    final_id: finalRow.id,
-
+  const payload = {
     fund_code: String(finalRow.fund_code || "").toUpperCase(),
     prediction_date: dateText(finalRow.prediction_date),
 
@@ -545,7 +672,9 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
     grade: gradeFromError(absoluteError),
     note:
-      "v9.0: Sapma = sonraki TEFAS iş günü gerçekleşen fiyat değişimi - prediction_finals kilitli nihai tahmin. Büyük ve fiyat zinciriyle tutarlı hareketler karantina yerine shock_closed olarak izlenir.",
+      `v10.1: Sapma = prediction_date sonrasındaki ilk TEFAS fiyat değişimi - kilitli nihai tahmin. ` +
+      `Final kaynak: ${finalRow.source_table || "prediction_finals"}. ` +
+      "Büyük ve fiyat zinciriyle tutarlı hareketler shock_closed olarak saklanır.",
 
     actual_price: round(actualMatch.actualPrice, 8),
     actual_price_date: actualMatch.actualPriceDate,
@@ -555,6 +684,12 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
     updated_at: new Date().toISOString()
   };
+
+  if (finalRow.source_table === "prediction_finals" && finalRow.final_id !== null && finalRow.final_id !== undefined) {
+    payload.final_id = finalRow.final_id;
+  }
+
+  return payload;
 }
 
 function evaluatePerformanceQuality(payload, actualMatch) {
@@ -615,6 +750,24 @@ function evaluatePerformanceQuality(payload, actualMatch) {
   };
 }
 
+function applyQualityToPayload(payload, quality) {
+  payload.status = quality.status;
+  payload.grade = quality.grade;
+
+  if (quality.status === "quarantined") {
+    payload.note =
+      `v10.1 STRICT GATE: Bu satır model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
+      "Performans kaydı denetim için saklanır; model_learning_stats quarantined kayıtları kullanmaz.";
+  } else if (quality.status === "shock_closed") {
+    payload.note =
+      `v10.1 SHOCK AWARE: Büyük hareket gerçek fiyat zinciriyle kapatıldı ve shock_closed olarak saklandı. ` +
+      `Şok nedenleri: ${quality.shockReasons.join(", ")}. ` +
+      "Bu kayıt veri hatası sayılmaz; Causal NAV Engine için şok öğrenme örneği olarak korunur.";
+  }
+
+  return payload;
+}
+
 function performanceNeedsUpsert(existingRows, payload, forceRepair) {
   if (forceRepair) return true;
   if (!existingRows || !existingRows.length) return true;
@@ -646,6 +799,21 @@ function performanceNeedsUpsert(existingRows, payload, forceRepair) {
   }
 
   return false;
+}
+
+function dedupePerformancePayloads(payloads) {
+  const map = new Map();
+
+  for (const payload of payloads || []) {
+    const key = makePerformanceKey(payload);
+    const existing = map.get(key);
+
+    if (!existing || rowTimeMs(payload) >= rowTimeMs(existing)) {
+      map.set(key, payload);
+    }
+  }
+
+  return [...map.values()];
 }
 
 async function upsertPerformanceRows(payloads) {
@@ -709,8 +877,8 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
   const last10AverageError = average(last10, "error_change");
   const last10AverageAbsoluteError = average(last10, "absolute_error");
 
-  const directionRows = rows.filter(row => row.direction_hit !== null);
-  const directionHitCount = directionRows.filter(row => row.direction_hit === true).length;
+  const directionRows = rows.filter(row => row.direction_hit !== null && row.direction_hit !== undefined);
+  const directionHitCount = directionRows.filter(row => row.direction_hit === true || row.direction_hit === "true").length;
   const directionTotalCount = directionRows.length;
 
   const directionHitRate =
@@ -721,7 +889,7 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
   const suggestedOffset =
     averageError === null
       ? null
-      : round(Math.max(-0.85, Math.min(0.85, averageError * 0.45)), 6);
+      : round(Math.max(-0.85, Math.min(0.85, averageError * 0.35)), 6);
 
   let confidenceAdjustment = 0;
 
@@ -770,7 +938,7 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
     note:
       sampleSize === 0
         ? "Henüz güvenilir sonraki TEFAS günü kapanmış final performans kaydı yok."
-        : `v9.0: İstatistikler normal closed + shock_closed gerçek fiyat hareketlerinden hesaplandı. Normal kayıt: ${normalRows.length}, şok kayıt: ${shockRows.length}. Quarantined kayıtlar öğrenmeye alınmaz.`,
+        : `v10.1: İstatistikler normal closed + shock_closed gerçek fiyat hareketlerinden hesaplandı. Normal kayıt: ${normalRows.length}, şok kayıt: ${shockRows.length}. Quarantined kayıtlar öğrenmeye alınmaz.`,
 
     updated_at: new Date().toISOString()
   };
@@ -800,6 +968,103 @@ async function updateLearningStats() {
   };
 }
 
+function summarizeResults(results) {
+  const summary = {
+    created: 0,
+    corrected: 0,
+    verified: 0,
+    waitingActual: 0,
+    invalidFinal: 0,
+    invalidActual: 0,
+    closed: 0,
+    shockClosed: 0,
+    quarantined: 0,
+    byFund: {}
+  };
+
+  for (const code of FUNDS) {
+    summary.byFund[code] = {
+      total: 0,
+      created: 0,
+      corrected: 0,
+      verified: 0,
+      waitingActual: 0,
+      invalidActual: 0,
+      invalidFinal: 0,
+      closed: 0,
+      shockClosed: 0,
+      quarantined: 0
+    };
+  }
+
+  for (const row of results || []) {
+    const code = row.fund || row.fundCode || row.fund_code || "UNKNOWN";
+    if (!summary.byFund[code]) {
+      summary.byFund[code] = {
+        total: 0,
+        created: 0,
+        corrected: 0,
+        verified: 0,
+        waitingActual: 0,
+        invalidActual: 0,
+        invalidFinal: 0,
+        closed: 0,
+        shockClosed: 0,
+        quarantined: 0
+      };
+    }
+
+    summary.byFund[code].total += 1;
+
+    if (row.reason === "performance_created") {
+      summary.created += 1;
+      summary.byFund[code].created += 1;
+    }
+
+    if (row.reason === "performance_corrected") {
+      summary.corrected += 1;
+      summary.byFund[code].corrected += 1;
+    }
+
+    if (row.reason === "performance_already_closed_verified") {
+      summary.verified += 1;
+      summary.byFund[code].verified += 1;
+    }
+
+    if (row.reason === "next_actual_price_not_available_yet") {
+      summary.waitingActual += 1;
+      summary.byFund[code].waitingActual += 1;
+    }
+
+    if (row.reason === "invalid_final_prediction") {
+      summary.invalidFinal += 1;
+      summary.byFund[code].invalidFinal += 1;
+    }
+
+    if (row.reason === "actual_price_invalid_or_suspicious") {
+      summary.invalidActual += 1;
+      summary.byFund[code].invalidActual += 1;
+    }
+
+    if (row.qualityStatus === "closed") {
+      summary.closed += 1;
+      summary.byFund[code].closed += 1;
+    }
+
+    if (row.qualityStatus === "shock_closed") {
+      summary.shockClosed += 1;
+      summary.byFund[code].shockClosed += 1;
+    }
+
+    if (row.qualityStatus === "quarantined") {
+      summary.quarantined += 1;
+      summary.byFund[code].quarantined += 1;
+    }
+  }
+
+  return summary;
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -820,14 +1085,19 @@ module.exports = async function handler(req, res) {
       isTruthyQuery(queryValue(req, "force")) ||
       isTruthyQuery(queryValue(req, "repair"));
 
-    const rawFinalRows = await getFinalRows(req);
-    const finalRows = dedupeFinalRows(rawFinalRows);
+    const dryRun = isTruthyQuery(queryValue(req, "dryRun"));
+
+    const predictionFinalRows = await getPredictionFinalRows(req);
+    const historyFallbackRows = await getPredictionHistoryFallbackRows(req);
+    const finalMerge = mergeFinalSources(predictionFinalRows, historyFallbackRows);
+    const finalRows = finalMerge.rows;
 
     const existingPerformanceRows = await getExistingPerformanceRows(req);
     const existingPerformanceMap = buildExistingPerformanceMap(existingPerformanceRows);
 
     const fundPriceRows = await getFundPriceRows();
-    const priceSeries = buildPriceSeries(fundPriceRows);
+    const priceBundle = buildPriceSeries(fundPriceRows);
+    const priceSeries = priceBundle.grouped;
 
     const payloads = [];
     const results = [];
@@ -839,6 +1109,8 @@ module.exports = async function handler(req, res) {
         results.push({
           fund: finalRow.fund_code || null,
           predictionDate: dateText(finalRow.prediction_date),
+          sourceTable: finalRow.source_table || null,
+          sourceId: finalRow.source_id || null,
           ok: false,
           skipped: true,
           reason: "invalid_final_prediction",
@@ -853,6 +1125,8 @@ module.exports = async function handler(req, res) {
         results.push({
           fund: finalValidation.fundCode,
           predictionDate: dateText(finalRow.prediction_date),
+          sourceTable: finalRow.source_table || null,
+          sourceId: finalRow.source_id || null,
           ok: false,
           skipped: true,
           reason: actualMatch.reason,
@@ -868,19 +1142,7 @@ module.exports = async function handler(req, res) {
 
       const payload = buildPerformancePayload(finalRow, actualMatch);
       const quality = evaluatePerformanceQuality(payload, actualMatch);
-
-      payload.status = quality.status;
-      payload.grade = quality.grade;
-
-      if (quality.status === "quarantined") {
-        payload.note =
-          `v9.0 SHOCK AWARE: Bu satır veri güvenliği nedeniyle model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
-          "Performans kaydı denetim için saklanır; model_learning_stats quarantined kayıtları kullanmaz.";
-      } else if (quality.status === "shock_closed") {
-        payload.note =
-          `v9.0 SHOCK AWARE: Büyük hareket gerçek fiyat zinciriyle kapatıldı ve shock_closed olarak saklandı. Şok nedenleri: ${quality.shockReasons.join(", ")}. ` +
-          "Bu kayıt veri hatası sayılmaz; v9.0 Causal NAV Engine için şok öğrenme örneği olarak korunur.";
-      }
+      applyQualityToPayload(payload, quality);
 
       const key = makePerformanceKey(payload);
       const existingRows = existingPerformanceMap.get(key) || [];
@@ -890,6 +1152,8 @@ module.exports = async function handler(req, res) {
         results.push({
           fund: payload.fund_code,
           predictionDate: payload.prediction_date,
+          sourceTable: finalRow.source_table || null,
+          sourceId: finalRow.source_id || null,
           ok: true,
           skipped: true,
           reason: "performance_already_closed_verified",
@@ -909,6 +1173,8 @@ module.exports = async function handler(req, res) {
       results.push({
         fund: payload.fund_code,
         predictionDate: payload.prediction_date,
+        sourceTable: finalRow.source_table || null,
+        sourceId: finalRow.source_id || null,
         ok: true,
         skipped: false,
         reason: existingRows.length ? "performance_corrected" : "performance_created",
@@ -938,17 +1204,12 @@ module.exports = async function handler(req, res) {
     const dedupedPayloads = dedupePerformancePayloads(payloads);
     const duplicatePayloadsRemoved = payloads.length - dedupedPayloads.length;
 
-    const savedPerformanceRows = await upsertPerformanceRows(dedupedPayloads);
-    const learningStats = await updateLearningStats();
+    const savedPerformanceRows = dryRun ? [] : await upsertPerformanceRows(dedupedPayloads);
+    const learningStats = dryRun
+      ? { savedRows: 0, learningPerformanceRows: 0, ignoredPerformanceRows: 0, rows: [] }
+      : await updateLearningStats();
 
-    const createdCount = results.filter(row => row.reason === "performance_created").length;
-    const correctedCount = results.filter(row => row.reason === "performance_corrected").length;
-    const verifiedCount = results.filter(row => row.reason === "performance_already_closed_verified").length;
-
-    const normalClosedCount = results.filter(row => row.qualityStatus === "closed").length;
-    const shockClosedCount = results.filter(row => row.qualityStatus === "shock_closed").length;
-    const quarantinedCount = results.filter(row => row.qualityStatus === "quarantined").length;
-    const reliableClosedCount = normalClosedCount + shockClosedCount;
+    const summary = summarizeResults(results);
 
     return res.status(200).json({
       ok: true,
@@ -963,57 +1224,61 @@ module.exports = async function handler(req, res) {
       fromDate: getFromDate(req),
       toDate: getToDate(req),
       forceRepair,
+      dryRun,
 
-      shockAwarePerformance: {
+      deterministicCloseRepair: {
         enabled: true,
-        maxAbsoluteActualChange: MAX_ABSOLUTE_ACTUAL_CHANGE,
-        maxAbsoluteFinalPrediction: MAX_ABSOLUTE_FINAL_PREDICTION,
-        shockActualChangeThreshold: SHOCK_ACTUAL_CHANGE_THRESHOLD,
-        shockAbsoluteErrorThreshold: SHOCK_ABSOLUTE_ERROR_THRESHOLD,
-        shockFinalPredictionThreshold: SHOCK_FINAL_PREDICTION_THRESHOLD,
-        policy:
-          "Büyük ama fiyat zinciriyle tutarlı TEFAS hareketleri quarantined değil shock_closed olur. Böylece PBR/PHE gibi gerçek sert düşüşler veri hatası sayılmaz ve Causal NAV Engine için korunur."
+        rule:
+          "Her fon ve prediction_date için önce prediction_finals final satırı kullanılır. Final yoksa prediction_history içindeki aynı tarihli son tahmin fallback final kabul edilir. Gerçekleşme her zaman prediction_date sonrasındaki ilk geçerli TEFAS fiyatından hesaplanır.",
+        actualFormula:
+          "actual_change = ((next_tefas_price_after_prediction_date - previous_tefas_price) / previous_tefas_price) * 100",
+        errorFormula:
+          "error_change = actual_change - final_prediction_change"
       },
 
-      rawFinalRowsFound: rawFinalRows.length,
-      finalsFound: finalRows.length,
-      duplicateFinalRowsRemoved: rawFinalRows.length - finalRows.length,
+      sourceSelection: {
+        predictionFinalRows: finalMerge.predictionFinalRows,
+        historyFallbackRows: finalMerge.historyFallbackRows,
+        mergedFinalRows: finalMerge.mergedRows,
+        fallbackRowsUsed: finalMerge.fallbackRowsUsed,
+        sourceMap: finalMerge.sourceMap
+      },
+
+      priceSeriesDiagnostics: priceBundle.diagnostics,
       existingPerformanceRows: existingPerformanceRows.length,
 
       payloadsBeforeDedupe: payloads.length,
       duplicatePayloadsRemoved,
+      payloadsAfterDedupe: dedupedPayloads.length,
       savedPerformanceRows: Array.isArray(savedPerformanceRows) ? savedPerformanceRows.length : 0,
 
-      created: createdCount,
-      corrected: correctedCount,
-      alreadyClosedVerified: verifiedCount,
+      summary,
 
-      normalClosed: normalClosedCount,
-      shockClosed: shockClosedCount,
-      quarantined: quarantinedCount,
-      reliableClosed: reliableClosedCount,
+      created: summary.created,
+      corrected: summary.corrected,
+      alreadyClosedVerified: summary.verified,
 
-      waitingActual: results.filter(row => row.reason === "next_actual_price_not_available_yet").length,
-      invalidActual: results.filter(row => row.reason === "actual_price_invalid_or_suspicious").length,
-      invalidFinal: results.filter(row => row.reason === "invalid_final_prediction").length,
+      normalClosed: summary.closed,
+      shockClosed: summary.shockClosed,
+      quarantined: summary.quarantined,
+      reliableClosed: summary.closed + summary.shockClosed,
 
-      formula:
-        "actual_change = ((next_tefas_price - previous_tefas_price) / previous_tefas_price) * 100; error_change = actual_change - final_prediction_change",
-      source:
-        "prediction_finals + fund_prices next available TEFAS price after prediction_date",
+      waitingActual: summary.waitingActual,
+      invalidActual: summary.invalidActual,
+      invalidFinal: summary.invalidFinal,
+
       learningPolicy:
         "model_learning_stats status=closed ve status=shock_closed gerçek fiyat hareketlerini kullanır. status=quarantined kayıtlar öğrenmeye alınmaz.",
       learningStatsUpdated: learningStats.savedRows,
       learningStatsLearningRows: learningStats.learningPerformanceRows,
       learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
 
-      rule:
-        "v9.0: prediction_date tarihli final tahmin, prediction_date sonrasındaki ilk TEFAS fiyat tarihiyle kapatılır. Büyük ama fiyat zinciriyle tutarlı hareketler shock_closed olur; veri geçersizliği veya mutlak güvenlik sınırı aşımı quarantined olur.",
-
       resultCount: results.length,
-      resultSample: results.slice(0, 80),
+      resultSample: results.slice(0, 160),
+      changedRowsSample: results.filter(row => !row.skipped).slice(0, 80),
+      waitingActualSample: results.filter(row => row.reason === "next_actual_price_not_available_yet").slice(0, 40),
       savedPerformanceRowsSample: Array.isArray(savedPerformanceRows)
-        ? savedPerformanceRows.slice(0, 30)
+        ? savedPerformanceRows.slice(0, 40)
         : [],
       learningStatsSummary: {
         savedRows: learningStats.savedRows,
@@ -1027,7 +1292,7 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
-      error: String(error.message || error).slice(0, 1500)
+      error: String(error.message || error).slice(0, 1800)
     });
   }
 };
