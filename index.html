@@ -1,111 +1,1015 @@
-<!doctype html>
-<html lang="tr">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FinScope Professional v8.1</title>
-  <link rel="stylesheet" href="/styles.css?v=8.1.0" />
-</head>
+const MARKET_ORDER = [
+  "USDTRY", "EURTRY", "GBPTRY",
+  "EURUSD", "GBPUSD", "DXY",
+  "XAU", "XAG",
+  "XU100", "XU050", "XU030",
+  "BTCUSD", "BRENT"
+];
 
-<body>
-  <div class="app">
-    <aside>
-      <div class="brand">FinScope</div>
-      <div class="version">
-        Professional v8.1<br />
-        Read-Only Frontend
+const MARKET_LABELS = {
+  USDTRY: "USD / TRY",
+  EURTRY: "EUR / TRY",
+  GBPTRY: "GBP / TRY",
+  EURUSD: "EUR / USD",
+  GBPUSD: "GBP / USD",
+  DXY: "Dolar Endeksi",
+  XAU: "Altın Ons",
+  XAG: "Gümüş Ons",
+  XU100: "BIST 100",
+  XU050: "BIST 50",
+  XU030: "BIST 30",
+  BTCUSD: "Bitcoin",
+  BRENT: "Brent Petrol"
+};
+
+const FUND_ORDER = ["PBR", "PHE", "TLY", "THF"];
+
+const DISPLAY_MODEL_NAME = "FinScope Prediction Engine v10.0 - Causal NAV Prediction Engine";
+const DISPLAY_MODEL_SHORT = "v10.0";
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function num(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(String(value).replace(",", "."));
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function firstNumber(values, fallback = null) {
+  for (const value of values) {
+    const n = num(value, null);
+    if (n !== null) return n;
+  }
+
+  return fallback;
+}
+
+function formatNumber(value, digits = 4) {
+  const n = num(value);
+  if (n === null) return "—";
+
+  return n.toLocaleString("tr-TR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits
+  });
+}
+
+function formatPercent(value, digits = 2) {
+  const n = num(value);
+  if (n === null) return "—";
+
+  return n.toLocaleString("tr-TR", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  }) + "%";
+}
+
+function directionClass(value) {
+  const n = num(value, 0);
+  if (n > 0) return "up";
+  if (n < 0) return "down";
+  return "flat";
+}
+
+function directionIcon(value) {
+  const n = num(value, 0);
+  if (n > 0) return "▲";
+  if (n < 0) return "▼";
+  return "•";
+}
+
+function sourceText(source) {
+  if (!source) return "veri kaynağı bekleniyor";
+  return String(source);
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url + (url.includes("?") ? "&" : "?") + "t=" + Date.now(), {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(url + " HTTP " + response.status);
+  }
+
+  return await response.json();
+}
+
+function getMarketAssets(marketJson) {
+  return marketJson && marketJson.assets ? marketJson.assets : {};
+}
+
+function getFunds(fundsJson) {
+  return fundsJson && fundsJson.funds ? fundsJson.funds : {};
+}
+
+function getPredictions(predictionsJson) {
+  return predictionsJson && predictionsJson.predictions ? predictionsJson.predictions : {};
+}
+
+function getModelLabel(predictionsJson) {
+  const model =
+    predictionsJson && predictionsJson.model
+      ? String(predictionsJson.model)
+      : "";
+
+  /*
+    MODEL_KEY veritabanı uyumluluğu için v7_1_accuracy_layer kalabilir.
+    Kullanıcıya gösterilen aktif motor adı API'den gelen model bilgisidir.
+  */
+  return model || DISPLAY_MODEL_NAME;
+}
+
+function renderMarketCards(marketJson, fundsJson, predictionsJson) {
+  const cards = document.getElementById("cards");
+
+  const marketAssets = getMarketAssets(marketJson);
+  const fundData = getFunds(fundsJson);
+  const predictions = getPredictions(predictionsJson);
+
+  const html = [];
+
+  MARKET_ORDER.forEach(function(key) {
+    const asset = marketAssets[key];
+    if (!asset) return;
+
+    const value = asset.value ?? asset.price;
+    const change = asset.change ?? asset.dailyChange;
+    const cls = directionClass(change);
+    const icon = directionIcon(change);
+
+    let suffix = "";
+    if (["USDTRY", "EURTRY", "GBPTRY"].includes(key)) suffix = " ₺";
+    if (["XAU", "XAG", "BTCUSD", "BRENT"].includes(key)) suffix = " $";
+
+    html.push(`
+      <div class="card">
+        <h3>${escapeHtml(MARKET_LABELS[key] || key)}</h3>
+        <div class="value">${formatNumber(value, 4)}${suffix}</div>
+        <div class="${cls}">${icon} ${formatPercent(change, 2)}</div>
+        <div class="small">canlı/gecikmeli</div>
+        <div class="small">${escapeHtml(sourceText(asset.source))}</div>
       </div>
+    `);
+  });
 
-      <div class="side-note">
-        TEFAS fon fiyatları<br />
-        Supabase Data Vault<br />
-        Portfolio freshness prediction<br />
-        TEFAS smoothing model<br />
-        Data Quality Guard<br />
-        Fund Bias Correction<br />
-        Actual error learning<br />
-        Performance tracking<br />
-        Read-Only Dashboard v8.1
+  FUND_ORDER.forEach(function(code) {
+    const fund = fundData[code] || {};
+    const pred = predictions[code] || {};
+
+    const fundChange = fund.dailyChange ?? fund.daily_change;
+    const predChange = pred.predictedChange;
+    const cls = directionClass(fundChange);
+    const predCls = directionClass(predChange);
+
+    html.push(`
+      <div class="card">
+        <h3>${escapeHtml(code)}</h3>
+        <div class="value">${formatNumber(fund.price, 4)}</div>
+        <div class="${cls}">${directionIcon(fundChange)} ${formatPercent(fundChange, 2)}</div>
+        <div class="${predCls}">Tahmin: ${directionIcon(predChange)} ${formatPercent(predChange, 2)}</div>
+        <div class="small">Kapsam: %${formatNumber(pred.coverage, 2)} • Güven: ${escapeHtml(pred.confidenceText || "—")}</div>
+        <div class="small">Yumuşatma etkisi: ${formatPercent(pred.smoothingImpact || 0, 2)}</div>
+        <div class="small">Sapma düzeltmesi: ${formatPercent(pred.calibrationOffset || 0, 2)}</div>
+        <div class="small">Accuracy damping: ${formatNumber(pred.accuracyDamping || 1, 4)}</div>
+        <div class="small">TEFAS v2 • ${escapeHtml(fund.date || fund.priceDate || fund.price_date || "tarih yok")}</div>
       </div>
+    `);
+  });
 
-      <nav>
-        <a class="active" href="#dashboard">Dashboard</a>
-        <a href="#funds">Fonlar</a>
-        <a href="#performance">Performans</a>
-        <a href="#data">Data Vault</a>
-        <a href="#prediction">Tahmin Motoru</a>
-      </nav>
-    </aside>
+  cards.innerHTML = html.join("");
+  document.getElementById("cardCount").textContent = "Kart: " + html.length;
+}
 
-    <main>
-      <div class="topbar">
-        <div>
-          <h1>Dashboard</h1>
+function renderPredictionSummary(predictionsJson) {
+  const box = document.getElementById("predictionSummary");
+  const predictions = getPredictions(predictionsJson);
 
-          <div class="subtitle">
-            FinScope Professional v8.1: TEFAS fiyatları, Supabase holdings verisi,
-            gün içi piyasa hareketleri, kayıtlı tahminler ve performans takibi.
-            Bu dashboard read-only çalışır; sayfa açılışında tahmin motorunu yeniden çalıştırmaz.
-          </div>
+  if (!Object.keys(predictions).length) {
+    box.innerHTML = `<span class="error">Tahmin verisi alınamadı.</span>`;
+    return;
+  }
 
-          <div class="chips">
-            <span class="chip">Read-Only Frontend v8.1</span>
-            <span class="chip">Prediction Engine v8.1</span>
-            <span class="chip">Data Quality Guard</span>
-            <span class="chip">Fund Bias Correction</span>
-            <span class="chip">Performance API v8.2</span>
-            <span class="chip">Predictions API</span>
-            <span class="chip">PBR / PHE / TLY</span>
-            <span class="chip">Yatırım tavsiyesi değildir</span>
-          </div>
-        </div>
+  const lines = [];
 
-        <div class="refresh-box">
-          <button type="button" onclick="loadAll()">Yenile</button>
-          <div id="lastUpdate">Yükleniyor...</div>
-          <div id="cardCount"></div>
-        </div>
+  FUND_ORDER.forEach(function(code) {
+    const p = predictions[code];
+    if (!p) return;
+
+    const pred = p.predictedChange;
+    const raw = p.rawPredictedChange;
+    const unsmoothed = p.unsmoothedChange;
+    const smoothingImpact = p.smoothingImpact || 0;
+    const offset = p.calibrationOffset || 0;
+    const damping = p.accuracyDamping || 1;
+    const cls = directionClass(pred);
+
+    const learningStatus =
+      (p.accuracyLayer && p.accuracyLayer.status) ||
+      (p.calibration && p.calibration.status) ||
+      "no_history";
+
+    lines.push(`
+      <div class="summary-line">
+        <b>${escapeHtml(code)}</b>:
+        <span class="${cls}">${directionIcon(pred)} ${DISPLAY_MODEL_SHORT} Tahmin ${formatPercent(pred, 2)}</span>
+        <br />
+        Yumuşatılmamış: ${formatPercent(unsmoothed, 2)}
+        • TEFAS yumuşatma sonrası: ${formatPercent(raw, 2)}
+        • Yumuşatma etkisi: ${formatPercent(smoothingImpact, 2)}
+        <br />
+        Sapma düzeltmesi: ${formatPercent(offset, 2)}
+        • Accuracy damping: ${formatNumber(damping, 4)}
+        • Güven: ${escapeHtml(p.confidenceText || "—")}
+        • Kapsam: %${formatNumber(p.coverage, 2)}
+        • Öğrenme: ${escapeHtml(learningStatus)}
       </div>
+    `);
+  });
 
-      <div id="cards" class="grid"></div>
+  lines.push(`
+    <div class="summary-line yellow">
+      Dashboard artık read-only çalışır. Tahmin Özeti, /api/predictions içindeki son kayıtlı tahminlerden okunur; sayfa açılışında /api/predict çalıştırılmaz.
+    </div>
+  `);
 
-      <div class="sections">
-        <section class="card">
-          <div class="section-title">AI Analist</div>
-          <div id="aiAnalyst" class="loading">Tahmin motoru yükleniyor...</div>
+  box.innerHTML = lines.join("");
+}
 
-          <div class="chips" style="margin-top: 14px;">
-            <span class="chip">Read-Only</span>
-            <span class="chip">v8.1 Data Quality</span>
-            <span class="chip">Fund Bias Correction</span>
-            <span class="chip">TEFAS Smoothing</span>
-            <span class="chip">Sapma Öğrenimi</span>
-          </div>
-        </section>
+function renderAiAnalyst(predictionsJson) {
+  const box = document.getElementById("aiAnalyst");
+  const predictions = getPredictions(predictionsJson);
 
-        <section class="card">
-          <div class="section-title">Tahmin Özeti</div>
-          <div id="predictionSummary" class="loading">Tahmin verisi yükleniyor...</div>
-        </section>
+  if (!Object.keys(predictions).length) {
+    box.innerHTML = `<span class="error">AI Analist için tahmin verisi alınamadı.</span>`;
+    return;
+  }
 
-        <section id="performance" class="card wide">
-          <div class="section-title">Tahmin Performansı</div>
-          <div id="performanceBox" class="loading">Performans verisi yükleniyor...</div>
-        </section>
+  const model = getModelLabel(predictionsJson);
 
-        <section class="card legal wide">
-          <div class="section-title">Hukuki Bilgilendirme</div>
-          © 2026 FinScope Professional. Tüm hakları saklıdır. Bu platformda yer alan
-          veri, analiz, tahmin ve yorumlar yalnızca bilgilendirme amacıyla sunulmaktadır.
-          Yatırım tavsiyesi içermez. Buradaki bilgiler kişiye özel yatırım danışmanlığı
-          kapsamında değildir. Geçmiş performans gelecek dönem getirileri için garanti
-          oluşturmaz. Veriler gecikmeli, eksik veya hatalı olabilir. FinScope Professional,
-          kullanıcıların bu bilgilere dayanarak alacağı yatırım kararlarından sorumlu değildir.
-        </section>
+  const rows = FUND_ORDER.map(function(code) {
+    const p = predictions[code] || {};
+    return {
+      code,
+      pred: num(p.predictedChange, 0),
+      smoothingImpact: num(p.smoothingImpact, 0),
+      offset: num(p.calibrationOffset, 0),
+      damping: num(p.accuracyDamping, 1)
+    };
+  });
+
+  const best = rows.slice().sort(function(a, b) { return b.pred - a.pred; })[0];
+  const worst = rows.slice().sort(function(a, b) { return a.pred - b.pred; })[0];
+
+  const avgSmoothing =
+    rows.reduce(function(sum, row) {
+      return sum + Math.abs(row.smoothingImpact || 0);
+    }, 0) / Math.max(1, rows.length);
+
+  const avgOffset =
+    rows.reduce(function(sum, row) {
+      return sum + Math.abs(row.offset || 0);
+    }, 0) / Math.max(1, rows.length);
+
+  box.innerHTML = `
+    <div class="summary-line">
+      <b>${escapeHtml(model)}</b> aktif. Bu panel artık sadece kayıtlı tahminleri okur; tahmin motorunu yeniden tetiklemez.
+    </div>
+    <div class="summary-line">
+      En pozitif beklenti: <b>${escapeHtml(best.code)}</b> ${formatPercent(best.pred, 2)}.
+      En zayıf beklenti: <b>${escapeHtml(worst.code)}</b> ${formatPercent(worst.pred, 2)}.
+    </div>
+    <div class="summary-line">
+      Ortalama yumuşatma etkisi: <b>${formatPercent(avgSmoothing, 2)}</b>.
+      Ortalama sapma düzeltmesi: <b>${formatPercent(avgOffset, 2)}</b>.
+    </div>
+    <div class="summary-line">
+      Read-Only Frontend v8.4 - Model Label Sync ile dashboard açılışı veri üretmez; sadece /api/market, /api/funds, /api/predictions ve /api/performance okur.
+    </div>
+  `;
+}
+
+function performanceGrade(errorAbs) {
+  const e = Math.abs(num(errorAbs, 0));
+  if (e <= 0.25) return "Çok iyi";
+  if (e <= 0.50) return "İyi";
+  if (e <= 0.85) return "Makul";
+  if (e <= 1.25) return "Zayıf";
+  return "Çok zayıf";
+}
+
+function fundOrderIndex(code) {
+  const index = FUND_ORDER.indexOf(code);
+  return index === -1 ? 999 : index;
+}
+
+
+function getRowFundCode(row) {
+  return String(row && (row.fundCode || row.fund_code || row.code || row.fund || "") || "").toUpperCase();
+}
+
+function getRowPredictionDate(row) {
+  return (
+    row &&
+    (
+      row.predictionDate ||
+      row.prediction_date ||
+      row.finalTahminTarihi ||
+      row.final_tahmin_tarihi
+    )
+  ) || "";
+}
+
+function getRowActualPriceDate(row) {
+  return (
+    row &&
+    (
+      row.actualPriceDate ||
+      row.actual_price_date ||
+      row.actualDate ||
+      row.actual_date ||
+      row.gerceklesmeTarihi ||
+      row.gerceklesme_tarihi
+    )
+  ) || "";
+}
+
+function getRowStatus(row) {
+  return String(row && (row.status || row.rawStatus || row.raw_status || "") || "").toLowerCase();
+}
+
+function isClosedPerformanceStatus(status) {
+  const s = String(status || "").toLowerCase();
+  return [
+    "completed",
+    "closed",
+    "normal_closed",
+    "shock_closed",
+    "complete"
+  ].includes(s);
+}
+
+function isShockPerformanceStatus(status) {
+  return String(status || "").toLowerCase() === "shock_closed";
+}
+
+function isWaitingPerformanceStatus(status) {
+  const s = String(status || "").toLowerCase();
+  return [
+    "pending",
+    "waiting",
+    "waiting_actual",
+    "open",
+    "not_closed"
+  ].includes(s);
+}
+
+function isQuarantinedPerformanceStatus(status) {
+  return String(status || "").toLowerCase() === "quarantined";
+}
+
+function statusText(status, hasActualDate) {
+  const s = String(status || "").toLowerCase();
+
+  if (s === "shock_closed") return "Şok Kapanış";
+  if (s === "closed" || s === "normal_closed" || s === "completed" || s === "complete") return "Normal Kapanış";
+  if (s === "quarantined") return "Karantina";
+  if (isWaitingPerformanceStatus(s) || !hasActualDate) return "Gerçekleşme Bekliyor";
+
+  return status ? String(status) : "Bekliyor";
+}
+
+function statusClassName(status, hasActualDate) {
+  const s = String(status || "").toLowerCase();
+
+  if (s === "shock_closed") return "status-completed";
+  if (s === "closed" || s === "normal_closed" || s === "completed" || s === "complete") return "status-completed";
+  if (s === "quarantined") return "status-warning";
+  if (isWaitingPerformanceStatus(s) || !hasActualDate) return "";
+
+  return "";
+}
+
+function readActualChange(row) {
+  return num(row && (row.actualChange ?? row.actual_change), null);
+}
+
+function readErrorChange(row) {
+  return num(row && (row.errorChange ?? row.error_change), null);
+}
+
+function readAbsoluteError(row) {
+  return num(row && (row.absoluteError ?? row.absolute_error), null);
+}
+
+
+function sortPerformanceRows(a, b) {
+  const actualDateCompare = String(getRowActualPriceDate(b) || "").localeCompare(
+    String(getRowActualPriceDate(a) || "")
+  );
+
+  if (actualDateCompare !== 0) return actualDateCompare;
+
+  const predictionDateCompare = String(getRowPredictionDate(b) || "").localeCompare(
+    String(getRowPredictionDate(a) || "")
+  );
+
+  if (predictionDateCompare !== 0) return predictionDateCompare;
+
+  return fundOrderIndex(getRowFundCode(a)) - fundOrderIndex(getRowFundCode(b));
+}
+
+function getLatestPerformanceRows(performanceJson) {
+  const rows =
+    performanceJson && Array.isArray(performanceJson.rows)
+      ? performanceJson.rows
+      : [];
+
+  return rows.slice().sort(sortPerformanceRows);
+}
+
+function resolveFinalPrediction(perf) {
+  if (!perf) return null;
+
+  if (perf.finalPredictionChange !== null && perf.finalPredictionChange !== undefined) {
+    return num(perf.finalPredictionChange, null);
+  }
+
+  if (perf.calibratedChange !== null && perf.calibratedChange !== undefined) {
+    return num(perf.calibratedChange, null);
+  }
+
+  return null;
+}
+
+function average(values) {
+  const clean = values
+    .map(function(value) {
+      return num(value, null);
+    })
+    .filter(function(value) {
+      return value !== null;
+    });
+
+  if (!clean.length) return null;
+
+  return clean.reduce(function(sum, value) {
+    return sum + value;
+  }, 0) / clean.length;
+}
+
+function derivedDirectionRate(rows) {
+  const usable = rows.filter(function(row) {
+    return row && row.directionHit !== null && row.directionHit !== undefined;
+  });
+
+  if (!usable.length) return null;
+
+  const hits = usable.filter(function(row) {
+    return row.directionHit === true || row.directionHit === "true";
+  }).length;
+
+  return (hits / usable.length) * 100;
+}
+
+function biasLabelFromAverageError(avgError) {
+  const e = num(avgError, null);
+
+  if (e === null) return "Veri yok";
+  if (e > 0.15) return "Tahmin düşük kalıyor";
+  if (e < -0.15) return "Tahmin yüksek kalıyor";
+  return "Dengeli";
+}
+
+function learningStatusFromMetrics(completedRows, avgAbsError, directionHitRate) {
+  const completed = Number(completedRows || 0);
+  const absError = num(avgAbsError, null);
+  const directionRate = num(directionHitRate, null);
+
+  if (completed === 0) return "Henüz kapanmış veri yok";
+  if (completed < 5) return "Örnek sayısı düşük";
+
+  if (absError !== null && absError <= 0.35 && directionRate !== null && directionRate >= 70) {
+    return "İyi çalışıyor";
+  }
+
+  if (absError !== null && absError > 0.85) {
+    return "Model yaklaşımı gözden geçirilmeli";
+  }
+
+  if (directionRate !== null && directionRate < 50) {
+    return "Yön tahmini zayıf";
+  }
+
+  return "İzlenmeli";
+}
+
+function buildFundLearningPanel(performanceJson, performanceRows) {
+  const summary = performanceJson.summary || {};
+  const byFund = summary.byFund || performanceJson.byFund || {};
+  const learningStats = performanceJson.learningStats || {};
+
+  function trendLabel(completedRows, averageAbsError, averageError) {
+    const completed = Number(completedRows || 0);
+    const absError = num(averageAbsError, null);
+    const avgError = num(averageError, null);
+    const prefix = completed < 5 ? "Erken sinyal: " : "";
+
+    if (avgError === null) return `${prefix}veri yok`;
+
+    if (absError !== null && absError >= 0.85 && Math.abs(avgError) <= 0.25) {
+      return `${prefix}hata yönü kararsız`;
+    }
+
+    if (avgError > 0.15) return `${prefix}tahmin düşük kalıyor`;
+    if (avgError < -0.15) return `${prefix}tahmin yüksek kalıyor`;
+
+    return `${prefix}dengeli`;
+  }
+
+  function readableStatus(completedRows, averageAbsError, directionHitRate) {
+    const completed = Number(completedRows || 0);
+    const absError = num(averageAbsError, null);
+    const hitRate = num(directionHitRate, null);
+
+    if (completed === 0) return "Kapanmış veri yok";
+    if (completed < 5) return "Örnek sayısı düşük — karar için erken";
+
+    if (absError !== null && absError <= 0.35 && hitRate !== null && hitRate >= 70) {
+      return "İyi çalışıyor";
+    }
+
+    if (absError !== null && absError > 0.85) {
+      return "Model yaklaşımı gözden geçirilmeli";
+    }
+
+    if (hitRate !== null && hitRate < 50) {
+      return "Yön tahmini zayıf";
+    }
+
+    return "İzlenmeli";
+  }
+
+  function offsetLabel(value) {
+    const offset = num(value, null);
+    if (offset === null) return "—";
+
+    if (Math.abs(offset) < 0.005) {
+      return `Düzeltme gerekmiyor (${formatPercent(offset, 2)})`;
+    }
+
+    if (offset > 0) {
+      return `Tahmine ekle: ${formatPercent(offset, 2)} puan`;
+    }
+
+    return `Tahminden düş: ${formatPercent(Math.abs(offset), 2)} puan`;
+  }
+
+  function confidenceLabel(value) {
+    const adjustment = num(value, null);
+    if (adjustment === null) return "—";
+
+    if (adjustment > 3) return `Güven artırıldı (+${formatNumber(adjustment, 0)})`;
+    if (adjustment > 0) return `Güven hafif artırıldı (+${formatNumber(adjustment, 0)})`;
+    if (adjustment < -3) return `Güven düşürüldü (${formatNumber(adjustment, 0)})`;
+    if (adjustment < 0) return `Güven hafif düşürüldü (${formatNumber(adjustment, 0)})`;
+
+    return "Güven nötr (0)";
+  }
+
+  const rows = FUND_ORDER.map(function(code) {
+    const fundRows = performanceRows.filter(function(row) {
+      const status = getRowStatus(row);
+      return row && getRowFundCode(row) === code && isClosedPerformanceStatus(status);
+    });
+
+    const stat = byFund[code] || {};
+    const learning = stat.learning || learningStats[code] || {};
+
+    const completedRows = firstNumber(
+      [
+        stat.completedRows,
+        learning.completedPredictionCount,
+        learning.sampleSize
+      ],
+      fundRows.length
+    );
+
+    const averageAbsError = firstNumber(
+      [
+        stat.averageAbsoluteError,
+        learning.averageAbsoluteError,
+        average(fundRows.map(function(row) { return readAbsoluteError(row); }))
+      ],
+      null
+    );
+
+    const averageError = firstNumber(
+      [
+        stat.averageError,
+        learning.averageError,
+        average(fundRows.map(function(row) { return readErrorChange(row); }))
+      ],
+      null
+    );
+
+    const directionHitRate = firstNumber(
+      [
+        stat.directionHitRate,
+        learning.directionHitRate,
+        derivedDirectionRate(fundRows)
+      ],
+      null
+    );
+
+    const suggestedOffset = firstNumber(
+      [
+        learning.suggestedOffset,
+        stat.suggestedOffset
+      ],
+      null
+    );
+
+    const confidenceAdjustment = firstNumber(
+      [
+        learning.confidenceAdjustment,
+        stat.confidenceAdjustment
+      ],
+      null
+    );
+
+    const trend = trendLabel(completedRows, averageAbsError, averageError);
+    const status = readableStatus(completedRows, averageAbsError, directionHitRate);
+
+    const avgErrorClass = directionClass(averageError);
+    const offsetClass = directionClass(suggestedOffset);
+
+    return `
+      <tr>
+        <td><b>${escapeHtml(code)}</b></td>
+        <td>${formatNumber(completedRows, 0)}</td>
+        <td><b>${formatPercent(averageAbsError, 2)}</b></td>
+        <td class="${avgErrorClass}">
+          ${averageError === null ? "—" : formatPercent(averageError, 2)}
+        </td>
+        <td>${escapeHtml(trend)}</td>
+        <td>${formatPercent(directionHitRate, 2)}</td>
+        <td class="${offsetClass}">
+          ${escapeHtml(offsetLabel(suggestedOffset))}
+        </td>
+        <td>${escapeHtml(confidenceLabel(confidenceAdjustment))}</td>
+        <td>${escapeHtml(status)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <div class="summary-line">
+      <b>Fon Bazlı Öğrenme ve Sapma</b><br />
+      Bu bölümde her fon ayrı değerlendirilir. Genel ortalama sadece sistem özeti olarak kalır.
+      <br />
+      <b>Ortalama Mutlak Sapma</b>: |Gerçekleşen - Nihai Tahmin| ortalamasıdır; tahminin büyüklük hatasını gösterir.
+      <br />
+      <b>Ortalama Yönlü Hata</b>: Gerçekleşen - Nihai Tahmin ortalamasıdır. Pozitifse tahmin düşük kalmış, negatifse tahmin yüksek kalmıştır.
+      <br />
+      <b>Tahmin Düzeltmesi</b>: gelecek tahmine eklenmesi veya tahminden düşülmesi önerilen temkinli düzeltmedir.
+      <br />
+      <b>Güven Etkisi</b>: modelin bu fondaki güven skoruna yapılan artırma/azaltma etkisidir; pozitif güveni artırır, negatif güveni düşürür.
+    </div>
+
+    <table class="perf-table">
+      <thead>
+        <tr>
+          <th>Fon</th>
+          <th>Kapanan</th>
+          <th>Ortalama Mutlak Sapma</th>
+          <th>Ortalama Yönlü Hata</th>
+          <th>Tahmin Eğilimi</th>
+          <th>Yön İsabeti</th>
+          <th>Tahmin Düzeltmesi</th>
+          <th>Güven Etkisi</th>
+          <th>Veri Durumu</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderPerformance(performanceJson) {
+  const box = document.getElementById("performanceBox");
+
+  if (!performanceJson || !performanceJson.ok) {
+    box.innerHTML = `<span class="error">Performans verisi alınamadı.</span>`;
+    return;
+  }
+
+  const summary = performanceJson.summary || {};
+  const performanceRows = getLatestPerformanceRows(performanceJson);
+
+  const closedRows = performanceRows.filter(function(row) {
+    const status = getRowStatus(row);
+    const actualDate = getRowActualPriceDate(row);
+    const actual = readActualChange(row);
+
+    return Boolean(actualDate) &&
+      actual !== null &&
+      !isWaitingPerformanceStatus(status);
+  });
+
+  const waitingRows = performanceRows.filter(function(row) {
+    const status = getRowStatus(row);
+    const actualDate = getRowActualPriceDate(row);
+    const actual = readActualChange(row);
+
+    return !actualDate ||
+      actual === null ||
+      isWaitingPerformanceStatus(status);
+  });
+
+  const totalRows = summary.totalRows ?? performanceRows.length;
+
+  const pendingRows = firstNumber(
+    [
+      summary.pendingRows,
+      summary.waitingRows,
+      summary.waitingActualRows
+    ],
+    waitingRows.length
+  );
+
+  const completedRows = firstNumber(
+    [
+      summary.completedRows,
+      summary.closedRows,
+      summary.reliableClosedRows,
+      summary.normalClosedRows
+    ],
+    closedRows.length
+  );
+
+  const avgError =
+    summary.averageAbsoluteError === null || summary.averageAbsoluteError === undefined
+      ? "Bekliyor"
+      : formatPercent(summary.averageAbsoluteError, 2);
+
+  const latestDateAvgError =
+    summary.latestDateAverageAbsoluteError === null ||
+    summary.latestDateAverageAbsoluteError === undefined
+      ? null
+      : formatPercent(summary.latestDateAverageAbsoluteError, 2);
+
+  const directionRate =
+    summary.directionHitRate === null || summary.directionHitRate === undefined
+      ? "Bekliyor"
+      : formatPercent(summary.directionHitRate, 2);
+
+  const finalLabel =
+    performanceJson.finalPredictionLabel ||
+    summary.finalPredictionLabel ||
+    "T-1 18:00 Nihai Tahmin";
+
+  const deviationFormula =
+    summary.formula ||
+    summary.deviationFormula ||
+    "Sapma = gerçekleşen TEFAS değişimi - T-1 18:00 sonrası kilitlenen nihai tahmin";
+
+  const apiVersion = performanceJson.version || "Performance API";
+  const fundLearningPanel = buildFundLearningPanel(performanceJson, performanceRows);
+
+  const closedTableRows = closedRows.length
+    ? closedRows.map(function(perf) {
+        const status = getRowStatus(perf);
+        const fundCode = getRowFundCode(perf);
+        const predictionDate = getRowPredictionDate(perf);
+        const actualPriceDate = getRowActualPriceDate(perf);
+        const finalPrediction = resolveFinalPrediction(perf);
+        const actual = readActualChange(perf);
+
+        const apiError = readErrorChange(perf);
+        const calculatedError =
+          actual !== null &&
+          actual !== undefined &&
+          finalPrediction !== null &&
+          finalPrediction !== undefined
+            ? actual - finalPrediction
+            : null;
+
+        const error = apiError !== null ? apiError : calculatedError;
+
+        const grade =
+          error === null || error === undefined
+            ? "Bekliyor"
+            : (perf.grade || performanceGrade(error));
+
+        const label = statusText(status, Boolean(actualPriceDate));
+        const cls = statusClassName(status, Boolean(actualPriceDate));
+
+        return `
+          <tr>
+            <td><b>${escapeHtml(fundCode || "—")}</b></td>
+            <td>${escapeHtml(predictionDate || performanceJson.predictionDate || "—")}</td>
+            <td>${escapeHtml(actualPriceDate || "—")}</td>
+            <td>${actual === null || actual === undefined ? "Bekliyor" : formatPercent(actual, 2)}</td>
+            <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
+            <td>${error === null || error === undefined ? "Bekliyor" : formatPercent(error, 2)}</td>
+            <td>${escapeHtml(grade)}</td>
+            <td><span class="status-pill ${cls}">${escapeHtml(label)}</span></td>
+          </tr>
+        `;
+      }).join("")
+    : `
+      <tr>
+        <td colspan="8">Kapanmış performans kaydı yok.</td>
+      </tr>
+    `;
+
+  const waitingTableRows = waitingRows.length
+    ? waitingRows.slice(0, 20).map(function(perf) {
+        const status = getRowStatus(perf);
+        const fundCode = getRowFundCode(perf);
+        const predictionDate = getRowPredictionDate(perf);
+        const actualPriceDate = getRowActualPriceDate(perf);
+        const finalPrediction = resolveFinalPrediction(perf);
+        const label = statusText(status, Boolean(actualPriceDate));
+
+        return `
+          <tr>
+            <td><b>${escapeHtml(fundCode || "—")}</b></td>
+            <td>${escapeHtml(predictionDate || "—")}</td>
+            <td>${escapeHtml(actualPriceDate || "Henüz yok")}</td>
+            <td>Bekliyor</td>
+            <td class="${directionClass(finalPrediction)}">${finalPrediction === null || finalPrediction === undefined ? "—" : formatPercent(finalPrediction, 2)}</td>
+            <td>Bekliyor</td>
+            <td>Bekliyor</td>
+            <td><span class="status-pill">${escapeHtml(label)}</span></td>
+          </tr>
+        `;
+      }).join("")
+    : `
+      <tr>
+        <td colspan="8">Bekleyen tahmin yok.</td>
+      </tr>
+    `;
+
+  box.innerHTML = `
+    <div class="performance-grid">
+      <div class="metric">
+        <div class="metric-label">Toplam Kayıt</div>
+        <div class="metric-value">${formatNumber(totalRows, 0)}</div>
       </div>
-    </main>
-  </div>
+      <div class="metric">
+        <div class="metric-label">Bekleyen Tahmin</div>
+        <div class="metric-value yellow">${formatNumber(pendingRows, 0)}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Kapanmış Tahmin</div>
+        <div class="metric-value up">${formatNumber(completedRows, 0)}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Genel Ortalama Sapma</div>
+        <div class="metric-value">${avgError}</div>
+      </div>
+    </div>
 
-  <script src="/app.js?v=8.1.0" defer></script>
-</body>
-</html>
+    <div class="summary-line">
+      Genel yön isabet oranı: <b>${directionRate}</b>.
+      Genel ortalama sapma, tüm fonların toplam performansını gösterir; fon bazlı karar için aşağıdaki öğrenme tablosu kullanılmalıdır.
+      ${latestDateAvgError ? `Son gerçekleşme günü ortalaması: <b>${latestDateAvgError}</b>.` : ""}
+      <br />
+      <b>${escapeHtml(finalLabel)}</b>, sadece <b>${escapeHtml(apiVersion)}</b> içindeki finalPredictionChange alanından okunur.
+      ${escapeHtml(deviationFormula)}.
+      <br />
+      <b>Önemli:</b> Gerçekleşme tarihi, tahmin tarihinden bir sonraki TEFAS iş günüdür. Örneğin 09.09.2026 nihai tahmini, 10.09.2026 gerçekleşmesiyle kapanır.
+    </div>
+
+    ${fundLearningPanel}
+
+    <div class="summary-line">
+      <b>Kapanmış Tahmin Performans Kayıtları</b><br />
+      Bu tabloda tahmin tarihi ile gerçekleşme tarihi ayrı gösterilir.
+    </div>
+
+    <table class="perf-table">
+      <thead>
+        <tr>
+          <th>Fon</th>
+          <th>Tahmin Tarihi</th>
+          <th>Gerçekleşme Tarihi</th>
+          <th>Gerçekleşen</th>
+          <th>${escapeHtml(finalLabel)}</th>
+          <th>Sapma</th>
+          <th>Not</th>
+          <th>Durum</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${closedTableRows}
+      </tbody>
+    </table>
+
+    <div class="summary-line">
+      <b>Bekleyen Tahminler</b><br />
+      Bu bölümde henüz sonraki TEFAS gerçekleşmesi gelmeyen tahminler yer alır.
+    </div>
+
+    <table class="perf-table">
+      <thead>
+        <tr>
+          <th>Fon</th>
+          <th>Tahmin Tarihi</th>
+          <th>Gerçekleşme Tarihi</th>
+          <th>Gerçekleşen</th>
+          <th>${escapeHtml(finalLabel)}</th>
+          <th>Sapma</th>
+          <th>Not</th>
+          <th>Durum</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${waitingTableRows}
+      </tbody>
+    </table>
+  `;
+}
+
+
+async function loadAll() {
+  const lastUpdate = document.getElementById("lastUpdate");
+  const cards = document.getElementById("cards");
+  const ai = document.getElementById("aiAnalyst");
+  const summary = document.getElementById("predictionSummary");
+  const performance = document.getElementById("performanceBox");
+
+  lastUpdate.textContent = "Yükleniyor...";
+  cards.innerHTML = "";
+  ai.innerHTML = "Tahmin motoru yükleniyor...";
+  summary.innerHTML = "Tahmin verisi yükleniyor...";
+  performance.innerHTML = "Performans verisi yükleniyor...";
+
+  try {
+    const marketPromise = fetchJson("/api/market");
+    const fundsPromise = fetchJson("/api/funds");
+    const predictionsPromise = fetchJson("/api/predictions");
+    const performancePromise = fetchJson("/api/performance");
+
+    const results = await Promise.allSettled([
+      marketPromise,
+      fundsPromise,
+      predictionsPromise,
+      performancePromise
+    ]);
+
+    const marketJson =
+      results[0].status === "fulfilled"
+        ? results[0].value
+        : { assets: {} };
+
+    const fundsJson =
+      results[1].status === "fulfilled"
+        ? results[1].value
+        : { funds: {} };
+
+    const predictionsJson =
+      results[2].status === "fulfilled"
+        ? results[2].value
+        : { predictions: {} };
+
+    const performanceJson =
+      results[3].status === "fulfilled"
+        ? results[3].value
+        : { ok: false };
+
+    renderMarketCards(marketJson, fundsJson, predictionsJson);
+    renderPredictionSummary(predictionsJson);
+    renderAiAnalyst(predictionsJson);
+    renderPerformance(performanceJson);
+
+    const now = new Date();
+    lastUpdate.textContent = "Son güncelleme: " + now.toLocaleString("tr-TR");
+  } catch (err) {
+    cards.innerHTML = `
+      <div class="card wide">
+        <div class="error">Dashboard yüklenemedi: ${escapeHtml(err.message || err)}</div>
+      </div>
+    `;
+    ai.innerHTML = `<span class="error">AI Analist yüklenemedi.</span>`;
+    summary.innerHTML = `<span class="error">Tahmin özeti yüklenemedi.</span>`;
+    performance.innerHTML = `<span class="error">Performans verisi yüklenemedi.</span>`;
+    lastUpdate.textContent = "Hata oluştu";
+  }
+}
+
+window.loadAll = loadAll;
+
+loadAll();
+setInterval(loadAll, 60000);
