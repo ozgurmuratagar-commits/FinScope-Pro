@@ -1,6 +1,6 @@
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 
-const API_VERSION = "FinScope Close Performance API v10.1 - Deterministic Next TEFAS Close Repair";
+const API_VERSION = "FinScope Close Performance API v10.2 - Object Key Safe Deterministic TEFAS Close Repair";
 const ACTIVE_MODEL = "v7_1_accuracy_layer";
 const MODEL_VERSION = "FinScope Prediction Engine v10.0 - Causal NAV Prediction Engine";
 
@@ -15,7 +15,7 @@ const SHOCK_ABSOLUTE_ERROR_THRESHOLD = 2.5;
 const SHOCK_FINAL_PREDICTION_THRESHOLD = 5;
 
 const DIRECTION_EPSILON = 0.01;
-const PRICE_CHANGE_TOLERANCE = 0.0001;
+const CHANGE_TOLERANCE = 0.0001;
 const DAILY_CHANGE_WARNING_TOLERANCE = 0.10;
 
 function num(value, fallback = null) {
@@ -191,7 +191,7 @@ async function supabaseRequest(path, options = {}) {
 
   if (!response.ok) {
     throw new Error(
-      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1500)}`
+      `Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text.slice(0, 1800)}`
     );
   }
 
@@ -200,7 +200,7 @@ async function supabaseRequest(path, options = {}) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`Supabase JSON parse failed for ${path}: ${text.slice(0, 600)}`);
+    throw new Error(`Supabase JSON parse failed for ${path}: ${text.slice(0, 800)}`);
   }
 }
 
@@ -493,10 +493,7 @@ function buildPriceSeries(fundPriceRows) {
   }
 
   const grouped = {};
-
-  for (const code of FUNDS) {
-    grouped[code] = [];
-  }
+  for (const code of FUNDS) grouped[code] = [];
 
   for (const row of latestByFundDate.values()) {
     const code = String(row.fund_code || "").toUpperCase();
@@ -504,9 +501,7 @@ function buildPriceSeries(fundPriceRows) {
     grouped[code].push(row);
   }
 
-  for (const code of FUNDS) {
-    grouped[code].sort(sortPriceRows);
-  }
+  for (const code of FUNDS) grouped[code].sort(sortPriceRows);
 
   return {
     grouped,
@@ -672,7 +667,7 @@ function buildPerformancePayload(finalRow, actualMatch) {
 
     grade: gradeFromError(absoluteError),
     note:
-      `v10.1: Sapma = prediction_date sonrasındaki ilk TEFAS fiyat değişimi - kilitli nihai tahmin. ` +
+      `v10.2: Sapma = prediction_date sonrasındaki ilk TEFAS fiyat değişimi - kilitli nihai tahmin. ` +
       `Final kaynak: ${finalRow.source_table || "prediction_finals"}. ` +
       "Büyük ve fiyat zinciriyle tutarlı hareketler shock_closed olarak saklanır.",
 
@@ -756,11 +751,11 @@ function applyQualityToPayload(payload, quality) {
 
   if (quality.status === "quarantined") {
     payload.note =
-      `v10.1 STRICT GATE: Bu satır model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
+      `v10.2 STRICT GATE: Bu satır model öğrenmesine alınmadı. Nedenler: ${quality.reasons.join(", ")}. ` +
       "Performans kaydı denetim için saklanır; model_learning_stats quarantined kayıtları kullanmaz.";
   } else if (quality.status === "shock_closed") {
     payload.note =
-      `v10.1 SHOCK AWARE: Büyük hareket gerçek fiyat zinciriyle kapatıldı ve shock_closed olarak saklandı. ` +
+      `v10.2 SHOCK AWARE: Büyük hareket gerçek fiyat zinciriyle kapatıldı ve shock_closed olarak saklandı. ` +
       `Şok nedenleri: ${quality.shockReasons.join(", ")}. ` +
       "Bu kayıt veri hatası sayılmaz; Causal NAV Engine için şok öğrenme örneği olarak korunur.";
   }
@@ -795,7 +790,7 @@ function performanceNeedsUpsert(existingRows, payload, forceRepair) {
 
     if (oldValue === null && newValue === null) continue;
     if (oldValue === null || newValue === null) return true;
-    if (Math.abs(oldValue - newValue) > PRICE_CHANGE_TOLERANCE) return true;
+    if (Math.abs(oldValue - newValue) > CHANGE_TOLERANCE) return true;
   }
 
   return false;
@@ -816,8 +811,24 @@ function dedupePerformancePayloads(payloads) {
   return [...map.values()];
 }
 
-async function upsertPerformanceRows(payloads) {
-  if (!payloads.length) return [];
+function payloadKeySignature(payload) {
+  return Object.keys(payload).sort().join("|");
+}
+
+function groupPayloadsByKeys(payloads) {
+  const groups = new Map();
+
+  for (const payload of payloads || []) {
+    const signature = payloadKeySignature(payload);
+    if (!groups.has(signature)) groups.set(signature, []);
+    groups.get(signature).push(payload);
+  }
+
+  return [...groups.entries()].map(([signature, rows]) => ({ signature, rows }));
+}
+
+async function postPerformancePayloadGroup(rows) {
+  if (!rows.length) return [];
 
   const path =
     "prediction_performance" +
@@ -826,8 +837,67 @@ async function upsertPerformanceRows(payloads) {
   return await supabaseRequest(path, {
     method: "POST",
     prefer: "resolution=merge-duplicates,return=representation",
-    body: payloads
+    body: rows
   });
+}
+
+async function upsertPerformanceRows(payloads) {
+  const groups = groupPayloadsByKeys(payloads);
+  const savedRows = [];
+  const errors = [];
+
+  for (const group of groups) {
+    try {
+      const saved = await postPerformancePayloadGroup(group.rows);
+      if (Array.isArray(saved)) savedRows.push(...saved);
+    } catch (groupError) {
+      if (group.rows.length === 1) {
+        errors.push({
+          stage: "group_single",
+          signature: group.signature,
+          row: {
+            fund_code: group.rows[0].fund_code,
+            prediction_date: group.rows[0].prediction_date,
+            actual_price_date: group.rows[0].actual_price_date
+          },
+          error: String(groupError.message || groupError).slice(0, 1500)
+        });
+        continue;
+      }
+
+      for (const row of group.rows) {
+        try {
+          const saved = await postPerformancePayloadGroup([row]);
+          if (Array.isArray(saved)) savedRows.push(...saved);
+        } catch (rowError) {
+          errors.push({
+            stage: "row_retry",
+            signature: group.signature,
+            row: {
+              fund_code: row.fund_code,
+              prediction_date: row.prediction_date,
+              actual_price_date: row.actual_price_date
+            },
+            error: String(rowError.message || rowError).slice(0, 1500)
+          });
+        }
+      }
+    }
+  }
+
+  if (errors.length && savedRows.length === 0) {
+    throw new Error(`prediction_performance upsert failed. First error: ${JSON.stringify(errors[0]).slice(0, 1800)}`);
+  }
+
+  return {
+    rows: savedRows,
+    errors,
+    groupCount: groups.length,
+    groupSignatures: groups.map(group => ({
+      count: group.rows.length,
+      signature: group.signature
+    }))
+  };
 }
 
 function isLearningPerformanceRow(row) {
@@ -938,7 +1008,7 @@ function computeLearningStatsForFund(fundCode, performanceRows) {
     note:
       sampleSize === 0
         ? "Henüz güvenilir sonraki TEFAS günü kapanmış final performans kaydı yok."
-        : `v10.1: İstatistikler normal closed + shock_closed gerçek fiyat hareketlerinden hesaplandı. Normal kayıt: ${normalRows.length}, şok kayıt: ${shockRows.length}. Quarantined kayıtlar öğrenmeye alınmaz.`,
+        : `v10.2: İstatistikler normal closed + shock_closed gerçek fiyat hareketlerinden hesaplandı. Normal kayıt: ${normalRows.length}, şok kayıt: ${shockRows.length}. Quarantined kayıtlar öğrenmeye alınmaz.`,
 
     updated_at: new Date().toISOString()
   };
@@ -1204,7 +1274,12 @@ module.exports = async function handler(req, res) {
     const dedupedPayloads = dedupePerformancePayloads(payloads);
     const duplicatePayloadsRemoved = payloads.length - dedupedPayloads.length;
 
-    const savedPerformanceRows = dryRun ? [] : await upsertPerformanceRows(dedupedPayloads);
+    const upsertBundle = dryRun
+      ? { rows: [], errors: [], groupCount: 0, groupSignatures: [] }
+      : await upsertPerformanceRows(dedupedPayloads);
+
+    const savedPerformanceRows = upsertBundle.rows;
+
     const learningStats = dryRun
       ? { savedRows: 0, learningPerformanceRows: 0, ignoredPerformanceRows: 0, rows: [] }
       : await updateLearningStats();
@@ -1226,10 +1301,19 @@ module.exports = async function handler(req, res) {
       forceRepair,
       dryRun,
 
+      objectKeySafety: {
+        enabled: true,
+        reason:
+          "Supabase bulk POST ayni request icindeki tum JSON objelerinde ayni key setini ister. v10.2 payloadlari key imzasina gore ayri gruplar halinde gonderir.",
+        groupCount: upsertBundle.groupCount,
+        groupSignatures: upsertBundle.groupSignatures,
+        upsertErrors: upsertBundle.errors
+      },
+
       deterministicCloseRepair: {
         enabled: true,
         rule:
-          "Her fon ve prediction_date için önce prediction_finals final satırı kullanılır. Final yoksa prediction_history içindeki aynı tarihli son tahmin fallback final kabul edilir. Gerçekleşme her zaman prediction_date sonrasındaki ilk geçerli TEFAS fiyatından hesaplanır.",
+          "Her fon ve prediction_date icin once prediction_finals final satiri kullanilir. Final yoksa prediction_history icindeki ayni tarihli son tahmin fallback final kabul edilir. Gerceklesme her zaman prediction_date sonrasindaki ilk gecerli TEFAS fiyatindan hesaplanir.",
         actualFormula:
           "actual_change = ((next_tefas_price_after_prediction_date - previous_tefas_price) / previous_tefas_price) * 100",
         errorFormula:
@@ -1268,7 +1352,7 @@ module.exports = async function handler(req, res) {
       invalidFinal: summary.invalidFinal,
 
       learningPolicy:
-        "model_learning_stats status=closed ve status=shock_closed gerçek fiyat hareketlerini kullanır. status=quarantined kayıtlar öğrenmeye alınmaz.",
+        "model_learning_stats status=closed ve status=shock_closed gercek fiyat hareketlerini kullanir. status=quarantined kayitlar ogrenmeye alinmaz.",
       learningStatsUpdated: learningStats.savedRows,
       learningStatsLearningRows: learningStats.learningPerformanceRows,
       learningStatsIgnoredRows: learningStats.ignoredPerformanceRows,
@@ -1292,7 +1376,7 @@ module.exports = async function handler(req, res) {
       version: API_VERSION,
       model: ACTIVE_MODEL,
       modelVersion: MODEL_VERSION,
-      error: String(error.message || error).slice(0, 1800)
+      error: String(error.message || error).slice(0, 2500)
     });
   }
 };
