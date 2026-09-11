@@ -1,3 +1,271 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FinScope Professional</title>
+  <style>
+    :root {
+      --bg: #06131c;
+      --panel: #122333;
+      --panel-2: #0e1d2a;
+      --line: #284153;
+      --text: #d9efff;
+      --muted: #8fb1c8;
+      --teal: #10b3a6;
+      --green: #28e79c;
+      --red: #ff5d85;
+      --yellow: #ffd166;
+      --blue: #7dc4ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      background: linear-gradient(180deg, #098d89, #075f69);
+      padding: 14px 12px;
+      color: #ffffff;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .brand {
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .brand small {
+      display: block;
+      font-size: 11px;
+      margin-top: 4px;
+      opacity: .88;
+      font-weight: 600;
+    }
+
+    .nav { margin-top: 20px; display: grid; gap: 8px; }
+    .nav a {
+      color: #fff;
+      text-decoration: none;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(255,255,255,.08);
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .nav a:hover { background: rgba(255,255,255,.18); }
+
+    main { padding: 14px 18px 28px; overflow-x: hidden; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    h1, h2, h3 { margin: 0; }
+    h1 { font-size: 20px; }
+    h2 { font-size: 15px; margin-bottom: 8px; }
+    h3 { font-size: 13px; color: #ffffff; margin-bottom: 6px; }
+
+    .small { color: var(--muted); font-size: 11px; margin-top: 3px; }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .chip, button {
+      border: 1px solid var(--line);
+      background: #0c1b27;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    button { cursor: pointer; }
+    button:hover { border-color: var(--teal); }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .card, .panel {
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 8px 20px rgba(0,0,0,.18);
+    }
+
+    .card { padding: 12px; min-height: 96px; }
+    .card.wide { grid-column: 1 / -1; }
+    .value { font-size: 22px; font-weight: 800; color: #fff; margin: 4px 0; }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .panel { padding: 12px; margin-bottom: 8px; overflow-x: auto; }
+
+    .summary-line {
+      color: var(--muted);
+      line-height: 1.45;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+    }
+
+    .summary-line:last-child { border-bottom: 0; }
+
+    .performance-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .metric-label { color: var(--muted); font-size: 11px; }
+    .metric-value { font-size: 18px; font-weight: 800; margin-top: 3px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td {
+      padding: 7px 8px;
+      border-bottom: 1px solid rgba(255,255,255,.09);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+
+    th { color: #b9d9ef; font-size: 11px; font-weight: 800; }
+
+    .up { color: var(--green); font-weight: 800; }
+    .down { color: var(--red); font-weight: 800; }
+    .flat { color: var(--yellow); font-weight: 800; }
+    .yellow { color: var(--yellow); font-weight: 800; }
+    .error { color: var(--red); font-weight: 800; }
+
+    .status-pill {
+      display: inline-block;
+      border: 1px solid rgba(255,209,102,.6);
+      color: var(--yellow);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-weight: 800;
+      font-size: 11px;
+    }
+
+    .status-completed {
+      border-color: rgba(40,231,156,.6);
+      color: var(--green);
+    }
+
+    @media (max-width: 1000px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { position: relative; height: auto; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .split { grid-template-columns: 1fr; }
+      .performance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 640px) {
+      .cards { grid-template-columns: 1fr; }
+      .performance-grid { grid-template-columns: 1fr; }
+      main { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">FinScope<small>Professional</small></div>
+      <div class="small">v10.3 UI Recovery</div>
+      <nav class="nav">
+        <a href="#dashboard">Dashboard</a>
+        <a href="#performance">Performance</a>
+        <a href="#predictionSummary">Tahmin Özeti</a>
+        <a href="#aiAnalyst">AI Analist</a>
+      </nav>
+    </aside>
+
+    <main id="dashboard">
+      <div class="topbar">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="small">FinScope Professional - TEFAS ve tahmin performansı</div>
+        </div>
+        <div id="lastUpdate" class="chip">Yükleniyor...</div>
+      </div>
+
+      <div class="toolbar">
+        <span id="cardCount" class="chip">Kart: 0</span>
+        <span class="chip">Model: v10.0 Causal NAV</span>
+        <span class="chip">UI: v10.3 Recovery</span>
+        <button onclick="loadAll()">Yenile</button>
+      </div>
+
+      <section id="cards" class="cards"></section>
+
+      <section class="split">
+        <div class="panel">
+          <h2>AI Analist</h2>
+          <div id="aiAnalyst">AI Analist yükleniyor...</div>
+        </div>
+        <div class="panel">
+          <h2>Tahmin Özeti</h2>
+          <div id="predictionSummary">Tahmin verisi yükleniyor...</div>
+        </div>
+      </section>
+
+      <section id="performance" class="panel">
+        <h2>Tahmin Performansı</h2>
+        <div id="performanceBox">Performans verisi yükleniyor...</div>
+      </section>
+
+      <section class="panel">
+        <h2>Hukuki Bilgilendirme</h2>
+        <div class="summary-line">
+          Bu ekran bilgilendirme ve analiz amaçlıdır. Tahminler kesinlik içermez ve yatırım tavsiyesi değildir.
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
 const MARKET_ORDER = [
   "USDTRY", "EURTRY", "GBPTRY",
   "EURUSD", "GBPUSD", "DXY",
@@ -1013,3 +1281,6 @@ window.loadAll = loadAll;
 
 loadAll();
 setInterval(loadAll, 60000);
+  </script>
+</body>
+</html>
