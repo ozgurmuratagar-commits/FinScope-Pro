@@ -1,5 +1,5 @@
 // api/predict.js
-// FinScope Predict API v10.3 - Causal Beta + Shock Multiplier Layer
+// FinScope Predict API v10.3.2 - Strict Schema Safe Causal Beta + Shock Multiplier Layer
 // Purpose:
 // - Keep the existing /api/predict endpoint.
 // - Add a true Causal NAV calculation based on fund holdings, holding weights, and current market moves.
@@ -7,9 +7,9 @@
 // - Do not create a new Vercel function.
 // - report=1 returns diagnostics only and does not write predictions.
 
-const API_VERSION = "FinScope Predict API v10.3.1 - Schema Safe Causal Beta + Shock Multiplier Layer";
+const API_VERSION = "FinScope Predict API v10.3.2 - Strict Schema Safe Causal Beta + Shock Multiplier Layer";
 const MODEL_KEY = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v10.3.1 - Schema Safe Causal Beta + Shock Multiplier Layer";
+const MODEL_VERSION = "FinScope Prediction Engine v10.3.2 - Strict Schema Safe Causal Beta + Shock Multiplier Layer";
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 const TARGET_ABSOLUTE_ERROR = 0.1;
 
@@ -128,6 +128,43 @@ async function supabase(path, options = {}) {
     throw err;
   }
   return body;
+}
+
+const TABLE_COLUMN_CACHE = {};
+
+async function getTableColumns(tableName, fallbackColumns = []) {
+  if (TABLE_COLUMN_CACHE[tableName]) return TABLE_COLUMN_CACHE[tableName];
+
+  try {
+    const sample = await supabase(`${tableName}?select=*&limit=1`);
+    if (Array.isArray(sample) && sample.length > 0 && sample[0] && typeof sample[0] === "object") {
+      const columns = Object.keys(sample[0]);
+      TABLE_COLUMN_CACHE[tableName] = columns;
+      return columns;
+    }
+  } catch (_) {
+    // If schema probing fails, use a conservative fallback below.
+  }
+
+  TABLE_COLUMN_CACHE[tableName] = fallbackColumns;
+  return fallbackColumns;
+}
+
+function pickColumns(row, allowedColumns) {
+  const allowed = new Set(allowedColumns || []);
+  const out = {};
+  const removed = [];
+
+  for (const [key, value] of Object.entries(row || {})) {
+    if (allowed.has(key)) out[key] = value;
+    else removed.push(key);
+  }
+
+  return { row: out, removed };
+}
+
+function uniqueSorted(values) {
+  return Array.from(new Set((values || []).filter(Boolean))).sort();
 }
 
 function inFilter(values) {
@@ -730,7 +767,6 @@ function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory
     calibration_offset: round(learningOffset + learnedBias + recentMomentum, 6),
     actual_change: null,
     error_change: null,
-    note: prediction.note,
     updated_at: new Date().toISOString()
   };
 
@@ -738,16 +774,63 @@ function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory
 }
 
 async function savePredictionRows(rows) {
-  if (!rows.length) return { ok: true, saved: 0, rows: [] };
+  if (!rows.length) {
+    return { ok: true, saved: 0, attempted: 0, rows: [], removedColumns: [] };
+  }
+
+  const fallbackColumns = [
+    "fund_code",
+    "prediction_date",
+    "model",
+    "raw_predicted_change",
+    "calibrated_change",
+    "confidence",
+    "coverage",
+    "residual_weight",
+    "sample_size",
+    "calibration_offset",
+    "actual_change",
+    "error_change",
+    "created_at",
+    "updated_at"
+  ];
+
+  const columns = await getTableColumns("prediction_history", fallbackColumns);
+  const removedColumns = [];
+  const cleanRows = rows.map(sourceRow => {
+    const picked = pickColumns(sourceRow, columns);
+    removedColumns.push(...picked.removed);
+    return picked.row;
+  }).filter(row => row.fund_code && row.prediction_date && row.model);
+
+  if (!cleanRows.length) {
+    return {
+      ok: false,
+      saved: 0,
+      attempted: rows.length,
+      rows: [],
+      removedColumns: uniqueSorted(removedColumns),
+      error: "prediction_history schema-safe filter removed required columns"
+    };
+  }
+
   const path = `prediction_history?on_conflict=fund_code,prediction_date,model`;
   const saved = await supabase(path, {
     method: "POST",
     headers: {
       Prefer: "resolution=merge-duplicates,return=representation"
     },
-    body: JSON.stringify(rows)
+    body: JSON.stringify(cleanRows)
   });
-  return { ok: true, saved: Array.isArray(saved) ? saved.length : rows.length, rows: saved || [] };
+
+  return {
+    ok: true,
+    saved: Array.isArray(saved) ? saved.length : cleanRows.length,
+    attempted: rows.length,
+    rows: saved || [],
+    removedColumns: uniqueSorted(removedColumns),
+    schemaColumnsUsed: columns
+  };
 }
 
 async function runEngine({ write = false, reportOnly = false } = {}) {
