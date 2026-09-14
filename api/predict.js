@@ -1,994 +1,994 @@
 // api/predict.js
-// FinScope Predict API v10.3.2 - Strict Schema Safe Causal Beta + Shock Multiplier Layer
-// Purpose:
-// - Keep the existing /api/predict endpoint.
-// - Add a true Causal NAV calculation based on fund holdings, holding weights, and current market moves.
-// - Add learned fund beta and shock multiplier from closed performance rows so PBR/PHE-style moves are not under-priced.
-// - Do not create a new Vercel function.
-// - report=1 returns diagnostics only and does not write predictions.
+// FinScope Predict API v10.4 - Multi Asset NAV Engine
+// Full replacement file.
 
-const API_VERSION = "FinScope Predict API v10.3.2 - Strict Schema Safe Causal Beta + Shock Multiplier Layer";
+const API_VERSION = "FinScope Predict API v10.4 - Multi Asset NAV Engine";
+const MODEL = "v7_1_accuracy_layer";
 const MODEL_KEY = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v10.3.2 - Strict Schema Safe Causal Beta + Shock Multiplier Layer";
-const FUNDS = ["PBR", "PHE", "TLY", "THF"];
+const MODEL_VERSION = "FinScope Prediction Engine v10.4 - Multi Asset NAV Engine";
+
+const FUND_ORDER = ["PBR", "PHE", "TLY", "THF"];
 const TARGET_ABSOLUTE_ERROR = 0.1;
+const YAHOO_TIMEOUT_MS = 4500;
+const YAHOO_CONCURRENCY = 6;
 
-const MAX_YAHOO_BATCH_SIZE = 45;
-const YAHOO_TIMEOUT_MS = 6500;
-const CHART_FALLBACK_LIMIT = 24;
+const HISTORY_COLUMNS = [
+  "fund_code",
+  "prediction_date",
+  "model",
+  "predicted_change",
+  "actual_change",
+  "error_change",
+  "confidence",
+  "created_at",
+  "updated_at",
+  "raw_predicted_change",
+  "calibrated_change",
+  "calibration_offset",
+  "actual_price_date",
+  "sample_size",
+  "model_version"
+];
 
-function json(res, status, payload) {
+const NON_STOCK_DAILY_PROXY = {
+  cash: 0.08,
+  deposit: 0.09,
+  repo: 0.09,
+  reverse_repo: 0.09,
+  fixed_income: 0.07,
+  bond: 0.06,
+  lease_certificate: 0.06,
+  fund: 0,
+  stock: 0,
+  equity: 0,
+  gold: 0,
+  currency: 0,
+  other: 0
+};
+
+function setCommonHeaders(res) {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.status(status).send(JSON.stringify(payload));
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-function getQuery(req) {
-  const url = new URL(req.url || "/api/predict", "https://finscope.local");
-  return url.searchParams;
+function sendJson(res, statusCode, data) {
+  setCommonHeaders(res);
+  res.status(statusCode).send(JSON.stringify(data));
 }
 
-function isManualAuthorized(req) {
-  const q = getQuery(req);
-  const manual = q.get("manual");
-  const auth = req.headers && (req.headers.authorization || req.headers.Authorization);
-  const cronSecret = process.env.CRON_SECRET || process.env.FINSCOPE_CRON_SECRET || "";
-  if (manual === "finscope") return true;
-  if (cronSecret && auth === `Bearer ${cronSecret}`) return true;
-  return false;
-}
-
-function n(value, fallback = null) {
+function toNumber(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
   if (typeof value === "number") return Number.isFinite(value) ? value : fallback;
-  const cleaned = String(value).trim().replace("%", "").replace(/\./g, "").replace(",", ".");
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  const text = String(value).trim().replace(/\./g, "").replace(",", ".");
+  const n = Number(text);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function round(value, digits = 4) {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) return null;
-  const p = Math.pow(10, digits);
-  return Math.round(Number(value) * p) / p;
+  const n = toNumber(value, null);
+  if (n === null) return null;
+  const p = 10 ** digits;
+  return Math.round(n * p) / p;
 }
 
 function clamp(value, min, max) {
-  const x = Number(value);
-  if (!Number.isFinite(x)) return 0;
-  return Math.max(min, Math.min(max, x));
+  const n = toNumber(value, 0);
+  return Math.max(min, Math.min(max, n));
 }
 
-function abs(value) {
-  const x = Number(value);
-  return Number.isFinite(x) ? Math.abs(x) : 0;
+function avg(values) {
+  const nums = values.map((x) => toNumber(x, null)).filter((x) => x !== null);
+  if (!nums.length) return null;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
-function direction(value) {
-  const x = Number(value);
-  if (!Number.isFinite(x) || Math.abs(x) < 0.0001) return "flat";
-  return x > 0 ? "up" : "down";
+function signOf(value) {
+  const n = toNumber(value, 0);
+  if (n > 0.0001) return "up";
+  if (n < -0.0001) return "down";
+  return "flat";
 }
 
-function confidenceText(score) {
-  const s = Number(score) || 0;
-  if (s >= 80) return "Yuksek";
-  if (s >= 62) return "Orta";
-  if (s >= 45) return "Dusuk";
-  return "Cok dusuk";
+function sameDirection(a, b) {
+  const sa = signOf(a);
+  const sb = signOf(b);
+  return sa !== "flat" && sa === sb;
 }
 
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+function absDateDiffDays(a, b) {
+  if (!a || !b) return null;
+  const da = new Date(`${String(a).slice(0, 10)}T00:00:00Z`);
+  const db = new Date(`${String(b).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return null;
+  return Math.round((da.getTime() - db.getTime()) / 86400000);
 }
 
-function daysBetween(dateA, dateB) {
-  if (!dateA || !dateB) return null;
-  const a = new Date(`${dateA}T00:00:00Z`).getTime();
-  const b = new Date(`${dateB}T00:00:00Z`).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return Math.round((b - a) / 86400000);
+function addDays(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
-function unique(arr) {
-  return Array.from(new Set(arr.filter(Boolean)));
-}
-
-function chunk(arr, size) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-function getSupabaseConfig() {
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-  return { url: url.replace(/\/$/, ""), key };
-}
-
-async function supabase(path, options = {}) {
-  const cfg = getSupabaseConfig();
-  if (!cfg.url || !cfg.key) {
-    throw new Error("Supabase environment variables are missing");
-  }
-  const endpoint = `${cfg.url}/rest/v1/${path}`;
-  const headers = {
-    apikey: cfg.key,
-    Authorization: `Bearer ${cfg.key}`,
-    "Content-Type": "application/json",
-    ...(options.headers || {})
-  };
-  const response = await fetch(endpoint, { ...options, headers });
-  const text = await response.text();
-  let body = null;
-  try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
-  if (!response.ok) {
-    const err = new Error(`Supabase ${options.method || "GET"} ${path} HTTP ${response.status}: ${text}`);
-    err.status = response.status;
-    err.body = body;
-    throw err;
-  }
-  return body;
-}
-
-const TABLE_COLUMN_CACHE = {};
-
-async function getTableColumns(tableName, fallbackColumns = []) {
-  if (TABLE_COLUMN_CACHE[tableName]) return TABLE_COLUMN_CACHE[tableName];
-
-  try {
-    const sample = await supabase(`${tableName}?select=*&limit=1`);
-    if (Array.isArray(sample) && sample.length > 0 && sample[0] && typeof sample[0] === "object") {
-      const columns = Object.keys(sample[0]);
-      TABLE_COLUMN_CACHE[tableName] = columns;
-      return columns;
-    }
-  } catch (_) {
-    // If schema probing fails, use a conservative fallback below.
-  }
-
-  TABLE_COLUMN_CACHE[tableName] = fallbackColumns;
-  return fallbackColumns;
-}
-
-function pickColumns(row, allowedColumns) {
-  const allowed = new Set(allowedColumns || []);
-  const out = {};
-  const removed = [];
-
-  for (const [key, value] of Object.entries(row || {})) {
-    if (allowed.has(key)) out[key] = value;
-    else removed.push(key);
-  }
-
-  return { row: out, removed };
-}
-
-function uniqueSorted(values) {
-  return Array.from(new Set((values || []).filter(Boolean))).sort();
-}
-
-function inFilter(values) {
-  return `in.(${values.map(v => encodeURIComponent(v)).join(",")})`;
-}
-
-async function readFundPrices() {
-  const path = `fund_prices?select=*&fund_code=${inFilter(FUNDS)}&order=price_date.desc&limit=1000`;
-  const rows = await supabase(path);
-  const byFund = {};
-  const historyByFund = {};
-  for (const row of rows || []) {
-    const code = String(row.fund_code || row.fundCode || "").toUpperCase();
-    if (!FUNDS.includes(code)) continue;
-    if (!historyByFund[code]) historyByFund[code] = [];
-    historyByFund[code].push(row);
-    if (!byFund[code]) byFund[code] = row;
-  }
-  return { rows: rows || [], byFund, historyByFund };
-}
-
-async function readHoldings() {
-  const path = `fund_holdings?select=*&fund_code=${inFilter(FUNDS)}&order=report_date.desc&limit=6000`;
-  const rows = await supabase(path);
-  const latestDateByFund = {};
-  for (const row of rows || []) {
-    const code = String(row.fund_code || row.fundCode || "").toUpperCase();
-    if (!FUNDS.includes(code)) continue;
-    const d = String(row.report_date || row.reportDate || row.date || "").slice(0, 10);
-    if (!d) continue;
-    if (!latestDateByFund[code] || d > latestDateByFund[code]) latestDateByFund[code] = d;
-  }
-  const latestRows = (rows || []).filter(row => {
-    const code = String(row.fund_code || row.fundCode || "").toUpperCase();
-    const d = String(row.report_date || row.reportDate || row.date || "").slice(0, 10);
-    return FUNDS.includes(code) && d && d === latestDateByFund[code];
-  });
-  const byFund = {};
-  for (const code of FUNDS) byFund[code] = [];
-  for (const row of latestRows) {
-    const code = String(row.fund_code || row.fundCode || "").toUpperCase();
-    byFund[code].push(row);
-  }
-  return { rows: rows || [], latestRows, byFund, latestDateByFund };
-}
-
-async function readLearningStats() {
-  try {
-    const path = `model_learning_stats?select=*&fund_code=${inFilter(FUNDS)}&model=eq.${encodeURIComponent(MODEL_KEY)}&limit=100`;
-    const rows = await supabase(path);
-    const byFund = {};
-    for (const row of rows || []) {
-      const code = String(row.fund_code || row.fundCode || "").toUpperCase();
-      if (FUNDS.includes(code)) byFund[code] = row;
-    }
-    return { rows: rows || [], byFund, ok: true };
-  } catch (err) {
-    return { rows: [], byFund: {}, ok: false, error: String(err.message || err) };
+function nextBusinessDay(dateStr) {
+  if (!dateStr) return new Date().toISOString().slice(0, 10);
+  let d = addDays(dateStr, 1);
+  while (true) {
+    const day = new Date(`${d}T00:00:00Z`).getUTCDay();
+    if (day !== 0 && day !== 6) return d;
+    d = addDays(d, 1);
   }
 }
 
-async function readPerformanceHistory() {
-  try {
-    const path = `prediction_performance?select=*&fund_code=${inFilter(FUNDS)}&model=eq.${encodeURIComponent(MODEL_KEY)}&order=prediction_date.desc&limit=600`;
-    const rows = await supabase(path);
-    const byFund = {};
-    for (const code of FUNDS) byFund[code] = [];
-    for (const row of rows || []) {
-      const code = String(row.fund_code || row.fundCode || "").toUpperCase();
-      if (FUNDS.includes(code)) byFund[code].push(row);
-    }
-    return { rows: rows || [], byFund, ok: true };
-  } catch (err) {
-    return { rows: [], byFund: {}, ok: false, error: String(err.message || err) };
-  }
+function maxDate(values) {
+  const clean = values.filter(Boolean).map((x) => String(x).slice(0, 10)).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x));
+  if (!clean.length) return null;
+  return clean.sort().at(-1);
+}
+
+function asciiFold(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/ı/g, "i")
+    .replace(/ğ/g, "g")
+    .replace(/ü/g, "u")
+    .replace(/ş/g, "s")
+    .replace(/ö/g, "o")
+    .replace(/ç/g, "c");
+}
+
+function normalizeFundCode(value) {
+  return String(value || "").trim().toUpperCase();
 }
 
 function normalizeAssetType(row) {
-  const raw = String(row.asset_type || row.assetType || row.type || row.asset_class || row.assetClass || "").toLowerCase();
-  const symbol = String(row.symbol || row.asset_symbol || row.assetSymbol || row.code || row.holding_code || row.holdingCode || "").toUpperCase();
-  const name = String(row.name || row.asset_name || row.assetName || row.title || "").toUpperCase();
-  const joined = `${raw} ${symbol} ${name}`;
-  if (/cash|nakit|repo|mevduat|vadeli|teminat|bpp|para piyasasi|money/.test(joined)) return "cash";
-  if (/bond|tahvil|bono|fixed|kira|sukuk|trt|hazine/.test(joined)) return "fixed_income";
-  if (/fund|fon|yatirim fonu|byf|etf/.test(joined)) return "fund";
-  if (/stock|equity|hisse|pay|borsa/.test(joined)) return "stock";
-  if (symbol && /^[A-Z]{2,6}(\.IS)?$/.test(symbol)) return "stock";
-  return raw || "unknown";
+  const raw = asciiFold(row.asset_type || row.assetType || row.type || row.varlik_tipi || row.varlik || row.category || row.name || "");
+
+  if (raw.includes("hisse") || raw.includes("stock") || raw.includes("equity")) return "stock";
+  if (raw.includes("ters repo") || raw.includes("reverse repo")) return "reverse_repo";
+  if (raw.includes("repo")) return "repo";
+  if (raw.includes("mevduat") || raw.includes("deposit")) return "deposit";
+  if (raw.includes("nakit") || raw.includes("cash")) return "cash";
+  if (raw.includes("tahvil") || raw.includes("bono") || raw.includes("borclan") || raw.includes("fixed") || raw.includes("debt")) return "fixed_income";
+  if (raw.includes("kira") || raw.includes("sukuk") || raw.includes("lease")) return "lease_certificate";
+  if (raw.includes("altin") || raw.includes("gold")) return "gold";
+  if (raw.includes("doviz") || raw.includes("currency") || raw.includes("usd") || raw.includes("eur")) return "currency";
+  if (raw.includes("fon") || raw.includes("fund")) return "fund";
+
+  const symbol = String(row.symbol || row.asset_code || row.code || "").trim();
+  if (/^[A-Z0-9]{3,8}(\.IS)?$/i.test(symbol)) return "stock";
+  return "other";
 }
 
 function normalizeSymbol(row) {
-  const candidates = [
-    row.symbol,
-    row.asset_symbol,
-    row.assetSymbol,
-    row.code,
-    row.holding_code,
-    row.holdingCode,
-    row.ticker
-  ];
-  let s = "";
-  for (const c of candidates) {
-    if (c !== null && c !== undefined && String(c).trim()) {
-      s = String(c).trim().toUpperCase();
-      break;
-    }
-  }
-  s = s.replace(".IST", ".IS").replace("BIST:", "").replace("TRY:", "");
-  s = s.replace(/[^A-Z0-9.]/g, "");
-  if (!s) return null;
-  return s;
+  return String(row.symbol || row.asset_symbol || row.asset_code || row.code || row.ticker || row.name || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
 }
 
-function toYahooSymbol(symbol) {
-  if (!symbol) return null;
-  const s = String(symbol).toUpperCase().replace(".IST", ".IS");
-  if (s.endsWith(".IS")) return s;
-  if (/^[A-Z]{2,6}$/.test(s)) return `${s}.IS`;
+function normalizeYahooSymbol(row, assetType) {
+  const explicit = String(row.yahoo_symbol || row.yahooSymbol || row.yahoo || "").trim().toUpperCase();
+  if (explicit) return explicit;
+
+  const symbol = normalizeSymbol(row);
+  if (!symbol || assetType !== "stock") return null;
+  if (symbol.includes(".")) return symbol;
+  if (/^[A-Z0-9]{3,8}$/.test(symbol)) return `${symbol}.IS`;
   return null;
 }
 
-function normalizeHolding(row) {
-  const fundCode = String(row.fund_code || row.fundCode || "").toUpperCase();
-  const symbol = normalizeSymbol(row);
-  const name = String(row.name || row.asset_name || row.assetName || row.title || symbol || "").trim();
-  const assetType = normalizeAssetType(row);
-  const weight = n(
-    row.effective_weight ?? row.effectiveWeight ?? row.weight ?? row.ratio ?? row.rate ?? row.percentage ?? row.portfolio_weight ?? row.portfolioWeight ?? row.share,
+function getRowFund(row) {
+  return normalizeFundCode(row.fund_code || row.fundCode || row.fund || row.fon_kodu || row.code);
+}
+
+function getHoldingReportDate(row) {
+  return (
+    row.report_date ||
+    row.holdings_report_date ||
+    row.holding_report_date ||
+    row.portfolio_date ||
+    row.date ||
+    (row.created_at ? String(row.created_at).slice(0, 10) : null)
+  );
+}
+
+function getHoldingWeight(row) {
+  return toNumber(
+    row.weight ??
+      row.weight_percent ??
+      row.effective_weight ??
+      row.ratio ??
+      row.percentage ??
+      row.pay_orani ??
+      row.agirlik ??
+      row.portfolio_weight,
     0
   );
-  const reportDate = String(row.report_date || row.reportDate || row.date || "").slice(0, 10) || null;
-  const yahooSymbol = assetType === "stock" ? toYahooSymbol(symbol) : null;
-  return { fundCode, symbol, yahooSymbol, name, assetType, weight: Number(weight) || 0, reportDate, raw: row };
 }
 
-function normalizeWeights(holdings) {
-  const positive = holdings.filter(h => h.weight > 0);
-  const total = positive.reduce((sum, h) => sum + h.weight, 0);
-  const shouldNormalize = total > 0 && (total < 80 || total > 120);
-  return holdings.map(h => ({
-    ...h,
-    originalWeight: round(h.weight, 6),
-    effectiveWeight: shouldNormalize && total > 0 ? round((h.weight / total) * 100, 6) : round(h.weight, 6),
-    normalized: shouldNormalize
-  }));
+function supabaseConfig() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) {
+    throw new Error("Supabase environment variables are missing. Required: SUPABASE_URL and service/anon key.");
+  }
+  return { url: url.replace(/\/$/, ""), key };
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = YAHOO_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+async function supabaseRequest(path, options = {}) {
+  const { url, key } = supabaseConfig();
+  const method = options.method || "GET";
+  const headers = {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+
+  const response = await fetch(`${url}/rest/v1/${path}`, {
+    method,
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = text;
+    }
+  }
+
+  if (!response.ok) {
+    const message = typeof data === "string" ? data : JSON.stringify(data);
+    const err = new Error(`Supabase ${method} ${path} HTTP ${response.status}: ${message}`);
+    err.status = response.status;
+    err.data = data;
+    throw err;
+  }
+
+  return data;
+}
+
+async function safeRead(path, fallback, warnings, label) {
   try {
+    const data = await supabaseRequest(path);
+    return Array.isArray(data) ? data : fallback;
+  } catch (error) {
+    warnings.push({ source: label, message: error.message });
+    return fallback;
+  }
+}
+
+function latestFundPrices(priceRows) {
+  const grouped = new Map();
+  for (const row of priceRows || []) {
+    const code = getRowFund(row);
+    if (!FUND_ORDER.includes(code)) continue;
+    const date = row.price_date || row.date || row.nav_date || row.created_at;
+    if (!date) continue;
+    if (!grouped.has(code)) grouped.set(code, []);
+    grouped.get(code).push(row);
+  }
+
+  const latest = {};
+  const history = {};
+  for (const code of FUND_ORDER) {
+    const rows = (grouped.get(code) || []).sort((a, b) => {
+      const ad = String(a.price_date || a.date || a.created_at || "").slice(0, 10);
+      const bd = String(b.price_date || b.date || b.created_at || "").slice(0, 10);
+      if (ad !== bd) return bd.localeCompare(ad);
+      return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    });
+    history[code] = rows;
+    latest[code] = rows[0] || null;
+  }
+
+  return { latest, history };
+}
+
+function groupLatestHoldingsByFund(holdingRows) {
+  const all = new Map();
+  for (const row of holdingRows || []) {
+    const code = getRowFund(row);
+    if (!FUND_ORDER.includes(code)) continue;
+    if (!all.has(code)) all.set(code, []);
+    all.get(code).push(row);
+  }
+
+  const result = {};
+  const reportDates = {};
+  for (const code of FUND_ORDER) {
+    const rows = all.get(code) || [];
+    const latestDate = maxDate(rows.map(getHoldingReportDate));
+    reportDates[code] = latestDate;
+    const selected = latestDate ? rows.filter((r) => String(getHoldingReportDate(r) || "").slice(0, 10) === latestDate) : rows;
+
+    const normalized = selected
+      .map((row) => {
+        const assetType = normalizeAssetType(row);
+        const symbol = normalizeSymbol(row);
+        const yahooSymbol = normalizeYahooSymbol(row, assetType);
+        const weight = getHoldingWeight(row);
+        return {
+          raw: row,
+          fundCode: code,
+          symbol,
+          yahooSymbol,
+          name: row.name || row.asset_name || row.title || symbol || "Bilinmeyen varlık",
+          assetType,
+          originalWeight: weight,
+          effectiveWeight: weight,
+          reportDate: getHoldingReportDate(row)
+        };
+      })
+      .filter((x) => x.originalWeight > 0);
+
+    const weightSum = normalized.reduce((sum, x) => sum + x.originalWeight, 0);
+    const needsNormalize = weightSum > 0 && (weightSum < 95 || weightSum > 105);
+    for (const item of normalized) {
+      item.effectiveWeight = needsNormalize ? (item.originalWeight / weightSum) * 100 : item.originalWeight;
+    }
+
+    result[code] = normalized;
+  }
+
+  return { holdingsByFund: result, reportDates };
+}
+
+async function fetchYahooChange(yahooSymbol) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), YAHOO_TIMEOUT_MS);
+
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=7d&interval=1d`;
     const response = await fetch(url, {
-      ...options,
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 FinScope/10.3",
-        Accept: "application/json,text/plain,*/*",
-        ...(options.headers || {})
+        "User-Agent": "Mozilla/5.0 FinScope/10.4"
       }
     });
-    return response;
+
+    if (!response.ok) {
+      return { ok: false, issue: `HTTP_${response.status}` };
+    }
+
+    const data = await response.json();
+    const result = data?.chart?.result?.[0];
+    const quote = result?.indicators?.quote?.[0];
+    const closes = (quote?.close || []).filter((x) => Number.isFinite(x) && x > 0);
+    const timestamps = result?.timestamp || [];
+
+    if (closes.length < 2) {
+      return { ok: false, issue: "not_enough_price_points" };
+    }
+
+    const price = closes[closes.length - 1];
+    let previous = closes[closes.length - 2];
+    for (let i = closes.length - 2; i >= 0; i -= 1) {
+      if (closes[i] && closes[i] !== price) {
+        previous = closes[i];
+        break;
+      }
+    }
+
+    if (!previous || previous <= 0) {
+      return { ok: false, issue: "invalid_previous_price" };
+    }
+
+    const marketChange = ((price - previous) / previous) * 100;
+    const lastTimestamp = timestamps[timestamps.length - 1];
+    const reportDate = lastTimestamp ? new Date(lastTimestamp * 1000).toISOString().slice(0, 10) : null;
+
+    return {
+      ok: true,
+      yahooSymbol,
+      price,
+      previous,
+      marketChange,
+      reportDate,
+      pricingSource: "Yahoo Finance chart"
+    };
+  } catch (error) {
+    return { ok: false, issue: error.name === "AbortError" ? "timeout" : error.message };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchYahooQuoteBatch(symbols) {
-  const result = {};
-  const chunks = chunk(unique(symbols), MAX_YAHOO_BATCH_SIZE);
-  await Promise.allSettled(chunks.map(async part => {
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(part.join(","))}`;
-    const response = await fetchWithTimeout(url);
-    if (!response.ok) return;
-    const data = await response.json();
-    const quotes = (((data || {}).quoteResponse || {}).result || []);
-    for (const q of quotes) {
-      const symbol = String(q.symbol || "").toUpperCase();
-      const price = n(q.regularMarketPrice, null);
-      const previous = n(q.regularMarketPreviousClose ?? q.regularMarketOpen, null);
-      let change = n(q.regularMarketChangePercent, null);
-      if (change === null && price !== null && previous !== null && previous !== 0) {
-        change = ((price - previous) / previous) * 100;
-      }
-      if (symbol && price !== null && change !== null) {
-        result[symbol] = {
-          symbol,
-          price: round(price, 6),
-          previous: previous === null ? null : round(previous, 6),
-          marketChange: round(change, 6),
-          pricingSource: "Yahoo quote",
-          directPricing: true,
-          issue: null
-        };
-      }
-    }
-  }));
-  return result;
-}
-
-async function fetchYahooChart(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`;
-  const response = await fetchWithTimeout(url);
-  if (!response.ok) return null;
-  const data = await response.json();
-  const chart = (((data || {}).chart || {}).result || [])[0];
-  if (!chart) return null;
-  const quote = (((chart.indicators || {}).quote || [])[0]) || {};
-  const closes = (quote.close || []).filter(v => Number.isFinite(Number(v)));
-  if (closes.length < 2) return null;
-  const price = Number(closes[closes.length - 1]);
-  const previous = Number(closes[closes.length - 2]);
-  if (!Number.isFinite(price) || !Number.isFinite(previous) || previous === 0) return null;
-  const change = ((price - previous) / previous) * 100;
-  return {
-    symbol,
-    price: round(price, 6),
-    previous: round(previous, 6),
-    marketChange: round(change, 6),
-    pricingSource: "Yahoo chart",
-    directPricing: true,
-    issue: null
-  };
-}
-
-async function fetchMarketPrices(yahooSymbols) {
-  const symbols = unique(yahooSymbols);
-  const bySymbol = await fetchYahooQuoteBatch(symbols);
-  const missing = symbols.filter(s => !bySymbol[s]).slice(0, CHART_FALLBACK_LIMIT);
-  const fallbackResults = await Promise.allSettled(missing.map(fetchYahooChart));
-  for (const item of fallbackResults) {
-    if (item.status === "fulfilled" && item.value && item.value.symbol) {
-      bySymbol[item.value.symbol] = item.value;
+async function mapLimit(items, limit, mapper) {
+  const results = new Array(items.length);
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      results[current] = await mapper(items[current], current);
     }
   }
-  for (const s of symbols) {
-    if (!bySymbol[s]) {
-      bySymbol[s] = {
-        symbol: s,
-        price: null,
-        previous: null,
-        marketChange: null,
-        pricingSource: "not_priced",
-        directPricing: false,
-        issue: "not_priced"
-      };
-    }
-  }
-  return bySymbol;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
-function computeFreshness(reportDate) {
-  const days = daysBetween(reportDate, todayISO());
-  if (days === null) return { days: null, status: "unknown", penalty: 12 };
-  if (days <= 20) return { days, status: "fresh", penalty: 0 };
-  if (days <= 45) return { days, status: "watch", penalty: 6 };
-  return { days, status: "stale", penalty: 14 };
-}
-
-function grade(absError) {
-  const e = abs(absError);
-  if (e <= 0.25) return "Hedefte";
-  if (e <= 0.75) return "Cok iyi";
-  if (e <= 1.25) return "Iyi";
-  if (e <= 2.5) return "Zayif";
-  return "Sok";
-}
-
-function estimateErrorBand(coverage, residualWeight, shockScore, freshnessPenalty, stats) {
-  const base = 0.35;
-  const residual = clamp(residualWeight, 0, 100) * 0.018;
-  const coveragePenalty = (100 - clamp(coverage, 0, 100)) * 0.008;
-  const shock = shockScore >= 2 ? 0.45 : shockScore === 1 ? 0.2 : 0;
-  const freshness = freshnessPenalty * 0.025;
-  const learning = n(stats && stats.average_absolute_error, null);
-  const learningPart = learning === null ? 0.25 : clamp(learning * 0.25, 0, 1.25);
-  return round(clamp(base + residual + coveragePenalty + shock + freshness + learningPart, 0.35, 4.5), 4);
-}
-
-function computeLearningOffset(stats, coverage) {
-  if (!stats) return 0;
-  const sample = n(stats.completed_prediction_count ?? stats.sample_size, 0) || 0;
-  const avgError = n(stats.average_error, 0) || 0;
-  if (sample < 4) return 0;
-  const multiplier = coverage >= 70 ? 0.18 : coverage >= 45 ? 0.12 : 0.08;
-  return round(clamp(avgError * multiplier, -1.25, 1.25), 4);
-}
-
-function getFinalFromPerformance(row) {
-  return n(
-    row.final_prediction_change ??
-    row.finalPredictionChange ??
-    row.calibrated_change ??
-    row.calibratedChange ??
-    row.predicted_change ??
-    row.predictedChange,
-    null
-  );
-}
-
-function getActualFromPerformance(row) {
-  return n(row.actual_change ?? row.actualChange, null);
-}
-
-function isReliablePerformanceRow(row) {
-  const status = String(row.status || row.rawStatus || "").toLowerCase();
-  if (!status) return false;
-  if (status.includes("quarantine")) return false;
-  if (status.includes("waiting")) return false;
-  if (status.includes("pending")) return false;
-  return status === "closed" || status === "shock_closed" || status === "completed" || status.includes("closed");
-}
-
-function buildLearningProfile(fundCode, performanceRows, stats) {
-  const reliable = (performanceRows || [])
-    .filter(isReliablePerformanceRow)
-    .map(row => ({
-      row,
-      predicted: getFinalFromPerformance(row),
-      actual: getActualFromPerformance(row),
-      status: String(row.status || row.rawStatus || "").toLowerCase(),
-      predictionDate: String(row.prediction_date || row.predictionDate || "").slice(0, 10)
-    }))
-    .filter(x => x.predicted !== null && x.actual !== null);
-
-  const recent = reliable.slice(0, 15);
-  const base = recent.length ? recent : reliable.slice(0, 30);
-  const sample = base.length;
-
-  if (!sample) {
-    return {
-      fundCode,
-      sampleSize: 0,
-      completedRows: 0,
-      learningMode: "no_history",
-      betaMultiplier: 1,
-      shockMultiplier: 1,
-      biasCorrection: 0,
-      averageError: null,
-      averageAbsoluteError: null,
-      directionHitRate: null,
-      recentShockCount: 0,
-      underCaptureAverage: 0,
-      note: "No reliable performance rows yet."
-    };
-  }
-
-  const errors = base.map(x => x.actual - x.predicted);
-  const absErrors = errors.map(Math.abs);
-  const avgError = errors.reduce((s, v) => s + v, 0) / sample;
-  const avgAbsError = absErrors.reduce((s, v) => s + v, 0) / sample;
-  const directionHits = base.filter(x => direction(x.predicted) === direction(x.actual)).length;
-  const directionHitRate = (directionHits / sample) * 100;
-
-  const denom = base.reduce((s, x) => s + (x.predicted * x.predicted), 0);
-  const numer = base.reduce((s, x) => s + (x.predicted * x.actual), 0);
-  let betaRaw = denom > 0.05 ? numer / denom : 1;
-  if (!Number.isFinite(betaRaw)) betaRaw = 1;
-
-  const underCaptures = base
-    .filter(x => direction(x.predicted) === direction(x.actual) && Math.abs(x.actual) > Math.abs(x.predicted))
-    .map(x => Math.abs(x.actual) - Math.abs(x.predicted));
-  const underCaptureAverage = underCaptures.length ? underCaptures.reduce((s, v) => s + v, 0) / underCaptures.length : 0;
-
-  const shockRows = base.filter(x => Math.abs(x.actual) >= 3.5 || x.status === "shock_closed");
-  const recentShockCount = shockRows.length;
-
-  let betaMultiplier = directionHitRate < 45 ? 0.8 : clamp(betaRaw, 0.55, 3.2);
-  if (avgAbsError > 4 && directionHitRate >= 60) betaMultiplier = clamp(betaMultiplier + 0.35, 0.55, 3.4);
-  if (underCaptureAverage > 4 && directionHitRate >= 60) betaMultiplier = clamp(betaMultiplier + 0.45, 0.55, 3.6);
-
-  let shockMultiplier = 1;
-  if (recentShockCount >= 1) shockMultiplier += Math.min(0.9, recentShockCount * 0.16);
-  if (underCaptureAverage >= 2) shockMultiplier += Math.min(0.85, underCaptureAverage * 0.08);
-  if (avgAbsError >= 6 && directionHitRate >= 55) shockMultiplier += 0.35;
-  shockMultiplier = clamp(shockMultiplier, 1, 2.65);
-
-  const statAvgError = n(stats && stats.average_error, null);
-  const blendedError = statAvgError === null ? avgError : (avgError * 0.7 + statAvgError * 0.3);
-  const biasCorrection = clamp(blendedError * 0.16, -1.4, 1.4);
-
-  const learningMode = sample >= 12 ? "active_15_day" : sample >= 8 ? "active" : sample >= 4 ? "warming" : "watch";
-
-  return {
-    fundCode,
-    sampleSize: sample,
-    completedRows: reliable.length,
-    learningMode,
-    betaRaw: round(betaRaw, 4),
-    betaMultiplier: round(betaMultiplier, 4),
-    shockMultiplier: round(shockMultiplier, 4),
-    biasCorrection: round(biasCorrection, 4),
-    averageError: round(avgError, 4),
-    averageAbsoluteError: round(avgAbsError, 4),
-    directionHitRate: round(directionHitRate, 2),
-    recentShockCount,
-    underCaptureAverage: round(underCaptureAverage, 4),
-    note: "v10.3 learns fund beta and shock multiplier from reliable closed performance rows."
-  };
-}
-
-function resolveDynamicMultiplier(learningProfile, coverage, causalRaw, shockScore) {
-  const beta = n(learningProfile && learningProfile.betaMultiplier, 1) || 1;
-  const shock = n(learningProfile && learningProfile.shockMultiplier, 1) || 1;
-  const sample = n(learningProfile && learningProfile.sampleSize, 0) || 0;
-  const coverageTrust = coverage >= 75 ? 1 : coverage >= 55 ? 0.82 : coverage >= 35 ? 0.62 : 0.42;
-  const sampleTrust = sample >= 12 ? 1 : sample >= 8 ? 0.78 : sample >= 4 ? 0.52 : 0.25;
-  const shockTrust = shockScore >= 2 || Math.abs(causalRaw) >= 3 ? 1 : 0.65;
-  const trustedBeta = 1 + ((beta - 1) * coverageTrust * sampleTrust);
-  const trustedShock = 1 + ((shock - 1) * coverageTrust * sampleTrust * shockTrust);
-  const combined = (trustedBeta * 0.72) + (trustedShock * 0.28);
-  return round(clamp(combined, 0.55, 3.15), 4);
-}
-
-function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory, learningStats, learningProfile, marketBySymbol }) {
-  const normalized = normalizeWeights(holdingRows.map(normalizeHolding));
-  const reportDate = normalized.find(h => h.reportDate)?.reportDate || null;
-  const freshness = computeFreshness(reportDate);
-
-  let totalWeight = 0;
-  let stockWeight = 0;
-  let pricedWeight = 0;
-  let nonStockWeight = 0;
-  let unresolvedWeight = 0;
-  let causalRaw = 0;
-  let pricedRows = 0;
-  let unresolvedRows = 0;
-  const pricedHoldings = [];
-  const unresolvedHoldings = [];
-  const nonStockHoldings = [];
-
-  for (const h of normalized) {
-    const w = Number(h.effectiveWeight) || 0;
-    if (w <= 0) continue;
-    totalWeight += w;
-    if (h.assetType !== "stock") {
-      nonStockWeight += w;
-      nonStockHoldings.push({
-        symbol: h.symbol,
-        name: h.name,
-        assetType: h.assetType,
-        weight: round(w, 4),
-        contribution: 0,
-        issue: "non_stock"
-      });
-      continue;
-    }
-    stockWeight += w;
-    const m = h.yahooSymbol ? marketBySymbol[h.yahooSymbol] : null;
-    if (m && m.marketChange !== null && Number.isFinite(Number(m.marketChange))) {
-      const contribution = (w / 100) * Number(m.marketChange);
-      causalRaw += contribution;
-      pricedWeight += w;
-      pricedRows += 1;
-      pricedHoldings.push({
-        symbol: h.symbol,
-        yahooSymbol: h.yahooSymbol,
-        name: h.name,
-        assetType: h.assetType,
-        weight: round(w, 4),
-        marketChange: round(m.marketChange, 4),
-        price: m.price,
-        previous: m.previous,
-        contribution: round(contribution, 4),
-        pricingSource: m.pricingSource,
-        directPricing: true
-      });
-    } else {
-      unresolvedWeight += w;
-      unresolvedRows += 1;
-      unresolvedHoldings.push({
-        symbol: h.symbol,
-        yahooSymbol: h.yahooSymbol,
-        name: h.name,
-        assetType: h.assetType,
-        weight: round(w, 4),
-        contribution: 0,
-        issue: h.yahooSymbol ? "not_priced" : "not_stock_or_unresolved"
-      });
+async function priceHoldings(holdingsByFund) {
+  const symbols = new Set();
+  for (const rows of Object.values(holdingsByFund)) {
+    for (const h of rows) {
+      if (h.assetType === "stock" && h.yahooSymbol) symbols.add(h.yahooSymbol);
     }
   }
 
-  const coverage = round(clamp(pricedWeight, 0, 100), 4);
-  const residualWeight = round(clamp(100 - coverage, 0, 100), 4);
-  const latestFundActual = n(latestPrice && latestPrice.daily_change, null);
-  const recentActuals = (pricesHistory || []).slice(0, 5).map(r => n(r.daily_change, null)).filter(v => v !== null);
-  const recentAvg = recentActuals.length ? recentActuals.reduce((s, v) => s + v, 0) / recentActuals.length : 0;
-
-  const topPositive = pricedHoldings.slice().sort((a, b) => (b.contribution || 0) - (a.contribution || 0)).slice(0, 8);
-  const topNegative = pricedHoldings.slice().sort((a, b) => (a.contribution || 0) - (b.contribution || 0)).slice(0, 8);
-
-  const largeNegativeContribs = topNegative.filter(h => h.contribution <= -0.35).length;
-  const largePositiveContribs = topPositive.filter(h => h.contribution >= 0.35).length;
-  const shockScore = (abs(causalRaw) >= 3 ? 1 : 0) + (abs(causalRaw) >= 6 ? 1 : 0) + Math.min(2, largeNegativeContribs + largePositiveContribs);
-
-  const coverageRatio = coverage / 100;
-  const causalWeight = coverage >= 75 ? 1 : coverage >= 55 ? 0.9 : coverage >= 35 ? 0.72 : 0.5;
-  const residualFallback = clamp((1 - coverageRatio) * clamp(recentAvg, -4, 4) * 0.22, -1.25, 1.25);
-  const learningOffset = computeLearningOffset(learningStats, coverage);
-  const learnedBias = n(learningProfile && learningProfile.biasCorrection, 0) || 0;
-
-  const causalWeighted = causalRaw * causalWeight;
-  const dynamicMultiplier = resolveDynamicMultiplier(learningProfile, coverage, causalRaw, shockScore);
-  const learnedShockMultiplier = n(learningProfile && learningProfile.shockMultiplier, 1) || 1;
-  const recentMomentum = clamp(recentAvg * (shockScore >= 2 ? 0.16 : 0.08), -1.8, 1.8);
-  const shockAmplifier = dynamicMultiplier;
-  const finalPrediction = clamp((causalWeighted * dynamicMultiplier) + residualFallback + learningOffset + learnedBias + recentMomentum, -30, 30);
-
-  const expectedErrorBand = estimateErrorBand(coverage, residualWeight, shockScore, freshness.penalty, learningStats);
-  const confidence = round(clamp(34 + coverage * 0.52 + Math.min(pricedRows, 35) * 0.52 - freshness.penalty - Math.min(unresolvedRows, 25) * 0.42 - (shockScore >= 2 ? 6 : 0) + Math.min(10, n(learningProfile && learningProfile.sampleSize, 0) || 0), 8, 94), 2);
-
-  const rangeLow = round(finalPrediction - expectedErrorBand, 4);
-  const rangeHigh = round(finalPrediction + expectedErrorBand, 4);
-  const predDirection = direction(finalPrediction);
-
-  const issues = [];
-  if (!holdingRows.length) issues.push("no_holdings");
-  if (coverage < 35) issues.push("low_priced_weight_coverage");
-  if (freshness.status === "stale") issues.push("stale_holdings_report");
-  if (unresolvedRows > 0) issues.push("unpriced_or_unresolved_holdings");
-  if (shockScore >= 2) issues.push("strong_weighted_market_move");
-
-  const prediction = {
-    fundCode,
-    code: fundCode,
-    fund: fundCode,
-    predictionDate: todayISO(),
-    model: MODEL_KEY,
-    modelKey: MODEL_KEY,
-    modelVersion: MODEL_VERSION,
-    source: "causal_nav_core_weight_engine",
-    targetAbsoluteError: TARGET_ABSOLUTE_ERROR,
-
-    rawPredictedChange: round(causalRaw, 4),
-    predictedChange: round(finalPrediction, 4),
-    calibratedChange: round(finalPrediction, 4),
-    finalPredictionChange: round(finalPrediction, 4),
-    currentPredictionChange: round(finalPrediction, 4),
-    predictionDirection: predDirection,
-    rangeLow,
-    rangeHigh,
-    expectedErrorBand,
-    confidence,
-    confidenceText: confidenceText(confidence),
-
-    coverage,
-    residualWeight,
-    totalWeight: round(totalWeight, 4),
-    stockWeight: round(stockWeight, 4),
-    pricedWeight: round(pricedWeight, 4),
-    nonStockWeight: round(nonStockWeight, 4),
-    unresolvedWeight: round(unresolvedWeight, 4),
-    sampleSize: pricedRows,
-    unresolvedRows,
-    totalHoldingRows: holdingRows.length,
-    holdingsReportDate: reportDate,
-    holdingsFreshnessDays: freshness.days,
-    holdingsFreshnessStatus: freshness.status,
-
-    causalRawChange: round(causalRaw, 4),
-    causalWeightedChange: round(causalWeighted, 4),
-    residualFallback: round(residualFallback, 4),
-    calibrationOffset: round(learningOffset, 4),
-    shockScore,
-    latestFundActualChange: latestFundActual === null ? null : round(latestFundActual, 4),
-    recentFundAverageChange: round(recentAvg, 4),
-    issues,
-    learningStrength: learningStats ? n(learningStats.completed_prediction_count ?? learningStats.sample_size, 0) : 0,
-    learningMode: learningProfile ? learningProfile.learningMode : "no_history",
-    learningSampleSize: learningProfile ? learningProfile.sampleSize : 0,
-    betaMultiplier: learningProfile ? learningProfile.betaMultiplier : 1,
-    shockMultiplier: round(learnedShockMultiplier, 4),
-    dynamicMultiplier,
-    learnedBias: round(learnedBias, 4),
-    recentMomentum: round(recentMomentum, 4),
-    performanceAverageError: learningProfile ? learningProfile.averageError : null,
-    performanceAverageAbsoluteError: learningProfile ? learningProfile.averageAbsoluteError : null,
-    performanceDirectionHitRate: learningProfile ? learningProfile.directionHitRate : null,
-    underCaptureAverage: learningProfile ? learningProfile.underCaptureAverage : null,
-    note: `v10.3 Causal Beta + Shock: holdings signal is multiplied by learned fund beta/shock layer; coverage=${round(coverage, 2)}; learning=${learningProfile ? learningProfile.learningMode : "no_history"}; freshness=${freshness.status}`,
-
-    topPositiveContributors: topPositive,
-    topNegativeContributors: topNegative,
-    unresolvedHoldings: unresolvedHoldings.slice(0, 60),
-    nonStockHoldings: nonStockHoldings.slice(0, 60)
-  };
-
-  const dbRow = {
-    fund_code: fundCode,
-    prediction_date: todayISO(),
-    model: MODEL_KEY,
-    model_version: MODEL_VERSION,
-    raw_predicted_change: round(causalRaw, 6),
-    calibrated_change: round(finalPrediction, 6),
-    // Schema-safe write: keep advanced diagnostic fields in the API response,
-    // but do not POST columns that may not exist in prediction_history.
-    confidence,
-    coverage,
-    residual_weight: residualWeight,
-    sample_size: pricedRows,
-    calibration_offset: round(learningOffset + learnedBias + recentMomentum, 6),
-    actual_change: null,
-    error_change: null,
-    updated_at: new Date().toISOString()
-  };
-
-  return { prediction, dbRow };
-}
-
-async function savePredictionRows(rows) {
-  if (!rows.length) {
-    return { ok: true, saved: 0, attempted: 0, rows: [], removedColumns: [] };
-  }
-
-  const fallbackColumns = [
-    "fund_code",
-    "prediction_date",
-    "model",
-    "raw_predicted_change",
-    "calibrated_change",
-    "confidence",
-    "coverage",
-    "residual_weight",
-    "sample_size",
-    "calibration_offset",
-    "actual_change",
-    "error_change",
-    "created_at",
-    "updated_at"
-  ];
-
-  const columns = await getTableColumns("prediction_history", fallbackColumns);
-  const removedColumns = [];
-  const cleanRows = rows.map(sourceRow => {
-    const picked = pickColumns(sourceRow, columns);
-    removedColumns.push(...picked.removed);
-    return picked.row;
-  }).filter(row => row.fund_code && row.prediction_date && row.model);
-
-  if (!cleanRows.length) {
-    return {
-      ok: false,
-      saved: 0,
-      attempted: rows.length,
-      rows: [],
-      removedColumns: uniqueSorted(removedColumns),
-      error: "prediction_history schema-safe filter removed required columns"
-    };
-  }
-
-  const path = `prediction_history?on_conflict=fund_code,prediction_date,model`;
-  const saved = await supabase(path, {
-    method: "POST",
-    headers: {
-      Prefer: "resolution=merge-duplicates,return=representation"
-    },
-    body: JSON.stringify(cleanRows)
+  const symbolList = Array.from(symbols);
+  const priced = {};
+  await mapLimit(symbolList, YAHOO_CONCURRENCY, async (symbol) => {
+    priced[symbol] = await fetchYahooChange(symbol);
   });
 
-  return {
-    ok: true,
-    saved: Array.isArray(saved) ? saved.length : cleanRows.length,
-    attempted: rows.length,
-    rows: saved || [],
-    removedColumns: uniqueSorted(removedColumns),
-    schemaColumnsUsed: columns
-  };
-}
+  const result = {};
+  for (const code of FUND_ORDER) {
+    const rows = holdingsByFund[code] || [];
+    const directStockRows = [];
+    const unresolvedStockRows = [];
 
-async function runEngine({ write = false, reportOnly = false } = {}) {
-  const [fundPrices, holdings, learning, performance] = await Promise.all([
-    readFundPrices(),
-    readHoldings(),
-    readLearningStats(),
-    readPerformanceHistory()
-  ]);
-
-  const latestHoldingRowsByFund = {};
-  const allYahooSymbols = [];
-  for (const fund of FUNDS) {
-    const rows = holdings.byFund[fund] || [];
-    latestHoldingRowsByFund[fund] = rows;
-    const normalized = rows.map(normalizeHolding);
-    for (const h of normalized) {
-      if (h.assetType === "stock" && h.yahooSymbol) allYahooSymbols.push(h.yahooSymbol);
+    for (const h of rows) {
+      const info = h.yahooSymbol ? priced[h.yahooSymbol] : null;
+      if (h.assetType === "stock" && info?.ok) {
+        directStockRows.push({ h, info });
+      } else if (h.assetType === "stock") {
+        unresolvedStockRows.push({ h, info });
+      }
     }
+
+    const directStockWeight = directStockRows.reduce((s, x) => s + x.h.effectiveWeight, 0);
+    const directStockContribution = directStockRows.reduce(
+      (s, x) => s + (x.h.effectiveWeight / 100) * toNumber(x.info.marketChange, 0),
+      0
+    );
+    const stockPeerProxyChange = directStockWeight > 0 ? (directStockContribution / directStockWeight) * 100 : 0;
+
+    const enriched = rows.map((h) => {
+      const info = h.yahooSymbol ? priced[h.yahooSymbol] : null;
+      let marketChange = 0;
+      let directPricing = false;
+      let pricingSource = "proxy";
+      let issue = null;
+      let price = null;
+      let previous = null;
+
+      if (h.assetType === "stock" && info?.ok) {
+        marketChange = toNumber(info.marketChange, 0);
+        directPricing = true;
+        pricingSource = info.pricingSource;
+        price = info.price;
+        previous = info.previous;
+      } else if (h.assetType === "stock") {
+        marketChange = stockPeerProxyChange;
+        pricingSource = directStockWeight > 0 ? "stock peer proxy" : "unpriced stock fallback";
+        issue = info?.issue || "not_priced";
+      } else {
+        marketChange = NON_STOCK_DAILY_PROXY[h.assetType] ?? NON_STOCK_DAILY_PROXY.other;
+        pricingSource = `${h.assetType} daily proxy`;
+      }
+
+      const contribution = (h.effectiveWeight / 100) * marketChange;
+      return {
+        ...h,
+        marketChange,
+        contribution,
+        directPricing,
+        pricingSource,
+        price,
+        previous,
+        issue
+      };
+    });
+
+    result[code] = enriched;
   }
 
-  const marketBySymbol = await fetchMarketPrices(allYahooSymbols);
+  return { pricedHoldingsByFund: result, yahooSymbolsRequested: symbolList.length, yahooPriceMap: priced };
+}
 
-  const predictions = {};
-  const predictionRows = [];
-  const dbRows = [];
-  const fundReports = {};
+function performanceLearning(performanceRows, code) {
+  const rows = (performanceRows || [])
+    .filter((row) => getRowFund(row) === code)
+    .filter((row) => ["closed", "shock_closed", "normal_closed"].includes(String(row.status || "").toLowerCase()))
+    .filter((row) => toNumber(row.actual_change, null) !== null && toNumber(row.final_prediction_change, null) !== null)
+    .slice(0, 30);
 
-  for (const fund of FUNDS) {
-    const learningProfile = buildLearningProfile(fund, performance.byFund[fund] || [], learning.byFund[fund] || null);
-    const built = buildFundPrediction({
-      fundCode: fund,
-      holdingRows: latestHoldingRowsByFund[fund] || [],
-      latestPrice: fundPrices.byFund[fund] || null,
-      pricesHistory: fundPrices.historyByFund[fund] || [],
-      learningStats: learning.byFund[fund] || null,
-      learningProfile,
-      marketBySymbol
-    });
-    predictions[fund] = built.prediction;
-    predictionRows.push(built.prediction);
-    dbRows.push(built.dbRow);
-    fundReports[fund] = {
-      fundCode: fund,
-      holdingsReportDate: built.prediction.holdingsReportDate,
-      holdingsFreshnessDays: built.prediction.holdingsFreshnessDays,
-      holdingsFreshnessStatus: built.prediction.holdingsFreshnessStatus,
-      totalHoldingRows: built.prediction.totalHoldingRows,
-      sampleSize: built.prediction.sampleSize,
-      coverage: built.prediction.coverage,
-      residualWeight: built.prediction.residualWeight,
-      stockWeight: built.prediction.stockWeight,
-      nonStockWeight: built.prediction.nonStockWeight,
-      unresolvedWeight: built.prediction.unresolvedWeight,
-      causalRawChange: built.prediction.causalRawChange,
-      finalPredictionChange: built.prediction.finalPredictionChange,
-      confidence: built.prediction.confidence,
-      confidenceText: built.prediction.confidenceText,
-      learningMode: built.prediction.learningMode,
-      learningSampleSize: built.prediction.learningSampleSize,
-      betaMultiplier: built.prediction.betaMultiplier,
-      shockMultiplier: built.prediction.shockMultiplier,
-      dynamicMultiplier: built.prediction.dynamicMultiplier,
-      underCaptureAverage: built.prediction.underCaptureAverage,
-      issues: built.prediction.issues,
-      topPositiveContributors: built.prediction.topPositiveContributors,
-      topNegativeContributors: built.prediction.topNegativeContributors,
-      unresolvedHoldings: built.prediction.unresolvedHoldings
+  const completed = rows.length;
+  if (!completed) {
+    return {
+      sampleSize: 0,
+      offset: 0,
+      beta: 1,
+      shockMultiplier: 1,
+      averageAbsoluteError: null,
+      directionHitRate: null,
+      learningStatus: "Yeni öğrenme",
+      confidencePenalty: 8
     };
   }
 
-  let saveResult = { ok: true, saved: 0, rows: [] };
-  if (write && !reportOnly) {
-    saveResult = await savePredictionRows(dbRows);
-  }
+  const errors = rows.map((r) => toNumber(r.actual_change, 0) - toNumber(r.final_prediction_change, 0));
+  const offset = clamp(avg(errors) || 0, -1.25, 1.25);
 
-  const pricedRows = predictionRows.reduce((s, p) => s + (p.sampleSize || 0), 0);
-  const totalHoldingRows = predictionRows.reduce((s, p) => s + (p.totalHoldingRows || 0), 0);
-  const avgCoverage = predictionRows.length ? predictionRows.reduce((s, p) => s + (p.coverage || 0), 0) / predictionRows.length : 0;
-  const strongestSignals = predictionRows
-    .map(p => ({ fundCode: p.fundCode, finalPredictionChange: p.finalPredictionChange, causalRawChange: p.causalRawChange, coverage: p.coverage, confidence: p.confidence }))
-    .sort((a, b) => abs(b.finalPredictionChange) - abs(a.finalPredictionChange));
+  const absErrors = errors.map(Math.abs);
+  const averageAbsoluteError = avg(absErrors);
+
+  const xs = rows.map((r) => toNumber(r.final_prediction_change, 0));
+  const ys = rows.map((r) => toNumber(r.actual_change, 0));
+  const xAvg = avg(xs) || 0;
+  const yAvg = avg(ys) || 0;
+  const varX = xs.reduce((sum, x) => sum + (x - xAvg) ** 2, 0);
+  const covXY = xs.reduce((sum, x, i) => sum + (x - xAvg) * (ys[i] - yAvg), 0);
+  const beta = varX > 0.0001 ? clamp(covXY / varX, 0.35, 3.2) : 1;
+
+  const shockRows = rows.filter((r) => Math.abs(toNumber(r.actual_change, 0)) >= 6);
+  const ratios = shockRows
+    .map((r) => {
+      const pred = toNumber(r.final_prediction_change, 0);
+      const actual = toNumber(r.actual_change, 0);
+      if (Math.abs(pred) < 0.15 || !sameDirection(pred, actual)) return null;
+      return Math.abs(actual / pred);
+    })
+    .filter((x) => x !== null && Number.isFinite(x));
+
+  const learnedShockMultiplier = ratios.length ? clamp(avg(ratios), 1, 2.8) : 1.15;
+  const directionHits = rows.filter((r) => sameDirection(r.actual_change, r.final_prediction_change)).length;
+  const directionHitRate = completed ? (directionHits / completed) * 100 : null;
+
+  let learningStatus = "Aktif öğrenme";
+  if (completed >= 15 && averageAbsoluteError !== null && averageAbsoluteError <= 0.75) learningStatus = "Öğreniyor";
+  if (completed >= 20 && averageAbsoluteError !== null && averageAbsoluteError <= 0.35) learningStatus = "Güven artıyor";
+  if (completed < 8) learningStatus = "Örnek sayısı düşük";
 
   return {
-    ok: true,
-    generatedAt: new Date().toISOString(),
-    version: API_VERSION,
-    mode: reportOnly ? "embedded_causal_nav_report" : "causal_nav_prediction",
-    endpoint: reportOnly ? "/api/predict?manual=finscope&report=1" : "/api/predict",
-    model: MODEL_KEY,
+    sampleSize: completed,
+    offset,
+    beta,
+    shockMultiplier: learnedShockMultiplier,
+    averageAbsoluteError,
+    directionHitRate,
+    learningStatus,
+    confidencePenalty: clamp((averageAbsoluteError || 0) * 3.5, 0, 18)
+  };
+}
+
+function fundHistoryStats(priceHistoryRows) {
+  const rows = (priceHistoryRows || []).slice(0, 8);
+  const changes = rows.map((r) => toNumber(r.daily_change ?? r.change ?? r.dailyChange, null)).filter((x) => x !== null);
+  return {
+    latestChange: changes.length ? changes[0] : null,
+    recentAverageChange: avg(changes.slice(0, 3)) || 0,
+    recentAbsAverageChange: avg(changes.slice(0, 3).map(Math.abs)) || 0,
+    volatility: avg(changes.map((x) => Math.abs(x - (avg(changes) || 0)))) || 0,
+    rows: rows.length
+  };
+}
+
+function gradeFromError(error) {
+  const abs = Math.abs(toNumber(error, 0));
+  if (abs <= 0.25) return "Çok iyi";
+  if (abs <= 0.75) return "İyi";
+  if (abs <= 1.5) return "Makul";
+  if (abs <= 3) return "Zayıf";
+  return "Şok / yüksek sapma";
+}
+
+function confidenceText(score) {
+  if (score >= 80) return "Yüksek";
+  if (score >= 60) return "Orta";
+  if (score >= 40) return "Düşük";
+  return "Çok düşük";
+}
+
+function summarizeContributors(rows, direction) {
+  const sorted = [...rows]
+    .filter((r) => Math.abs(toNumber(r.contribution, 0)) > 0.0001)
+    .sort((a, b) => toNumber(b.contribution, 0) - toNumber(a.contribution, 0));
+  if (direction === "positive") return sorted.slice(0, 8).map(publicHoldingInfo);
+  return sorted.reverse().slice(0, 8).map(publicHoldingInfo);
+}
+
+function publicHoldingInfo(h) {
+  return {
+    symbol: h.symbol,
+    yahooSymbol: h.yahooSymbol,
+    name: h.name,
+    assetType: h.assetType,
+    weight: round(h.effectiveWeight, 4),
+    marketChange: round(h.marketChange, 4),
+    contribution: round(h.contribution, 4),
+    pricingSource: h.pricingSource,
+    directPricing: Boolean(h.directPricing),
+    issue: h.issue || null
+  };
+}
+
+function buildPrediction({ code, holdings, latestFundRow, priceHistory, reportDate, predictionDate, performanceRows }) {
+  const learning = performanceLearning(performanceRows, code);
+  const historyStats = fundHistoryStats(priceHistory);
+
+  const totalWeight = holdings.reduce((sum, h) => sum + toNumber(h.effectiveWeight, 0), 0);
+  const stockWeight = holdings.filter((h) => h.assetType === "stock").reduce((sum, h) => sum + h.effectiveWeight, 0);
+  const pricedWeight = holdings.filter((h) => h.directPricing).reduce((sum, h) => sum + h.effectiveWeight, 0);
+  const nonStockWeight = Math.max(0, totalWeight - stockWeight);
+  const unresolvedWeight = holdings.filter((h) => h.issue).reduce((sum, h) => sum + h.effectiveWeight, 0);
+
+  const causalRawChange = holdings.reduce((sum, h) => sum + toNumber(h.contribution, 0), 0);
+  const stockSignal = holdings
+    .filter((h) => h.assetType === "stock")
+    .reduce((sum, h) => sum + toNumber(h.contribution, 0), 0);
+  const nonStockSignal = causalRawChange - stockSignal;
+
+  const recentMomentum = clamp(historyStats.recentAverageChange * 0.12, -2.5, 2.5);
+  const residualFallback = clamp((historyStats.latestChange || 0) * (unresolvedWeight / 100) * 0.25, -2.5, 2.5);
+
+  const shockByFund = Math.abs(historyStats.latestChange || 0) >= 6 || Math.abs(historyStats.recentAverageChange || 0) >= 6;
+  const shockByPortfolio = Math.abs(causalRawChange) >= 4 || Math.abs(stockSignal) >= 4;
+  const directionAligned = sameDirection(causalRawChange, historyStats.latestChange || causalRawChange);
+  const shockActive = (shockByFund || shockByPortfolio) && directionAligned;
+
+  let shockMultiplier = 1;
+  if (shockActive) {
+    shockMultiplier = clamp(learning.shockMultiplier || 1.15, 1.05, 2.65);
+    if (Math.abs(causalRawChange) >= 10) shockMultiplier = Math.min(shockMultiplier, 1.35);
+    if (Math.abs(causalRawChange) >= 18) shockMultiplier = Math.min(shockMultiplier, 1.15);
+  }
+
+  const betaAdjusted = causalRawChange * learning.beta;
+  const rawPredictedChange = betaAdjusted * shockMultiplier + residualFallback + recentMomentum;
+  const calibratedChange = rawPredictedChange + learning.offset;
+
+  const coverage = totalWeight > 0 ? clamp((pricedWeight / totalWeight) * 100, 0, 100) : 0;
+  const holdingsFreshnessDays = absDateDiffDays(predictionDate, reportDate);
+  const freshnessPenalty = holdingsFreshnessDays === null ? 8 : clamp(Math.max(0, holdingsFreshnessDays - 20) * 0.35, 0, 18);
+  const unresolvedPenalty = clamp(unresolvedWeight * 0.18, 0, 18);
+  const coveragePenalty = clamp((100 - coverage) * 0.15, 0, 20);
+  const shockPenalty = shockActive ? 7 : 0;
+  const confidence = clamp(92 - learning.confidencePenalty - freshnessPenalty - unresolvedPenalty - coveragePenalty - shockPenalty, 20, 95);
+
+  const finalPredictionChange = clamp(calibratedChange, -35, 35);
+  const rangeWidth = clamp((learning.averageAbsoluteError || 0.9) + (shockActive ? 1.5 : 0.4) + unresolvedWeight * 0.015, 0.35, 8);
+
+  const issues = [];
+  if (holdingsFreshnessDays !== null && holdingsFreshnessDays > 30) issues.push("old_holdings_report");
+  if (coverage < 45) issues.push("low_direct_price_coverage");
+  if (unresolvedWeight > 20) issues.push("high_unpriced_or_proxy_weight");
+  if (shockActive) issues.push("shock_aware_mode");
+  if (!holdings.length) issues.push("no_holdings_found");
+
+  const topPositiveContributors = summarizeContributors(holdings, "positive");
+  const topNegativeContributors = summarizeContributors(holdings, "negative");
+  const unresolvedHoldings = holdings.filter((h) => h.issue).slice(0, 20).map(publicHoldingInfo);
+
+  const latestDate = latestFundRow ? String(latestFundRow.price_date || latestFundRow.date || latestFundRow.created_at || "").slice(0, 10) : null;
+  const latestPrice = latestFundRow ? toNumber(latestFundRow.price ?? latestFundRow.value ?? latestFundRow.nav, null) : null;
+  const latestFundActualChange = latestFundRow ? toNumber(latestFundRow.daily_change ?? latestFundRow.change ?? latestFundRow.dailyChange, null) : null;
+
+  return {
+    fundCode: code,
+    code,
+    fund: code,
+    predictionDate,
+    latestDate,
+    latestFundPrice: latestPrice,
+    latestFundActualChange: round(latestFundActualChange, 4),
+    rawPredictedChange: round(rawPredictedChange, 4),
+    predictedChange: round(finalPredictionChange, 4),
+    calibratedChange: round(finalPredictionChange, 4),
+    finalPredictionChange: round(finalPredictionChange, 4),
+    currentPredictionChange: round(finalPredictionChange, 4),
+    predictionDirection: signOf(finalPredictionChange),
+    rangeLow: round(finalPredictionChange - rangeWidth, 4),
+    rangeHigh: round(finalPredictionChange + rangeWidth, 4),
+    expectedErrorBand: round(rangeWidth, 4),
+    confidence: round(confidence, 2),
+    confidenceText: confidenceText(confidence),
+    coverage: round(coverage, 2),
+    totalWeight: round(totalWeight, 4),
+    stockWeight: round(stockWeight, 4),
+    nonStockWeight: round(nonStockWeight, 4),
+    pricedWeight: round(pricedWeight, 4),
+    unresolvedWeight: round(unresolvedWeight, 4),
+    holdingsReportDate: reportDate,
+    holdingsFreshnessDays,
+    holdingsFreshnessStatus: holdingsFreshnessDays === null ? "unknown" : holdingsFreshnessDays <= 15 ? "fresh" : holdingsFreshnessDays <= 45 ? "watch" : "stale",
+    causalRawChange: round(causalRawChange, 4),
+    stockSignal: round(stockSignal, 4),
+    nonStockSignal: round(nonStockSignal, 4),
+    residualFallback: round(residualFallback, 4),
+    recentMomentum: round(recentMomentum, 4),
+    beta: round(learning.beta, 4),
+    calibrationOffset: round(learning.offset, 4),
+    shockActive,
+    shockMultiplier: round(shockMultiplier, 4),
+    learningSampleSize: learning.sampleSize,
+    sampleSize: learning.sampleSize,
+    learningStatus: learning.learningStatus,
+    recentAverageFundChange: round(historyStats.recentAverageChange, 4),
+    latestFundChange: round(historyStats.latestChange, 4),
+    averageAbsoluteError: round(learning.averageAbsoluteError, 4),
+    directionHitRate: round(learning.directionHitRate, 2),
+    issues,
+    topPositiveContributors,
+    topNegativeContributors,
+    unresolvedHoldings,
+    model: MODEL,
     modelKey: MODEL_KEY,
     modelVersion: MODEL_VERSION,
-    fundOrder: FUNDS,
-    thfIncluded: true,
-    targetAbsoluteError: TARGET_ABSOLUTE_ERROR,
-    writeEnabled: write && !reportOnly,
-    saved: saveResult.saved,
-    summary: {
-      totalFunds: FUNDS.length,
-      totalHoldingRows,
-      pricedRows,
-      averageCoverage: round(avgCoverage, 4),
-      strongestSignals,
-      rule: "Prediction uses weighted holdings market change, then applies learned beta/shock multiplier from reliable closed performance rows. Low coverage still limits confidence."
-    },
-    predictions,
-    rows: predictionRows,
-    causalNavReport: fundReports,
-    marketCoverage: {
-      requestedSymbols: unique(allYahooSymbols).length,
-      pricedSymbols: Object.values(marketBySymbol).filter(x => x && x.directPricing).length,
-      unresolvedSymbols: Object.values(marketBySymbol).filter(x => !x || !x.directPricing).length
-    },
-    learningStats: {
-      ok: learning.ok,
-      rows: learning.rows.length,
-      error: learning.error || null
-    },
-    performanceHistory: {
-      ok: performance.ok,
-      rows: performance.rows.length,
-      error: performance.error || null,
-      rule: "Only reliable closed/shock_closed rows are used to learn beta and shock response."
-    },
-    saveResult: reportOnly ? undefined : saveResult,
-    disclaimer: "These model outputs are estimates only and are not investment advice."
+    source: "multi_asset_nav_engine",
+    note: "v10.4 fon tahmini; hisse, nakit, repo, borçlanma aracı ve fiyatlanamayan kalemleri ayrı katmanlarda hesaplar. Tahmin yatırım tavsiyesi değildir."
+  };
+}
+
+function schemaSafeHistoryRow(prediction, nowIso) {
+  return {
+    fund_code: prediction.fundCode,
+    prediction_date: prediction.predictionDate,
+    model: MODEL,
+    predicted_change: round(prediction.finalPredictionChange, 4),
+    actual_change: null,
+    error_change: null,
+    confidence: round(prediction.confidence, 2),
+    created_at: nowIso,
+    updated_at: nowIso,
+    raw_predicted_change: round(prediction.rawPredictedChange, 4),
+    calibrated_change: round(prediction.finalPredictionChange, 4),
+    calibration_offset: round(prediction.calibrationOffset, 4),
+    actual_price_date: null,
+    sample_size: prediction.sampleSize || 0,
+    model_version: MODEL_VERSION
+  };
+}
+
+function parseMissingColumn(error) {
+  const text = error?.message || "";
+  const m1 = text.match(/Could not find the '([^']+)' column/i);
+  if (m1) return m1[1];
+  const m2 = text.match(/column "([^"]+)"/i);
+  if (m2) return m2[1];
+  return null;
+}
+
+async function upsertPredictionHistory(rows) {
+  if (!rows.length) return { ok: true, saved: 0, attempted: 0, rows: [] };
+
+  let columns = [...HISTORY_COLUMNS];
+  const removedColumns = [];
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const payload = rows.map((row) => {
+      const out = {};
+      for (const col of columns) out[col] = row[col] === undefined ? null : row[col];
+      return out;
+    });
+
+    try {
+      const saved = await supabaseRequest("prediction_history?on_conflict=fund_code,prediction_date,model", {
+        method: "POST",
+        headers: {
+          Prefer: "resolution=merge-duplicates,return=representation"
+        },
+        body: payload
+      });
+
+      return {
+        ok: true,
+        saved: Array.isArray(saved) ? saved.length : rows.length,
+        attempted: rows.length,
+        rows: saved || [],
+        removedColumns
+      };
+    } catch (error) {
+      lastError = error;
+      const missing = parseMissingColumn(error);
+      if (missing && columns.includes(missing)) {
+        columns = columns.filter((c) => c !== missing);
+        removedColumns.push(missing);
+        continue;
+      }
+      break;
+    }
+  }
+
+  return {
+    ok: false,
+    saved: 0,
+    attempted: rows.length,
+    removedColumns,
+    error: lastError ? lastError.message : "Unknown Supabase upsert error"
+  };
+}
+
+function compactPrediction(pred) {
+  return {
+    fundCode: pred.fundCode,
+    code: pred.code,
+    fund: pred.fund,
+    predictionDate: pred.predictionDate,
+    latestDate: pred.latestDate,
+    latestFundPrice: pred.latestFundPrice,
+    latestFundActualChange: pred.latestFundActualChange,
+    predictedChange: pred.predictedChange,
+    rawPredictedChange: pred.rawPredictedChange,
+    calibratedChange: pred.calibratedChange,
+    finalPredictionChange: pred.finalPredictionChange,
+    currentPredictionChange: pred.currentPredictionChange,
+    predictionDirection: pred.predictionDirection,
+    rangeLow: pred.rangeLow,
+    rangeHigh: pred.rangeHigh,
+    expectedErrorBand: pred.expectedErrorBand,
+    confidence: pred.confidence,
+    confidenceText: pred.confidenceText,
+    coverage: pred.coverage,
+    stockWeight: pred.stockWeight,
+    nonStockWeight: pred.nonStockWeight,
+    unresolvedWeight: pred.unresolvedWeight,
+    holdingsReportDate: pred.holdingsReportDate,
+    holdingsFreshnessDays: pred.holdingsFreshnessDays,
+    holdingsFreshnessStatus: pred.holdingsFreshnessStatus,
+    causalRawChange: pred.causalRawChange,
+    stockSignal: pred.stockSignal,
+    nonStockSignal: pred.nonStockSignal,
+    shockActive: pred.shockActive,
+    shockMultiplier: pred.shockMultiplier,
+    learningSampleSize: pred.learningSampleSize,
+    sampleSize: pred.sampleSize,
+    learningStatus: pred.learningStatus,
+    averageAbsoluteError: pred.averageAbsoluteError,
+    directionHitRate: pred.directionHitRate,
+    issues: pred.issues,
+    topPositiveContributors: pred.topPositiveContributors,
+    topNegativeContributors: pred.topNegativeContributors,
+    model: pred.model,
+    modelKey: pred.modelKey,
+    modelVersion: pred.modelVersion,
+    source: pred.source,
+    note: pred.note
+  };
+}
+
+function buildSummary(predictions, saveResult, warnings) {
+  const avgConfidence = avg(predictions.map((p) => p.confidence));
+  const avgCoverage = avg(predictions.map((p) => p.coverage));
+  const avgAbsPrediction = avg(predictions.map((p) => Math.abs(toNumber(p.finalPredictionChange, 0))));
+  const strongSignals = predictions
+    .filter((p) => Math.abs(toNumber(p.finalPredictionChange, 0)) >= 1.5)
+    .map((p) => p.fundCode);
+  const shockSignals = predictions.filter((p) => p.shockActive).map((p) => p.fundCode);
+
+  return {
+    totalFunds: predictions.length,
+    saved: saveResult?.saved || 0,
+    attempted: saveResult?.attempted || 0,
+    averageConfidence: round(avgConfidence, 2),
+    averageCoverage: round(avgCoverage, 2),
+    averageAbsolutePrediction: round(avgAbsPrediction, 4),
+    strongSignals,
+    shockSignals,
+    warningsCount: warnings.length,
+    rule: "Multi Asset NAV: effectiveWeight / 100 * assetChange; stocks direct Yahoo price, non-stock assets typed proxy, then learned beta/offset/shock layer.",
+    targetAbsoluteError: TARGET_ABSOLUTE_ERROR
   };
 }
 
 module.exports = async function handler(req, res) {
+  setCommonHeaders(res);
+
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+
+  const warnings = [];
+  const startedAt = Date.now();
+  const nowIso = new Date().toISOString();
+  const query = req.query || {};
+  const manualAuthorized = query.manual === "finscope";
+  const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const cronAuthorized = Boolean(process.env.CRON_SECRET && bearer && bearer === process.env.CRON_SECRET);
+  const dryRun = query.dryRun === "1" || query.dryRun === "true";
+  const shouldSave = !dryRun && (manualAuthorized || cronAuthorized || query.save === "1");
+  const includeReport = query.report === "1" || query.debug === "1" || query.full === "1";
+
   try {
-    if (req.method !== "GET" && req.method !== "POST") {
-      return json(res, 405, { ok: false, version: API_VERSION, error: "Method not allowed" });
-    }
+    const fundFilter = `in.(${FUND_ORDER.join(",")})`;
 
-    const q = getQuery(req);
-    const reportOnly = q.get("report") === "1" || q.get("report") === "true";
-    const dryRun = q.get("dryRun") === "1" || q.get("dry") === "1";
-    const manual = isManualAuthorized(req);
-    const write = manual && !reportOnly && !dryRun;
+    const priceRows = await safeRead(
+      `fund_prices?select=*&fund_code=${fundFilter}&order=price_date.desc,created_at.desc&limit=500`,
+      [],
+      warnings,
+      "fund_prices"
+    );
 
-    const result = await runEngine({ write, reportOnly });
-    result.authorization = {
-      manualAuthorized: manual,
-      writeAttempted: write,
-      reportOnly,
-      dryRun
-    };
+    const holdingRows = await safeRead(
+      `fund_holdings?select=*&fund_code=${fundFilter}&limit=3000`,
+      [],
+      warnings,
+      "fund_holdings"
+    );
 
-    return json(res, 200, result);
-  } catch (err) {
-    return json(res, 500, {
-      ok: false,
+    const performanceRows = await safeRead(
+      `prediction_performance?select=*&fund_code=${fundFilter}&model=eq.${encodeURIComponent(MODEL)}&order=prediction_date.desc&limit=300`,
+      [],
+      warnings,
+      "prediction_performance"
+    );
+
+    const { latest, history } = latestFundPrices(priceRows);
+    const latestFundDate = maxDate(Object.values(latest).map((row) => row && (row.price_date || row.date || row.created_at)));
+    const predictionDate = query.date || query.predictionDate || nextBusinessDay(latestFundDate || new Date().toISOString().slice(0, 10));
+
+    const { holdingsByFund, reportDates } = groupLatestHoldingsByFund(holdingRows);
+    const { pricedHoldingsByFund, yahooSymbolsRequested } = await priceHoldings(holdingsByFund);
+
+    const predictions = FUND_ORDER.map((code) =>
+      buildPrediction({
+        code,
+        holdings: pricedHoldingsByFund[code] || [],
+        latestFundRow: latest[code],
+        priceHistory: history[code] || [],
+        reportDate: reportDates[code] || null,
+        predictionDate,
+        performanceRows
+      })
+    );
+
+    const historyPayload = predictions.map((prediction) => schemaSafeHistoryRow(prediction, nowIso));
+    const saveResult = shouldSave ? await upsertPredictionHistory(historyPayload) : { ok: true, saved: 0, attempted: 0, dryRun: true };
+
+    const responsePredictions = includeReport ? predictions : predictions.map(compactPrediction);
+
+    sendJson(res, saveResult.ok ? 200 : 500, {
+      ok: saveResult.ok,
+      generatedAt: nowIso,
       version: API_VERSION,
-      model: MODEL_KEY,
+      mode: includeReport ? "embedded_causal_nav_report" : "summary",
+      endpoint: "/api/predict",
+      model: MODEL,
+      modelKey: MODEL_KEY,
       modelVersion: MODEL_VERSION,
-      error: String(err && err.message ? err.message : err),
-      stack: process.env.NODE_ENV === "development" ? String(err && err.stack ? err.stack : "") : undefined
+      fundOrder: FUND_ORDER,
+      predictionDate,
+      latestFundDate,
+      multiAssetNav: true,
+      saveEnabled: shouldSave,
+      dryRun: !shouldSave,
+      yahooSymbolsRequested,
+      summary: buildSummary(predictions, saveResult, warnings),
+      predictions: responsePredictions,
+      rows: responsePredictions,
+      saveResult,
+      warnings,
+      elapsedMs: Date.now() - startedAt,
+      disclaimer: "Bu tahminler model bazlıdır, kesinlik içermez ve yatırım tavsiyesi değildir."
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      generatedAt: new Date().toISOString(),
+      version: API_VERSION,
+      model: MODEL,
+      modelKey: MODEL_KEY,
+      modelVersion: MODEL_VERSION,
+      error: error.message,
+      warnings,
+      hint: "Supabase tablo kolonları veya harici fiyat kaynağı kontrol edilmeli. v10.4 yalnızca prediction_history için şema güvenli kolonları yazar."
     });
   }
 };
