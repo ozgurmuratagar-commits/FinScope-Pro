@@ -7,9 +7,9 @@
 // - Do not create a new Vercel function.
 // - report=1 returns diagnostics only and does not write predictions.
 
-const API_VERSION = "FinScope Predict API v10.3 - Causal Beta + Shock Multiplier Layer";
+const API_VERSION = "FinScope Predict API v10.3.1 - Schema Safe Causal Beta + Shock Multiplier Layer";
 const MODEL_KEY = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v10.3 - Causal Beta + Shock Multiplier Layer";
+const MODEL_VERSION = "FinScope Prediction Engine v10.3.1 - Schema Safe Causal Beta + Shock Multiplier Layer";
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 const TARGET_ABSOLUTE_ERROR = 0.1;
 
@@ -721,10 +721,8 @@ function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory
     model_version: MODEL_VERSION,
     raw_predicted_change: round(causalRaw, 6),
     calibrated_change: round(finalPrediction, 6),
-    prediction_direction: predDirection,
-    range_low: rangeLow,
-    range_high: rangeHigh,
-    expected_error_band: expectedErrorBand,
+    // Schema-safe write: keep advanced diagnostic fields in the API response,
+    // but do not POST columns that may not exist in prediction_history.
     confidence,
     coverage,
     residual_weight: residualWeight,
