@@ -1,14 +1,15 @@
 // api/predict.js
-// FinScope Predict API v10.2 - Causal NAV Core Weight Engine
+// FinScope Predict API v10.3 - Causal Beta + Shock Multiplier Layer
 // Purpose:
 // - Keep the existing /api/predict endpoint.
 // - Add a true Causal NAV calculation based on fund holdings, holding weights, and current market moves.
+// - Add learned fund beta and shock multiplier from closed performance rows so PBR/PHE-style moves are not under-priced.
 // - Do not create a new Vercel function.
 // - report=1 returns diagnostics only and does not write predictions.
 
-const API_VERSION = "FinScope Predict API v10.2 - Causal NAV Core Weight Engine";
+const API_VERSION = "FinScope Predict API v10.3 - Causal Beta + Shock Multiplier Layer";
 const MODEL_KEY = "v7_1_accuracy_layer";
-const MODEL_VERSION = "FinScope Prediction Engine v10.2 - Causal NAV Core Weight Engine";
+const MODEL_VERSION = "FinScope Prediction Engine v10.3 - Causal Beta + Shock Multiplier Layer";
 const FUNDS = ["PBR", "PHE", "TLY", "THF"];
 const TARGET_ABSOLUTE_ERROR = 0.1;
 
@@ -188,6 +189,22 @@ async function readLearningStats() {
   }
 }
 
+async function readPerformanceHistory() {
+  try {
+    const path = `prediction_performance?select=*&fund_code=${inFilter(FUNDS)}&model=eq.${encodeURIComponent(MODEL_KEY)}&order=prediction_date.desc&limit=600`;
+    const rows = await supabase(path);
+    const byFund = {};
+    for (const code of FUNDS) byFund[code] = [];
+    for (const row of rows || []) {
+      const code = String(row.fund_code || row.fundCode || "").toUpperCase();
+      if (FUNDS.includes(code)) byFund[code].push(row);
+    }
+    return { rows: rows || [], byFund, ok: true };
+  } catch (err) {
+    return { rows: [], byFund: {}, ok: false, error: String(err.message || err) };
+  }
+}
+
 function normalizeAssetType(row) {
   const raw = String(row.asset_type || row.assetType || row.type || row.asset_class || row.assetClass || "").toLowerCase();
   const symbol = String(row.symbol || row.asset_symbol || row.assetSymbol || row.code || row.holding_code || row.holdingCode || "").toUpperCase();
@@ -266,7 +283,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = YAHOO_TIMEOUT_MS)
       ...options,
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 FinScope/10.2",
+        "User-Agent": "Mozilla/5.0 FinScope/10.3",
         Accept: "application/json,text/plain,*/*",
         ...(options.headers || {})
       }
@@ -398,7 +415,133 @@ function computeLearningOffset(stats, coverage) {
   return round(clamp(avgError * multiplier, -1.25, 1.25), 4);
 }
 
-function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory, learningStats, marketBySymbol }) {
+function getFinalFromPerformance(row) {
+  return n(
+    row.final_prediction_change ??
+    row.finalPredictionChange ??
+    row.calibrated_change ??
+    row.calibratedChange ??
+    row.predicted_change ??
+    row.predictedChange,
+    null
+  );
+}
+
+function getActualFromPerformance(row) {
+  return n(row.actual_change ?? row.actualChange, null);
+}
+
+function isReliablePerformanceRow(row) {
+  const status = String(row.status || row.rawStatus || "").toLowerCase();
+  if (!status) return false;
+  if (status.includes("quarantine")) return false;
+  if (status.includes("waiting")) return false;
+  if (status.includes("pending")) return false;
+  return status === "closed" || status === "shock_closed" || status === "completed" || status.includes("closed");
+}
+
+function buildLearningProfile(fundCode, performanceRows, stats) {
+  const reliable = (performanceRows || [])
+    .filter(isReliablePerformanceRow)
+    .map(row => ({
+      row,
+      predicted: getFinalFromPerformance(row),
+      actual: getActualFromPerformance(row),
+      status: String(row.status || row.rawStatus || "").toLowerCase(),
+      predictionDate: String(row.prediction_date || row.predictionDate || "").slice(0, 10)
+    }))
+    .filter(x => x.predicted !== null && x.actual !== null);
+
+  const recent = reliable.slice(0, 15);
+  const base = recent.length ? recent : reliable.slice(0, 30);
+  const sample = base.length;
+
+  if (!sample) {
+    return {
+      fundCode,
+      sampleSize: 0,
+      completedRows: 0,
+      learningMode: "no_history",
+      betaMultiplier: 1,
+      shockMultiplier: 1,
+      biasCorrection: 0,
+      averageError: null,
+      averageAbsoluteError: null,
+      directionHitRate: null,
+      recentShockCount: 0,
+      underCaptureAverage: 0,
+      note: "No reliable performance rows yet."
+    };
+  }
+
+  const errors = base.map(x => x.actual - x.predicted);
+  const absErrors = errors.map(Math.abs);
+  const avgError = errors.reduce((s, v) => s + v, 0) / sample;
+  const avgAbsError = absErrors.reduce((s, v) => s + v, 0) / sample;
+  const directionHits = base.filter(x => direction(x.predicted) === direction(x.actual)).length;
+  const directionHitRate = (directionHits / sample) * 100;
+
+  const denom = base.reduce((s, x) => s + (x.predicted * x.predicted), 0);
+  const numer = base.reduce((s, x) => s + (x.predicted * x.actual), 0);
+  let betaRaw = denom > 0.05 ? numer / denom : 1;
+  if (!Number.isFinite(betaRaw)) betaRaw = 1;
+
+  const underCaptures = base
+    .filter(x => direction(x.predicted) === direction(x.actual) && Math.abs(x.actual) > Math.abs(x.predicted))
+    .map(x => Math.abs(x.actual) - Math.abs(x.predicted));
+  const underCaptureAverage = underCaptures.length ? underCaptures.reduce((s, v) => s + v, 0) / underCaptures.length : 0;
+
+  const shockRows = base.filter(x => Math.abs(x.actual) >= 3.5 || x.status === "shock_closed");
+  const recentShockCount = shockRows.length;
+
+  let betaMultiplier = directionHitRate < 45 ? 0.8 : clamp(betaRaw, 0.55, 3.2);
+  if (avgAbsError > 4 && directionHitRate >= 60) betaMultiplier = clamp(betaMultiplier + 0.35, 0.55, 3.4);
+  if (underCaptureAverage > 4 && directionHitRate >= 60) betaMultiplier = clamp(betaMultiplier + 0.45, 0.55, 3.6);
+
+  let shockMultiplier = 1;
+  if (recentShockCount >= 1) shockMultiplier += Math.min(0.9, recentShockCount * 0.16);
+  if (underCaptureAverage >= 2) shockMultiplier += Math.min(0.85, underCaptureAverage * 0.08);
+  if (avgAbsError >= 6 && directionHitRate >= 55) shockMultiplier += 0.35;
+  shockMultiplier = clamp(shockMultiplier, 1, 2.65);
+
+  const statAvgError = n(stats && stats.average_error, null);
+  const blendedError = statAvgError === null ? avgError : (avgError * 0.7 + statAvgError * 0.3);
+  const biasCorrection = clamp(blendedError * 0.16, -1.4, 1.4);
+
+  const learningMode = sample >= 12 ? "active_15_day" : sample >= 8 ? "active" : sample >= 4 ? "warming" : "watch";
+
+  return {
+    fundCode,
+    sampleSize: sample,
+    completedRows: reliable.length,
+    learningMode,
+    betaRaw: round(betaRaw, 4),
+    betaMultiplier: round(betaMultiplier, 4),
+    shockMultiplier: round(shockMultiplier, 4),
+    biasCorrection: round(biasCorrection, 4),
+    averageError: round(avgError, 4),
+    averageAbsoluteError: round(avgAbsError, 4),
+    directionHitRate: round(directionHitRate, 2),
+    recentShockCount,
+    underCaptureAverage: round(underCaptureAverage, 4),
+    note: "v10.3 learns fund beta and shock multiplier from reliable closed performance rows."
+  };
+}
+
+function resolveDynamicMultiplier(learningProfile, coverage, causalRaw, shockScore) {
+  const beta = n(learningProfile && learningProfile.betaMultiplier, 1) || 1;
+  const shock = n(learningProfile && learningProfile.shockMultiplier, 1) || 1;
+  const sample = n(learningProfile && learningProfile.sampleSize, 0) || 0;
+  const coverageTrust = coverage >= 75 ? 1 : coverage >= 55 ? 0.82 : coverage >= 35 ? 0.62 : 0.42;
+  const sampleTrust = sample >= 12 ? 1 : sample >= 8 ? 0.78 : sample >= 4 ? 0.52 : 0.25;
+  const shockTrust = shockScore >= 2 || Math.abs(causalRaw) >= 3 ? 1 : 0.65;
+  const trustedBeta = 1 + ((beta - 1) * coverageTrust * sampleTrust);
+  const trustedShock = 1 + ((shock - 1) * coverageTrust * sampleTrust * shockTrust);
+  const combined = (trustedBeta * 0.72) + (trustedShock * 0.28);
+  return round(clamp(combined, 0.55, 3.15), 4);
+}
+
+function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory, learningStats, learningProfile, marketBySymbol }) {
   const normalized = normalizeWeights(holdingRows.map(normalizeHolding));
   const reportDate = normalized.find(h => h.reportDate)?.reportDate || null;
   const freshness = computeFreshness(reportDate);
@@ -480,16 +623,20 @@ function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory
   const shockScore = (abs(causalRaw) >= 3 ? 1 : 0) + (abs(causalRaw) >= 6 ? 1 : 0) + Math.min(2, largeNegativeContribs + largePositiveContribs);
 
   const coverageRatio = coverage / 100;
-  const causalWeight = coverage >= 75 ? 1 : coverage >= 55 ? 0.88 : coverage >= 35 ? 0.7 : 0.48;
-  const residualFallback = clamp((1 - coverageRatio) * clamp(recentAvg, -3, 3) * 0.18, -0.75, 0.75);
+  const causalWeight = coverage >= 75 ? 1 : coverage >= 55 ? 0.9 : coverage >= 35 ? 0.72 : 0.5;
+  const residualFallback = clamp((1 - coverageRatio) * clamp(recentAvg, -4, 4) * 0.22, -1.25, 1.25);
   const learningOffset = computeLearningOffset(learningStats, coverage);
+  const learnedBias = n(learningProfile && learningProfile.biasCorrection, 0) || 0;
 
   const causalWeighted = causalRaw * causalWeight;
-  const shockAmplifier = abs(causalRaw) >= 8 ? 1.0 : abs(causalRaw) >= 4 ? 0.95 : 0.88;
-  const finalPrediction = clamp((causalWeighted * shockAmplifier) + residualFallback + learningOffset, -20, 20);
+  const dynamicMultiplier = resolveDynamicMultiplier(learningProfile, coverage, causalRaw, shockScore);
+  const learnedShockMultiplier = n(learningProfile && learningProfile.shockMultiplier, 1) || 1;
+  const recentMomentum = clamp(recentAvg * (shockScore >= 2 ? 0.16 : 0.08), -1.8, 1.8);
+  const shockAmplifier = dynamicMultiplier;
+  const finalPrediction = clamp((causalWeighted * dynamicMultiplier) + residualFallback + learningOffset + learnedBias + recentMomentum, -30, 30);
 
   const expectedErrorBand = estimateErrorBand(coverage, residualWeight, shockScore, freshness.penalty, learningStats);
-  const confidence = round(clamp(32 + coverage * 0.55 + Math.min(pricedRows, 35) * 0.55 - freshness.penalty - Math.min(unresolvedRows, 25) * 0.45 - (shockScore >= 2 ? 8 : 0), 8, 92), 2);
+  const confidence = round(clamp(34 + coverage * 0.52 + Math.min(pricedRows, 35) * 0.52 - freshness.penalty - Math.min(unresolvedRows, 25) * 0.42 - (shockScore >= 2 ? 6 : 0) + Math.min(10, n(learningProfile && learningProfile.sampleSize, 0) || 0), 8, 94), 2);
 
   const rangeLow = round(finalPrediction - expectedErrorBand, 4);
   const rangeHigh = round(finalPrediction + expectedErrorBand, 4);
@@ -548,7 +695,18 @@ function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory
     recentFundAverageChange: round(recentAvg, 4),
     issues,
     learningStrength: learningStats ? n(learningStats.completed_prediction_count ?? learningStats.sample_size, 0) : 0,
-    note: `v10.2 Causal NAV Core: weighted holdings contribution is primary signal; coverage=${round(coverage, 2)}; freshness=${freshness.status}`,
+    learningMode: learningProfile ? learningProfile.learningMode : "no_history",
+    learningSampleSize: learningProfile ? learningProfile.sampleSize : 0,
+    betaMultiplier: learningProfile ? learningProfile.betaMultiplier : 1,
+    shockMultiplier: round(learnedShockMultiplier, 4),
+    dynamicMultiplier,
+    learnedBias: round(learnedBias, 4),
+    recentMomentum: round(recentMomentum, 4),
+    performanceAverageError: learningProfile ? learningProfile.averageError : null,
+    performanceAverageAbsoluteError: learningProfile ? learningProfile.averageAbsoluteError : null,
+    performanceDirectionHitRate: learningProfile ? learningProfile.directionHitRate : null,
+    underCaptureAverage: learningProfile ? learningProfile.underCaptureAverage : null,
+    note: `v10.3 Causal Beta + Shock: holdings signal is multiplied by learned fund beta/shock layer; coverage=${round(coverage, 2)}; learning=${learningProfile ? learningProfile.learningMode : "no_history"}; freshness=${freshness.status}`,
 
     topPositiveContributors: topPositive,
     topNegativeContributors: topNegative,
@@ -571,7 +729,7 @@ function buildFundPrediction({ fundCode, holdingRows, latestPrice, pricesHistory
     coverage,
     residual_weight: residualWeight,
     sample_size: pricedRows,
-    calibration_offset: round(learningOffset, 6),
+    calibration_offset: round(learningOffset + learnedBias + recentMomentum, 6),
     actual_change: null,
     error_change: null,
     note: prediction.note,
@@ -595,10 +753,11 @@ async function savePredictionRows(rows) {
 }
 
 async function runEngine({ write = false, reportOnly = false } = {}) {
-  const [fundPrices, holdings, learning] = await Promise.all([
+  const [fundPrices, holdings, learning, performance] = await Promise.all([
     readFundPrices(),
     readHoldings(),
-    readLearningStats()
+    readLearningStats(),
+    readPerformanceHistory()
   ]);
 
   const latestHoldingRowsByFund = {};
@@ -620,12 +779,14 @@ async function runEngine({ write = false, reportOnly = false } = {}) {
   const fundReports = {};
 
   for (const fund of FUNDS) {
+    const learningProfile = buildLearningProfile(fund, performance.byFund[fund] || [], learning.byFund[fund] || null);
     const built = buildFundPrediction({
       fundCode: fund,
       holdingRows: latestHoldingRowsByFund[fund] || [],
       latestPrice: fundPrices.byFund[fund] || null,
       pricesHistory: fundPrices.historyByFund[fund] || [],
       learningStats: learning.byFund[fund] || null,
+      learningProfile,
       marketBySymbol
     });
     predictions[fund] = built.prediction;
@@ -647,6 +808,12 @@ async function runEngine({ write = false, reportOnly = false } = {}) {
       finalPredictionChange: built.prediction.finalPredictionChange,
       confidence: built.prediction.confidence,
       confidenceText: built.prediction.confidenceText,
+      learningMode: built.prediction.learningMode,
+      learningSampleSize: built.prediction.learningSampleSize,
+      betaMultiplier: built.prediction.betaMultiplier,
+      shockMultiplier: built.prediction.shockMultiplier,
+      dynamicMultiplier: built.prediction.dynamicMultiplier,
+      underCaptureAverage: built.prediction.underCaptureAverage,
       issues: built.prediction.issues,
       topPositiveContributors: built.prediction.topPositiveContributors,
       topNegativeContributors: built.prediction.topNegativeContributors,
@@ -686,7 +853,7 @@ async function runEngine({ write = false, reportOnly = false } = {}) {
       pricedRows,
       averageCoverage: round(avgCoverage, 4),
       strongestSignals,
-      rule: "Prediction is mainly weighted holdings market change. If coverage is low, residual fallback and learning offset are limited."
+      rule: "Prediction uses weighted holdings market change, then applies learned beta/shock multiplier from reliable closed performance rows. Low coverage still limits confidence."
     },
     predictions,
     rows: predictionRows,
@@ -700,6 +867,12 @@ async function runEngine({ write = false, reportOnly = false } = {}) {
       ok: learning.ok,
       rows: learning.rows.length,
       error: learning.error || null
+    },
+    performanceHistory: {
+      ok: performance.ok,
+      rows: performance.rows.length,
+      error: performance.error || null,
+      rule: "Only reliable closed/shock_closed rows are used to learn beta and shock response."
     },
     saveResult: reportOnly ? undefined : saveResult,
     disclaimer: "These model outputs are estimates only and are not investment advice."
